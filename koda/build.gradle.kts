@@ -19,4 +19,13 @@ kotlin {
         browser()
         nodejs()
     }
+
+    compilerOptions {
+//        languageVersion = KotlinVersion.KOTLIN_2_4
+        freeCompilerArgs.addAll(
+            "-Xreturn-value-checker=full",
+            "-Xcontext-parameters",
+//            "-Xexplicit-context-arguments"
+        )
+    }
 }

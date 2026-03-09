@@ -61,7 +61,7 @@ data class Meta(
 
 sealed interface Name : ExportType {
     @SerialName("in") // can't use "in" as variable name without backticks
-    val in2: Int
+    val in2: Int // AKA "name index"
 
     @Serializable
     @SerialName("str")
@@ -69,11 +69,17 @@ sealed interface Name : ExportType {
 
     @Serializable
     @SerialName("num")
+    // TODO: `i` should be arbitrary precision
     data class Num(val pre: Int, val i: Long, @SerialName("in") override val in2: Int) : Name
 }
 
 sealed interface Level : ExportType {
-    val il: Int
+    val il: Int // AKA "level index"
+
+    data object Zero : Level {
+        override val il: Int
+            get() = 0
+    }
 
     @Serializable
     @SerialName("succ")
@@ -94,7 +100,7 @@ sealed interface Level : ExportType {
 
 @Serializable
 sealed interface Expression : ExportType {
-    val ie: Int
+    val ie: Int // AKA "expression index"
 
     @Serializable
     @SerialName("bvar")
@@ -110,7 +116,7 @@ sealed interface Expression : ExportType {
 
     @Serializable
     @SerialName("app")
-    data class App(val fn: Double, val arg: Double, override val ie: Int) : Expression
+    data class App(val fn: Int, val arg: Int, override val ie: Int) : Expression // TODO: why are these documented as <number> and not <integer>
 
     @Serializable
     @SerialName("lam")
@@ -119,6 +125,7 @@ sealed interface Expression : ExportType {
 
     @Serializable
     @SerialName("forallE")
+    /** Also known as `pi` */
     data class ForallE(val name: Int, val type: Int, val body: Int, val binderInfo: BinderInfo, override val ie: Int) :
         Expression
 
@@ -151,16 +158,27 @@ sealed interface Expression : ExportType {
 }
 
 sealed interface Declaration : ExportType {
+    // Not explicitly documented as part of every declaration, but they are present for all of them currently,
+    // so for convenience, they are included in the interface.
+    val name: Int
+    val levelParams: List<Int>
+    val type: Int
+
     @Serializable
     @SerialName("axiom")
-    data class Axiom(val name: Int, val levelParams: List<Int>, val type: Int, val isUnsafe: Boolean) : Declaration
+    data class Axiom(
+        override val name: Int,
+        override val levelParams: List<Int>,
+        override val type: Int,
+        val isUnsafe: Boolean
+    ) : Declaration
 
     @Serializable
     @SerialName("def")
     data class Def(
-        val name: Int,
-        val levelParams: List<Int>,
-        val type: Int,
+        override val name: Int,
+        override val levelParams: List<Int>,
+        override val type: Int,
         val value: Int,
         // Can't put the serializer on `Hints` itself because it delegates to the default serializer
         @Serializable(with = HintsSerializer::class)
@@ -209,9 +227,9 @@ sealed interface Declaration : ExportType {
     @Serializable
     @SerialName("opaque")
     data class Opaque(
-        val name: Int,
-        val levelParams: List<Int>,
-        val type: Int,
+        override val name: Int,
+        override val levelParams: List<Int>,
+        override val type: Int,
         val value: Int,
         val isUnsafe: Boolean,
         val all: List<Int>
@@ -220,9 +238,9 @@ sealed interface Declaration : ExportType {
     @Serializable
     @SerialName("thm")
     data class Thm(
-        val name: Int,
-        val levelParams: List<Int>,
-        val type: Int,
+        override val name: Int,
+        override val levelParams: List<Int>,
+        override val type: Int,
         val value: Int,
         val all: List<Int>
     ) : Declaration
@@ -230,9 +248,9 @@ sealed interface Declaration : ExportType {
     @Serializable
     @SerialName("quot")
     data class Quot(
-        val name: Int,
-        val levelParams: List<Int>,
-        val type: Int,
+        override val name: Int,
+        override val levelParams: List<Int>,
+        override val type: Int,
         val kind: Kind,
     ) : Declaration {
         enum class Kind {
