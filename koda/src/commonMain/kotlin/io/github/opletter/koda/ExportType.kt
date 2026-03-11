@@ -130,6 +130,15 @@ sealed class Level : ExportType {
         check(il !in env.levels) { "Duplicate level $il" }
         env.levels[this.il] = this
     }
+
+    context(env: Environment)
+    fun toStringDetailed(): String = when (this) {
+        is Zero -> "Zero"
+        is Succ -> "Succ(level=${level.toStringDetailed()}, il=$il)"
+        is Max -> "Max(left=${left.toStringDetailed()}, right=${right.toStringDetailed()}, il=$il)"
+        is Imax -> "Imax(left=${left.toStringDetailed()}, right=${right.toStringDetailed()}, il=$il)"
+        is Param -> "Param(name=$name, il=$il)"
+    }
 }
 
 sealed class Expression : ExportType {
@@ -147,6 +156,11 @@ sealed class Expression : ExportType {
     data class Sort(private val sort: Int, override val ie: Int) : Expression() {
         context(env: Environment)
         val level get() = env.levels[sort] ?: error("Level $sort not found")
+
+        context(env: Environment)
+        override fun toStringDetailed(): String {
+            return "Sort(level=${level.toStringDetailed()}, ie=$ie)"
+        }
     }
 
     @Serializable
@@ -181,7 +195,7 @@ sealed class Expression : ExportType {
         private val type: Int,
         private val body: Int,
         val binderInfo: BinderInfo,
-        override val ie: Int
+        override val ie: Int,
     ) : Expression() {
         context(env: Environment)
         val name get() = env.names[_name] ?: error("Name $_name not found")
@@ -191,6 +205,13 @@ sealed class Expression : ExportType {
 
         context(env: Environment)
         val bodyExpr get() = env.expressions[body] ?: error("Expression $body not found")
+
+        context(env: Environment)
+        override fun toStringDetailed(): String {
+            return "Lam(\n name=$name,\n type=${typeExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n body=${bodyExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n binderInfo=$binderInfo, ie=$ie)"
+        }
+
+        fun copyAsForAllE(): ForallE = ForallE(_name, type, body, binderInfo, ie)
     }
 
     @Serializable
@@ -201,7 +222,7 @@ sealed class Expression : ExportType {
         private val type: Int,
         private val body: Int,
         val binderInfo: BinderInfo,
-        override val ie: Int
+        override val ie: Int,
     ) : Expression() {
         context(env: Environment)
         val name get() = env.names[_name] ?: error("Name $_name not found")
@@ -211,6 +232,11 @@ sealed class Expression : ExportType {
 
         context(env: Environment)
         val bodyExpr get() = env.expressions[body] ?: error("Expression $body not found")
+
+        context(env: Environment)
+        override fun toStringDetailed(): String {
+            return "ForallE(\n name=$name,\n type=${typeExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n body=${bodyExpr.toStringDetailed().lines().joinToString("\n") { " $it"}}, binderInfo=$binderInfo, ie=$ie)"
+        }
     }
 
     @Serializable
@@ -221,7 +247,7 @@ sealed class Expression : ExportType {
         private val value: Int,
         private val body: Int,
         val nondep: Boolean,
-        override val ie: Int
+        override val ie: Int,
     ) : Expression() {
         context(env: Environment)
         val name get() = env.names[_name] ?: error("Name $_name not found")
@@ -242,7 +268,7 @@ sealed class Expression : ExportType {
         private val typeName: Int,
         private val idx: Int,
         private val struct: Int,
-        override val ie: Int
+        override val ie: Int,
     ) : Expression() {
         // TODO: figure out what the indices represent
     }
@@ -260,7 +286,7 @@ sealed class Expression : ExportType {
     data class Mdata(
         @SerialName("expr") private val _expr: Int,
         val data: JsonObject,
-        override val ie: Int
+        override val ie: Int,
     ) : Expression() {
         context(env: Environment)
         val expr get() = env.expressions[_expr] ?: error("Expression $_expr not found")
@@ -269,6 +295,9 @@ sealed class Expression : ExportType {
     override fun registerInto(env: Environment) {
         env.expressions[this.ie] = this
     }
+
+    context(env: Environment)
+    open fun toStringDetailed(): String = this.toString() // why do I get an error without the `this`
 }
 
 sealed class Declaration : ExportType {
@@ -284,7 +313,7 @@ sealed class Declaration : ExportType {
         @SerialName("name") override val _name: Int,
         @SerialName("levelParams") override val _levelParams: List<Int>,
         override val type: Int,
-        val isUnsafe: Boolean
+        val isUnsafe: Boolean,
     ) : Declaration()
 
     @Serializable
@@ -298,7 +327,7 @@ sealed class Declaration : ExportType {
         @Serializable(with = HintsSerializer::class)
         val hints: Hints,
         val safety: Safety,
-        private val all: List<Int>
+        private val all: List<Int>,
     ) : Declaration() {
         context(env: Environment)
         val valueExpr get() = env.expressions[value] ?: error("Expression $value not found")
@@ -352,7 +381,7 @@ sealed class Declaration : ExportType {
         override val type: Int,
         private val value: Int,
         val isUnsafe: Boolean,
-        private val all: List<Int>
+        private val all: List<Int>,
     ) : Declaration() {
         context(env: Environment)
         val valueExpr get() = env.expressions[value] ?: error("Expression $value not found")
@@ -368,7 +397,7 @@ sealed class Declaration : ExportType {
         @SerialName("levelParams") override val _levelParams: List<Int>,
         override val type: Int,
         private val value: Int,
-        private val all: List<Int>
+        private val all: List<Int>,
     ) : Declaration() {
         context(env: Environment)
         val valueExpr get() = env.expressions[value] ?: error("Expression $value not found")
