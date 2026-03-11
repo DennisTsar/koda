@@ -130,6 +130,15 @@ sealed class Level : ExportType {
         check(il !in env.levels) { "Duplicate level $il" }
         env.levels[this.il] = this
     }
+
+    context(env: Environment)
+    fun toStringDetailed(): String = when (this) {
+        is Zero -> "Zero"
+        is Succ -> "Succ(level=${level.toStringDetailed()}, il=$il)"
+        is Max -> "Max(left=${left.toStringDetailed()}, right=${right.toStringDetailed()}, il=$il)"
+        is Imax -> "Imax(left=${left.toStringDetailed()}, right=${right.toStringDetailed()}, il=$il)"
+        is Param -> "Param(name=$name, il=$il)"
+    }
 }
 
 sealed class Expression : ExportType {
@@ -147,6 +156,11 @@ sealed class Expression : ExportType {
     data class Sort(private val sort: Int, override val ie: Int) : Expression() {
         context(env: Environment)
         val level get() = env.levels[sort] ?: error("Level $sort not found")
+
+        context(env: Environment)
+        override fun toStringDetailed(): String {
+            return "Sort(level=${level.toStringDetailed()}, ie=$ie)"
+        }
     }
 
     @Serializable
@@ -191,6 +205,13 @@ sealed class Expression : ExportType {
 
         context(env: Environment)
         val bodyExpr get() = env.expressions[body] ?: error("Expression $body not found")
+
+        context(env: Environment)
+        override fun toStringDetailed(): String {
+            return "Lam(\n name=$name,\n type=${typeExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n body=${bodyExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n binderInfo=$binderInfo, ie=$ie)"
+        }
+
+        fun copyAsForAllE(): ForallE = ForallE(_name, type, body, binderInfo, ie)
     }
 
     @Serializable
@@ -211,6 +232,11 @@ sealed class Expression : ExportType {
 
         context(env: Environment)
         val bodyExpr get() = env.expressions[body] ?: error("Expression $body not found")
+
+        context(env: Environment)
+        override fun toStringDetailed(): String {
+            return "ForallE(\n name=$name,\n type=${typeExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n body=${bodyExpr.toStringDetailed().lines().joinToString("\n") { " $it"}}, binderInfo=$binderInfo, ie=$ie)"
+        }
     }
 
     @Serializable
@@ -269,6 +295,9 @@ sealed class Expression : ExportType {
     override fun registerInto(env: Environment) {
         env.expressions[this.ie] = this
     }
+
+    context(env: Environment)
+    open fun toStringDetailed(): String = this.toString() // why do I get an error without the `this`
 }
 
 sealed class Declaration : ExportType {
