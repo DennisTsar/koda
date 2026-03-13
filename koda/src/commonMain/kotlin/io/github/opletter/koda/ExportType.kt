@@ -146,10 +146,7 @@ sealed class Expression : ExportType {
 
     @Serializable
     @SerialName("bvar")
-    data class Bvar(private val bvar: Int, override val ie: Int) : Expression() {
-        context(env: Environment)
-        val expr get() = env.expressions[bvar] ?: error("Expression $bvar not found")
-    }
+    data class Bvar(val bvar: Int, override val ie: Int) : Expression()
 
     @Serializable
     @SerialName("sort")
