@@ -69,7 +69,8 @@ fun _typeCheck(rawData: List<ExportType>) {
                 // (1): "the declaration is not already declared in the environment"
                 data.registerInto(env)
                 // (2): "has no duplicate universe parameters"
-                // TODO
+                // not the most efficient check but probably doesn't matter?
+                check(data.levelParams.toSet().size == data.levelParams.size) { "Duplicate universe parameters in $data" }
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
                 // TODO
                 val typeExpr = data.typeExpr.reduce().expr
