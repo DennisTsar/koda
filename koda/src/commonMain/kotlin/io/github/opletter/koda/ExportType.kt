@@ -142,7 +142,7 @@ sealed class Level : ExportType {
 }
 
 sealed class Expression : ExportType {
-    protected abstract val ie: Int // AKA "expression index"
+    abstract val ie: Int // AKA "expression index"
 
     @Serializable
     @SerialName("bvar")
