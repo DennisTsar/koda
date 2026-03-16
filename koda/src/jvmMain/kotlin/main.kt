@@ -7,7 +7,7 @@ import kotlin.io.path.name
 import kotlin.io.path.useLines
 
 fun main() {
-    (1..21).forEach {
+    (1..22).forEach {
         runTutorial(it)
     }
 }

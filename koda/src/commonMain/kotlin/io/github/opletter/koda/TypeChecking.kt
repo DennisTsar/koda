@@ -71,9 +71,9 @@ fun _typeCheck(rawData: List<ExportType>) {
                 check(data.levelParams.toSet().size == data.levelParams.size) { "Duplicate universe parameters in $data" }
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
                 // TODO
-                val typeExpr = data.typeExpr.reduce().expr
+                val typeExpr = data.typeExpr.reduce()
 //                val inferredType = typeExpr.inferType()
-                println("found type: ${typeExpr.toStringDetailed()}")
+                println("found type: ${typeExpr.expr.toStringDetailed()}")
 
                 // TODO: this is probably wrong, need to do inference
 //                check(typeExpr is Expression.Sort) { "Expected Sort type, got ${typeExpr::class.simpleName}" }
@@ -83,10 +83,13 @@ fun _typeCheck(rawData: List<ExportType>) {
                     is Declaration.Def -> {
                         val value = data.valueExpr
                         println("found value: ${value.toStringDetailed()}")
-                        val inferredValueType = value.inferType().expr
-                        println("inferred type of value: ${inferredValueType.toStringDetailed()}")
-                        check(data.typeExpr.isDefEq(inferredValueType)) { "value not defeq to type for $data" }
-                        env.declTypeByName[data.name] = data.typeExpr
+                        val inferredValueType = value.inferType()
+                        println("inferred type of value: ${inferredValueType.expr.toStringDetailed()}")
+                        // AI says this call doesn't need substLeft and substRight, but I'll leave it for now
+                        check(typeExpr.expr.isDefEq(inferredValueType.expr, typeExpr.env, inferredValueType.env)) {
+                            "value not defeq to type for $data"
+                        }
+                        env.declTypeByName[data.name] = typeExpr.expr
                     }
 
                     is Declaration.Opaque -> TODO()
@@ -104,22 +107,65 @@ fun _typeCheck(rawData: List<ExportType>) {
 }
 
 context(env: Environment)
-fun Expression.isDefEq(other: Expression): Boolean {
+fun Expression.isDefEq(
+    other: Expression,
+    substLeft: List<Expression> = emptyList(),
+    substRight: List<Expression> = emptyList(),
+): Boolean {
+    val lhsWhnf = this.reduce(substLeft)
+    val rhsWhnf = other.reduce(substRight)
+    return lhsWhnf.expr.isDefEqWhnf(rhsWhnf.expr, lhsWhnf.env, rhsWhnf.env)
+}
+
+context(env: Environment)
+private fun Expression.isDefEqWhnf(
+    other: Expression,
+    substLeft: List<Expression>,
+    substRight: List<Expression>,
+): Boolean {
     return when (this) {
-        is Expression.App if other is Expression.App -> fnExpr.isDefEq(other.fnExpr) && argExpr.isDefEq(other.argExpr)
-        is Expression.App -> this.reduce().expr.also { println("reduced to: ${it.toStringDetailed()}") }.isDefEq(other)
-        is Expression.Bvar if other is Expression.Bvar -> this.bvar == other.bvar
-        is Expression.Bvar -> TODO()//false
+        is Expression.App if other is Expression.App ->
+            this.fnExpr.isDefEq(other.fnExpr, substLeft, substRight) &&
+                    this.argExpr.isDefEq(other.argExpr, substLeft, substRight)
+
+        is Expression.Bvar if other is Expression.Bvar -> {
+            val lhsResolved = resolveBvar(this, substLeft)
+            val rhsResolved = resolveBvar(other, substRight)
+            when {
+                lhsResolved == null && rhsResolved == null -> this.bvar == other.bvar
+                lhsResolved != null && rhsResolved != null -> lhsResolved.isDefEq(rhsResolved)
+                lhsResolved != null -> lhsResolved.isDefEq(other, emptyList(), substRight)
+                else -> this.isDefEq(rhsResolved!!, substLeft, emptyList())
+            }
+        }
+
+        is Expression.Bvar -> {
+            val lhsResolved = resolveBvar(this, substLeft) ?: return false
+            lhsResolved.isDefEq(other, emptyList(), substRight)
+        }
+
+        else if other is Expression.Bvar -> {
+            val rhsResolved = resolveBvar(other, substRight) ?: return false
+            this.isDefEq(rhsResolved, substLeft, emptyList())
+        }
+
         is Expression.Const if other is Expression.Const ->
-            this.name == other.name && this.levels.size == other.levels.size
-                    && this.levels.zip(other.levels).all { (l1, l2) -> l1.isEqual(l2) }
+            this.name == other.name &&
+                    this.levels.size == other.levels.size &&
+                    this.levels.zip(other.levels).all { (l1, l2) -> l1.isEqual(l2) }
 
         is Expression.ForallE if other is Expression.ForallE -> {
-            typeExpr.isDefEq(other.typeExpr) && withOpenBinder(typeExpr) { bodyExpr.isDefEq(other.bodyExpr) }
+            this.typeExpr.isDefEq(other.typeExpr, substLeft, substRight) &&
+                    withOpenBinder(this.typeExpr) {
+                        this.bodyExpr.isDefEq(other.bodyExpr, substLeft, substRight)
+                    }
         }
 
         is Expression.Lam if other is Expression.Lam -> {
-            typeExpr.isDefEq(other.typeExpr) && withOpenBinder(typeExpr) { bodyExpr.isDefEq(other.bodyExpr) }
+            this.typeExpr.isDefEq(other.typeExpr, substLeft, substRight) &&
+                    withOpenBinder(this.typeExpr) {
+                        this.bodyExpr.isDefEq(other.bodyExpr, substLeft, substRight)
+                    }
         }
 
         is Expression.LetE if other is Expression.LetE -> TODO()
@@ -129,6 +175,56 @@ fun Expression.isDefEq(other: Expression): Boolean {
         is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
         is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
         else -> TODO("DefEq not implemented for ${this::class.simpleName} and ${other::class.simpleName}")
+    }
+}
+
+private fun resolveBvar(bvar: Expression.Bvar, subst: List<Expression>): Expression? {
+    return subst.getOrNull(bvar.bvar)
+}
+
+context(env: Environment)
+fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
+    return when (this) {
+        is Expression.Bvar -> when {
+            this.bvar < depth -> this
+            this.bvar - depth < subst.size -> subst[this.bvar - depth].lift(depth)
+            subst.isEmpty() -> this
+            else -> {
+                val newExpr = env.addCustomExpr {
+                    this.copy(bvar = this.bvar - subst.size, ie = it)
+                }
+                env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+            }
+        }
+
+        is Expression.App -> {
+            val newFn = this.fnExpr.applySubst(subst, depth)
+            val newArg = this.argExpr.applySubst(subst, depth)
+            val newExpr = env.addCustomExpr {
+                this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
+            }
+            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+        }
+
+        is Expression.ForallE -> {
+            val newType = this.typeExpr.applySubst(subst, depth)
+            val newBody = this.bodyExpr.applySubst(subst, depth + 1)
+            val newExpr = env.addCustomExpr {
+                this.copy(type = newType.ie, body = newBody.ie, ie = it)
+            }
+            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+        }
+
+        is Expression.Lam -> {
+            val newType = this.typeExpr.applySubst(subst, depth)
+            val newBody = this.bodyExpr.applySubst(subst, depth + 1)
+            val newExpr = env.addCustomExpr {
+                this.copy(type = newType.ie, body = newBody.ie, ie = it)
+            }
+            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+        }
+
+        else -> this
     }
 }
 
@@ -214,16 +310,18 @@ fun Expression.inferType(subst: List<Expression> = emptyList()): Whnf {
         }
 
         is Expression.Bvar -> {
-            if (this.bvar < env.openBinders.size) {
-                // live binder: stored type is in the outer context, so lift it
-                // back under the current number of live binders.
-                Whnf(env.openBinders[this.bvar].lift(this.bvar + 1), subst)
+            if (this.bvar < subst.size) {
+                // innermost consumed binder
+                subst[this.bvar].inferType()
             } else {
-                // delayed substitution from consumed binders
-                val j = this.bvar - env.openBinders.size
-                val arg = subst.getOrNull(j)
-                    ?: error("Unbound bvar ${this.bvar} in ${this.toStringDetailed()}")
-                arg.inferType()
+                val liveIndex = this.bvar - subst.size
+                if (liveIndex < env.openBinders.size) {
+                    // live binder: its stored type was recorded outside this binder,
+                    // so lift it back under the current live-binder depth.
+                    Whnf(env.openBinders[liveIndex].lift(liveIndex + 1), subst)
+                } else {
+                    error("Unbound bvar ${this.bvar} in ${this.toStringDetailed()}")
+                }
             }
         }
 
@@ -251,14 +349,15 @@ fun Expression.inferType(subst: List<Expression> = emptyList()): Whnf {
 
         is Expression.Lam -> {
             val bodyTyWhnf = withOpenBinder(this.typeExpr) { this.bodyExpr.inferType(subst) }
+            val reifiedBodyTy = bodyTyWhnf.expr.applySubst(bodyTyWhnf.env)
 
             val newExpr = env.addCustomExpr {
                 this.copyAsForAllE().copy(
-                    body = bodyTyWhnf.expr.ie,
+                    body = reifiedBodyTy.ie,
                     ie = it
                 )
             }
-            Whnf(env.expressions[newExpr] ?: error("Expression not found for $newExpr"), bodyTyWhnf.env)
+            Whnf(env.expressions[newExpr] ?: error("Expression not found for $newExpr"), emptyList())
         }
 
         is Expression.Sort -> {
@@ -297,8 +396,20 @@ fun Expression.reduce(subst: List<Expression> = emptyList()): Whnf {
         is Expression.Lam -> Whnf(this, subst)
 
         is Expression.Bvar -> {
-            val arg = subst.getOrNull(this.bvar)
-            if (arg != null) Whnf(arg, emptyList()) else Whnf(this, subst)
+            if (this.bvar < subst.size) {
+                // consumed binder gets substituted directly
+                Whnf(subst[this.bvar], emptyList())
+            } else {
+                val newIndex = this.bvar - subst.size
+                if (newIndex == this.bvar) {
+                    Whnf(this, emptyList())
+                } else {
+                    val newExpr = env.addCustomExpr {
+                        this.copy(bvar = newIndex, ie = it)
+                    }
+                    Whnf(env.expressions[newExpr] ?: error("Expression not found for $newExpr"), emptyList())
+                }
+            }
         }
 
         is Expression.Const -> {
