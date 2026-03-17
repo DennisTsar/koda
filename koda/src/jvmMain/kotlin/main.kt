@@ -25,7 +25,7 @@ fun runTutorial(level: Int) {
     var success = true
     try {
         typeCheck(parsedData)
-    } catch (e: Throwable) { // TODO: use `Exception`; only using Throwable currently to catch NotImplementedError for TODOs
+    } catch (e: Exception) {
         success = false
         if (shouldSucceed) {
             println("e: should have succeeded, but failed for $level")
