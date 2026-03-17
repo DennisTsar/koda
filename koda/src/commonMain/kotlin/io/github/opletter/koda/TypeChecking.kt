@@ -310,7 +310,8 @@ context(env: Environment)
 fun Expression.inferType(subst: List<Expression> = emptyList()): Whnf {
     return when (this) {
         is Expression.App -> {
-            val fnTyWhnf = this.fnExpr.inferType(subst)
+            val fnTy0 = this.fnExpr.inferType(subst)
+            val fnTyWhnf = fnTy0.expr.reduce(fnTy0.env)
             when (val fnTy = fnTyWhnf.expr) {
                 is Expression.ForallE -> {
                     // dependent instantiation, delayed via env
@@ -339,7 +340,7 @@ fun Expression.inferType(subst: List<Expression> = emptyList()): Whnf {
 
         is Expression.Const -> {
             val ty = env.declTypeByName[this.name] ?: error("Declaration not found for ${this.name}")
-            Whnf(ty, subst)
+            Whnf(ty, emptyList())
         }
 
         is Expression.ForallE -> {
@@ -426,7 +427,7 @@ fun Expression.reduce(subst: List<Expression> = emptyList()): Whnf {
 
         is Expression.Const -> {
             when (val d = decl) {
-                is Declaration.Def -> Whnf(d.valueExpr, subst)
+                is Declaration.Def -> d.valueExpr.reduce(emptyList())
                 else -> TODO()//Whnf(this, subst)
             }
         }
