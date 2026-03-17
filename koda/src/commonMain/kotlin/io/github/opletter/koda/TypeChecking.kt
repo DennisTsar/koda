@@ -68,18 +68,13 @@ fun _typeCheck(rawData: List<ExportType>) {
                 // not the most efficient check but probably doesn't matter?
                 check(data.levelParams.toSet().size == data.levelParams.size) { "Duplicate universe parameters in $data" }
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
-                val typeWhnf = data.typeExpr.reduce()
-                println("found type: ${typeWhnf.expr.toStringDetailed()}")
-                val declaredTyTy = data.typeExpr.inferType()
-                val declaredTyTyWhnf = declaredTyTy.expr.reduce(declaredTyTy.levelSubst)
-                check(declaredTyTyWhnf.expr is Expression.Sort) {
-                    "The type of a declaration has to be a type, not some other expression"
-                }
+                println("found type: ${data.typeExpr.toStringDetailed()}")
+                val declaredTypeSortLevel = inferSortOf(data.typeExpr)
 
                 when (data) {
                     is Declaration.Axiom -> TODO()
                     is Declaration.Def -> {
-                        check(typeCheckDeclaration(data.valueExpr, typeWhnf)) {
+                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
                             "value not defeq to type for $data"
                         }
                     }
@@ -87,18 +82,16 @@ fun _typeCheck(rawData: List<ExportType>) {
                     is Declaration.Opaque -> TODO()
                     is Declaration.Quot -> TODO()
                     is Declaration.Thm -> {
-                        check(typeCheckDeclaration(data.valueExpr, typeWhnf)) {
+                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
                             "value not defeq to type for $data"
                         }
-                        val theoremTySort = declaredTyTyWhnf.expr as Expression.Sort
-                        val theoremTyLevel = theoremTySort.level.instantiateLevelParams(declaredTyTyWhnf.levelSubst)
-                        check(theoremTyLevel.isLessOrEqual(Level.Zero)) {
-                            "The type of a theorem has to be a proposition: found ${declaredTyTyWhnf.expr.toStringDetailed()}"
+                        check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
+                            "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
                         }
                     }
                 }
 
-                env.declTypeByName[data.name] = typeWhnf.expr
+                env.declTypeByName[data.name] = data.typeExpr
 
                 // (4): "the declaration's type has no free variables"
                 // TODO
@@ -110,13 +103,12 @@ fun _typeCheck(rawData: List<ExportType>) {
 }
 
 context(env: Environment)
-fun typeCheckDeclaration(value: Expression, typeWhnf: Whnf) : Boolean {
+fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     println("found value: ${value.toStringDetailed()}")
     val inferredValueType = value.inferType()
     println("inferred type of value: ${inferredValueType.expr.toStringDetailed()}")
-    val expectedType = typeWhnf.expr
     val actualType = inferredValueType.expr
-    return expectedType.isDefEq(actualType, typeWhnf.levelSubst, inferredValueType.levelSubst)
+    return expectedType.isDefEq(actualType, levelSubstRight = inferredValueType.levelSubst)
 }
 
 context(env: Environment)
@@ -524,13 +516,22 @@ fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
 }
 
 context(env: Environment)
+private inline fun <T> withTemporaryLevel(levelIndex: Int, tempLevel: Level, block: () -> T): T {
+    val previousLevel = env.levels[levelIndex] ?: error("Level $levelIndex not found")
+    env.levels[levelIndex] = tempLevel
+    return try {
+        block()
+    } finally {
+        env.levels[levelIndex] = previousLevel
+    }
+}
+
+context(env: Environment)
 fun compareByCases(paramLevel: Level.Param, compare: () -> Boolean): Boolean {
-    env.levels[paramLevel.il] = Level.Zero
-    val caseZero = compare().also { env.levels[paramLevel.il] = paramLevel }
+    val caseZero = withTemporaryLevel(paramLevel.il, Level.Zero) { compare() }
     val tempParamLevel = env.addCustomLevel { paramLevel.copy(il = it) }
     val succLevel = Level.Succ(tempParamLevel, paramLevel.il)
-    env.levels[paramLevel.il] = succLevel
-    val caseSucc = compare().also { env.levels[paramLevel.il] = paramLevel }
+    val caseSucc = withTemporaryLevel(paramLevel.il, succLevel) { compare() }
     return caseZero && caseSucc
 }
 
