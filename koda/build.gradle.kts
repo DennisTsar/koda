@@ -25,6 +25,7 @@ kotlin {
         freeCompilerArgs.addAll(
             "-Xreturn-value-checker=full",
             "-Xcontext-parameters",
+            "-Xname-based-destructuring=complete",
 //            "-Xexplicit-context-arguments"
         )
     }
