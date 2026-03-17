@@ -70,32 +70,35 @@ fun _typeCheck(rawData: List<ExportType>) {
                 // not the most efficient check but probably doesn't matter?
                 check(data.levelParams.toSet().size == data.levelParams.size) { "Duplicate universe parameters in $data" }
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
-                // TODO
-                val typeExpr = data.typeExpr.reduce()
-//                val inferredType = typeExpr.inferType()
-                println("found type: ${typeExpr.expr.toStringDetailed()}")
-
-                // TODO: this is probably wrong, need to do inference
-//                check(typeExpr is Expression.Sort) { "Expected Sort type, got ${typeExpr::class.simpleName}" }
+                val typeWhnf = data.typeExpr.reduce()
+                println("found type: ${typeWhnf.expr.toStringDetailed()}")
+                val declaredTyTy = data.typeExpr.inferType()
+                val declaredTyTyWhnf = declaredTyTy.expr.reduce(declaredTyTy.env).expr
+                check(declaredTyTyWhnf is Expression.Sort) {
+                    "The type of a declaration has to be a type, not some other expression"
+                }
 
                 when (data) {
                     is Declaration.Axiom -> TODO()
                     is Declaration.Def -> {
-                        val value = data.valueExpr
-                        println("found value: ${value.toStringDetailed()}")
-                        val inferredValueType = value.inferType()
-                        println("inferred type of value: ${inferredValueType.expr.toStringDetailed()}")
-                        // AI says this call doesn't need substLeft and substRight, but I'll leave it for now
-                        check(typeExpr.expr.isDefEq(inferredValueType.expr, typeExpr.env, inferredValueType.env)) {
+                        check(typeCheckDeclaration(data.valueExpr, typeWhnf)) {
                             "value not defeq to type for $data"
                         }
-                        env.declTypeByName[data.name] = typeExpr.expr
                     }
 
                     is Declaration.Opaque -> TODO()
                     is Declaration.Quot -> TODO()
-                    is Declaration.Thm -> TODO()
+                    is Declaration.Thm -> {
+                        check(typeCheckDeclaration(data.valueExpr, typeWhnf)) {
+                            "value not defeq to type for $data"
+                        }
+                        check(declaredTyTyWhnf.level.isLessOrEqual(Level.Zero)) {
+                            "The type of a theorem has to be a proposition: found ${declaredTyTyWhnf.toStringDetailed()}"
+                        }
+                    }
                 }
+
+                env.declTypeByName[data.name] = typeWhnf.expr
 
                 // (4): "the declaration's type has no free variables"
                 // TODO
@@ -104,6 +107,15 @@ fun _typeCheck(rawData: List<ExportType>) {
             else -> {}
         }
     }
+}
+
+context(env: Environment)
+fun typeCheckDeclaration(value: Expression, typeWhnf: Whnf) : Boolean {
+    println("found value: ${value.toStringDetailed()}")
+    val inferredValueType = value.inferType()
+    println("inferred type of value: ${inferredValueType.expr.toStringDetailed()}")
+    // AI says this call doesn't need substLeft and substRight, but I'll leave it for now
+    return typeWhnf.expr.isDefEq(inferredValueType.expr, typeWhnf.env, inferredValueType.env)
 }
 
 context(env: Environment)
