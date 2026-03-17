@@ -155,16 +155,12 @@ private fun Expression.isDefEqWhnf(
 
         is Expression.ForallE if other is Expression.ForallE -> {
             this.typeExpr.isDefEq(other.typeExpr, levelSubstLeft, levelSubstRight) &&
-                    withOpenBinder(this.typeExpr) {
-                        this.bodyExpr.isDefEq(other.bodyExpr, levelSubstLeft, levelSubstRight)
-                    }
+                    this.bodyExpr.isDefEq(other.bodyExpr, levelSubstLeft, levelSubstRight)
         }
 
         is Expression.Lam if other is Expression.Lam -> {
             this.typeExpr.isDefEq(other.typeExpr, levelSubstLeft, levelSubstRight) &&
-                    withOpenBinder(this.typeExpr) {
-                        this.bodyExpr.isDefEq(other.bodyExpr, levelSubstLeft, levelSubstRight)
-                    }
+                    this.bodyExpr.isDefEq(other.bodyExpr, levelSubstLeft, levelSubstRight)
         }
 
         is Expression.LetE if other is Expression.LetE -> TODO()
@@ -240,23 +236,16 @@ private fun composeLevelSubst(outer: Map<Int, Level>, inner: Map<Int, Level>): M
 }
 
 context(env: Environment)
-fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
+private fun Expression.rewriteBinders(
+    depth: Int = 0,
+    rewriteBvar: (Expression.Bvar, Int) -> Expression,
+): Expression {
     return when (this) {
-        is Expression.Bvar -> when {
-            this.bvar < depth -> this
-            this.bvar - depth < subst.size -> subst[this.bvar - depth].lift(depth)
-            subst.isEmpty() -> this
-            else -> {
-                val newExpr = env.addCustomExpr {
-                    this.copy(bvar = this.bvar - subst.size, ie = it)
-                }
-                env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-            }
-        }
+        is Expression.Bvar -> rewriteBvar(this, depth)
 
         is Expression.App -> {
-            val newFn = this.fnExpr.applySubst(subst, depth)
-            val newArg = this.argExpr.applySubst(subst, depth)
+            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar)
+            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar)
             val newExpr = env.addCustomExpr {
                 this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
             }
@@ -264,8 +253,8 @@ fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
         }
 
         is Expression.ForallE -> {
-            val newType = this.typeExpr.applySubst(subst, depth)
-            val newBody = this.bodyExpr.applySubst(subst, depth + 1)
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
             val newExpr = env.addCustomExpr {
                 this.copy(type = newType.ie, body = newBody.ie, ie = it)
             }
@@ -273,8 +262,8 @@ fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
         }
 
         is Expression.Lam -> {
-            val newType = this.typeExpr.applySubst(subst, depth)
-            val newBody = this.bodyExpr.applySubst(subst, depth + 1)
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
             val newExpr = env.addCustomExpr {
                 this.copy(type = newType.ie, body = newBody.ie, ie = it)
             }
@@ -282,6 +271,26 @@ fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
         }
 
         else -> this
+    }
+}
+
+context(env: Environment)
+fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
+    if (subst.isEmpty()) return this
+
+    return this.rewriteBinders(depth) { bvarExpr, currentDepth ->
+        when {
+            bvarExpr.bvar < currentDepth -> bvarExpr
+            bvarExpr.bvar - currentDepth < subst.size ->
+                subst[bvarExpr.bvar - currentDepth].lift(currentDepth)
+
+            else -> {
+                val newExpr = env.addCustomExpr {
+                    bvarExpr.copy(bvar = bvarExpr.bvar - subst.size, ie = it)
+                }
+                env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+            }
+        }
     }
 }
 
@@ -316,46 +325,18 @@ private fun inferSortOf(
 
 context(env: Environment)
 fun Expression.lift(amount: Int = 1, cutoff: Int = 0): Expression {
-    return when (this) {
-        is Expression.Bvar -> {
-            if (this.bvar >= cutoff) {
-                val newExpr = env.addCustomExpr {
-                    this.copy(bvar = this.bvar + amount, ie = it)
-                }
-                env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-            } else {
-                this
-            }
-        }
+    if (amount == 0) return this
 
-        is Expression.App -> {
-            val newFn = this.fnExpr.lift(amount, cutoff)
-            val newArg = this.argExpr.lift(amount, cutoff)
+    return this.rewriteBinders { bvarExpr, depth ->
+        val effectiveCutoff = cutoff + depth
+        if (bvarExpr.bvar >= effectiveCutoff) {
             val newExpr = env.addCustomExpr {
-                this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
+                bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it)
             }
             env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+        } else {
+            bvarExpr
         }
-
-        is Expression.ForallE -> {
-            val newType = this.typeExpr.lift(amount, cutoff)
-            val newBody = this.bodyExpr.lift(amount, cutoff + 1)
-            val newExpr = env.addCustomExpr {
-                this.copy(type = newType.ie, body = newBody.ie, ie = it)
-            }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-        }
-
-        is Expression.Lam -> {
-            val newType = this.typeExpr.lift(amount, cutoff)
-            val newBody = this.bodyExpr.lift(amount, cutoff + 1)
-            val newExpr = env.addCustomExpr {
-                this.copy(type = newType.ie, body = newBody.ie, ie = it)
-            }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-        }
-
-        else -> this
     }
 }
 
