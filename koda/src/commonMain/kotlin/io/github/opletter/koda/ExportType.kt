@@ -83,7 +83,7 @@ sealed class Name : ExportType {
 }
 
 sealed class Level : ExportType {
-    protected abstract val il: Int // AKA "level index"
+    abstract val il: Int // AKA "level index"
 
     data object Zero : Level() {
         override val il: Int
@@ -183,6 +183,11 @@ sealed class Expression : ExportType {
 
         context(env: Environment)
         val argExpr get() = env.expressions[arg] ?: error("Expression $arg not found")
+
+        context(env: Environment)
+        override fun toStringDetailed(): String {
+            return "App(\n fn=${fnExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n arg=${argExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n ie=$ie)"
+        }
     }
 
     @Serializable

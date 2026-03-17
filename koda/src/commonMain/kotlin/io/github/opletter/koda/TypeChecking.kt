@@ -432,38 +432,6 @@ fun Expression.reduce(subst: List<Expression> = emptyList()): Whnf {
     }
 }
 
-
-//context(env: Environment)
-//fun Level.isEqual(other: Level): Boolean {
-//    return when (this) {
-//        is Level.Zero -> other is Level.Zero
-//        is Level.Succ if other is Level.Succ -> this.level.isEqual(other.level)
-//        is Level.Succ if other is Level.Imax -> {
-//            val rightIsZero = other.isEqual(Level.Zero)
-//            false
-//        }
-//        is Level.Max -> TODO()
-//        is Level.Imax -> TODO()
-//        else -> TODO("isEqual not implemented for ${this::class.simpleName} ${other::class.simpleName}")
-//    }
-//}
-//
-//
-//context(env: Environment)
-//fun Level.isLessOrEqual(other: Level): Boolean {
-//    return when (this) {
-//        is Level.Zero -> other is Level.Zero
-//        is Level.Succ if other is Level.Succ -> this.level.isEqual(other.level)
-//        is Level.Succ if other is Level.Imax -> {
-//            val rightIsZero = other.isEqual(Level.Zero)
-//            false
-//        }
-//        is Level.Max -> TODO()
-//        is Level.Imax -> TODO()
-//        else -> TODO("isEqual not implemented for ${this::class.simpleName} ${other::class.simpleName}")
-//    }
-//}
-
 context(env: Environment)
 fun Level.isEqual(other: Level): Boolean = this.isLessOrEqual(other) && other.isLessOrEqual(this)
 
@@ -471,10 +439,6 @@ context(env: Environment)
 fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
     is Level.Zero if balance >= 0 -> true
     is Level.Zero if other is Level.Imax -> true
-    // I added this next one
-    is Level.Imax if this.right.isEqual(Level.Zero) -> Level.Zero.isLessOrEqual(other, balance)
-    // I added this next one
-//    is Level.Succ if other is Level.Zero -> false
     else if other is Level.Zero && balance < 0 -> false
     is Level.Param if other is Level.Param -> this.name == other.name && balance >= 0
     is Level.Param if other is Level.Zero -> false
@@ -483,32 +447,66 @@ fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
     else if other is Level.Succ -> this.isLessOrEqual(other.level, balance + 1)
     is Level.Max -> this.left.isLessOrEqual(other, balance) && this.right.isLessOrEqual(other, balance)
 //    is Level.Param, is Level.Zero if other is Level.Max -> // illegal syntax
-    is Level.Param if other is Level.Max -> this.isLessOrEqual(other.left, balance) || this.isLessOrEqual(other.right, balance)
-    is Level.Zero if other is Level.Max -> this.isLessOrEqual(other.left, balance) || this.isLessOrEqual(other.right, balance)
-    is Level.Imax if this.right is Level.Param -> TODO()
-    else if other is Level.Imax && other.right is Level.Param -> TODO()
-    is Level.Imax if other is Level.Imax -> balance >= 0 && this.left.isEqual(other.left) && this.right.isEqual(other.right)
-    is Level.Imax if this.right is Level.Imax -> TODO()
-    is Level.Imax if this.right is Level.Max -> TODO()
-    else if other is Level.Imax && other.right is Level.Imax -> TODO()
-    else if other is Level.Imax && other.right is Level.Max -> TODO()
-    // TODO: is this case not handled in the sample implementation or? TODO: balance?
-    is Level.Imax -> {
-        if (this.left.isLessOrEqual(Level.Zero, balance))
-            this.left.isLessOrEqual(other, balance)
-        else {
-//            TODO()
-            val custom = env.addCustomLevel { Level.Max(listOf(env.findLevelFor(this.left), env.findLevelFor(this.right)), it) }
-            env.levels[custom]!!.isLessOrEqual(other, balance)
-        }
+    is Level.Param if other is Level.Max -> this.isLessOrEqual(other.left, balance)
+            || this.isLessOrEqual(other.right, balance)
+
+    is Level.Zero if other is Level.Max -> this.isLessOrEqual(other.left, balance)
+            || this.isLessOrEqual(other.right, balance)
+
+    is Level.Imax if this.right is Level.Param -> {
+        compareByCases(this.right as Level.Param) { this.isLessOrEqual(other, balance) }
     }
-//    is Level.Imax -> error("unexpected unhandled case: $this $other")
-    Level.Zero -> error("unexpected unhandled case: $this $other $balance")
-    is Level.Param -> error("unexpected unhandled case: $this $other $balance")
+
+    else if other is Level.Imax && other.right is Level.Param -> {
+        compareByCases(other.right as Level.Param) { this.isLessOrEqual(other, balance) }
+    }
+
+    is Level.Imax if other is Level.Imax -> balance >= 0 && this.left.isEqual(other.left) && this.right.isEqual(other.right)
+    is Level.Imax if this.right is Level.Imax -> {
+        val customImax = env.addCustomLevel {
+            Level.Imax(listOf(this.left.il, (this.right as Level.Imax).right.il), it)
+        }
+        val customMax = env.addCustomLevel { Level.Max(listOf(customImax, this.right.il), it) }
+        env.levels[customMax]!!.isLessOrEqual(other, balance)
+    }
+
+    is Level.Imax if this.right is Level.Max -> TODO()
+    else if other is Level.Imax && other.right is Level.Imax -> {
+        val customImax = env.addCustomLevel {
+            Level.Imax(listOf(other.left.il, (other.right as Level.Imax).right.il), it)
+        }
+        val customMax = env.addCustomLevel { Level.Max(listOf(customImax, other.right.il), it) }
+        this.isLessOrEqual(env.levels[customMax]!!, balance)
+    }
+
+    else if other is Level.Imax && other.right is Level.Max -> TODO()
+    else if (this != this.simplify() || other != other.simplify()) ->
+        this.simplify().isLessOrEqual(other.simplify(), balance)
+
+    Level.Zero, is Level.Imax, is Level.Param ->
+        error("unexpected unhandled case: ${this.toStringDetailed()} ${other.toStringDetailed()} $balance")
 }
 
-fun Environment.findLevelFor(i: Level): Int {
-    return buildMap { putAll(this@findLevelFor.levels) }.entries.find {
-        it.value.isEqual(i)
-    }?.key ?: error("Level $i not found")
+context(env: Environment)
+fun compareByCases(paramLevel: Level.Param, compare: () -> Boolean): Boolean {
+    env.levels[paramLevel.il] = Level.Zero
+    val caseZero = compare().also { env.levels[paramLevel.il] = paramLevel }
+    val tempParamLevel = env.addCustomLevel { paramLevel.copy(il = it) }
+    val succLevel = Level.Succ(tempParamLevel, paramLevel.il)
+    env.levels[paramLevel.il] = succLevel
+    val caseSucc = compare().also { env.levels[paramLevel.il] = paramLevel }
+    return caseZero && caseSucc
+}
+
+context(env: Environment)
+fun Level.simplify(): Level = when (this) {
+    is Level.Imax if this.right.isEqual(Level.Zero) -> Level.Zero
+    is Level.Imax if this.right is Level.Succ -> {
+        val maxLevel = env.addCustomLevel {
+            Level.Max(listOf(this.left.il, this.right.il), it)
+        }
+        env.levels[maxLevel]!!
+    }
+
+    else -> this
 }
