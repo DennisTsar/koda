@@ -152,7 +152,7 @@ private fun Expression.isDefEqWhnf(
         is Expression.Const if other is Expression.Const ->
             this.name == other.name &&
                     this.levels.size == other.levels.size &&
-                    this.levels.zip(other.levels).all { (l1, l2) -> l1.isEqual(l2) }
+                    this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) }
 
         is Expression.ForallE if other is Expression.ForallE -> {
             this.typeExpr.isDefEq(other.typeExpr, substLeft, substRight) &&
