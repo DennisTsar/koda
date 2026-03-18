@@ -69,7 +69,7 @@ fun _typeCheck(rawData: List<ExportType>) {
                 check(data.levelParams.toSet().size == data.levelParams.size) { "Duplicate universe parameters in $data" }
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
                 println("found type: ${data.typeExpr.toStringDetailed()}")
-                val declaredTypeSortLevel = inferSortOf(data.typeExpr)
+                val declaredTypeSortLevel = data.typeExpr.inferSort()
 
                 when (data) {
                     is Declaration.Axiom -> {} // no extra checks needed
@@ -290,15 +290,14 @@ data class Whnf(
 )
 
 context(env: Environment)
-private fun inferSortOf(
-    expr: Expression,
+private fun Expression.inferSort(
     levelSubst: Map<Int, Level> = emptyMap(),
     localCtx: List<Expression> = emptyList(),
 ): Level {
-    val tyWhnf = expr.inferType(levelSubst, localCtx)
+    val tyWhnf = this.inferType(levelSubst, localCtx)
     val whnfTy = tyWhnf.expr.reduce(tyWhnf.levelSubst)
     val sort = whnfTy.expr as? Expression.Sort
-        ?: error("Expected Sort type for ${expr.toStringDetailed()}, got ${whnfTy.expr.toStringDetailed()}")
+        ?: error("Expected Sort type for ${this.toStringDetailed()}, got ${whnfTy.expr.toStringDetailed()}")
     return sort.level.instantiateLevelParams(whnfTy.levelSubst)
 }
 
@@ -360,10 +359,10 @@ fun Expression.inferType(
         }
 
         is Expression.ForallE -> {
-            val left = inferSortOf(this.typeExpr, levelSubst, localCtx)
+            val left = this.typeExpr.inferSort(levelSubst, localCtx)
             println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
 
-            val right = inferSortOf(this.bodyExpr, levelSubst, listOf(this.typeExpr) + localCtx)
+            val right = this.bodyExpr.inferSort(levelSubst, listOf(this.typeExpr) + localCtx)
 
             val newLevel = env.addCustomLevel {
                 Level.Imax(listOf(left.il, right.il), it)
@@ -373,7 +372,7 @@ fun Expression.inferType(
         }
 
         is Expression.Lam -> {
-            val left = inferSortOf(this.typeExpr, levelSubst, localCtx)
+            val left = this.typeExpr.inferSort(levelSubst, localCtx)
             println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
             val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, listOf(this.typeExpr) + localCtx)
             val reifiedBodyTy = bodyTyWhnf.expr
@@ -401,7 +400,7 @@ fun Expression.inferType(
 
         is Expression.LetE -> {
             // We just need to check that the type is a sort (do we?), we don't need the exact level (potential optimization?)
-            val _ = inferSortOf(this.typeExpr, levelSubst, localCtx)
+            val _ = this.typeExpr.inferSort(levelSubst, localCtx)
 
             val valueTyWhnf = this.valueExpr.inferType(levelSubst, localCtx)
             check(this.typeExpr.isDefEq(valueTyWhnf.expr, levelSubst, valueTyWhnf.levelSubst)) {
