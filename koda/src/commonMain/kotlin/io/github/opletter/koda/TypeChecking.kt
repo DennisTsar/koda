@@ -399,7 +399,19 @@ fun Expression.inferType(
             Whnf(env.expressions[newExpr] ?: error("Expression not found for $newExpr"), levelSubst)
         }
 
-        is Expression.LetE -> TODO()
+        is Expression.LetE -> {
+            // We just need to check that the type is a sort (do we?), we don't need the exact level (potential optimization?)
+            val _ = inferSortOf(this.typeExpr, levelSubst, localCtx)
+
+            val valueTyWhnf = this.valueExpr.inferType(levelSubst, localCtx)
+            check(this.typeExpr.isDefEq(valueTyWhnf.expr, levelSubst, valueTyWhnf.levelSubst)) {
+                "Let value type mismatch in ${this.toStringDetailed()}: expected ${this.typeExpr.toStringDetailed()}, got ${valueTyWhnf.expr.toStringDetailed()}"
+            }
+
+            val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, listOf(this.typeExpr) + localCtx)
+            val instantiatedBodyTy = bodyTyWhnf.expr.applySubst(listOf(this.valueExpr))
+            Whnf(instantiatedBodyTy, bodyTyWhnf.levelSubst)
+        }
         is Expression.Mdata -> TODO()
         is Expression.NatVal -> TODO()
         is Expression.Proj -> TODO()
@@ -452,7 +464,7 @@ fun Expression.reduce(
         is Expression.ForallE -> Whnf(this, levelSubst)
         is Expression.Sort -> Whnf(this, levelSubst)
 
-        is Expression.LetE -> TODO()
+        is Expression.LetE -> this.bodyExpr.applySubst(listOf(this.valueExpr)).reduce(levelSubst)
         is Expression.Mdata -> TODO()
         is Expression.NatVal -> TODO()
         is Expression.Proj -> TODO()
