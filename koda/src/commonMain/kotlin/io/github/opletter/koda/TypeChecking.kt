@@ -142,20 +142,18 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
         is Expression.App -> {
             val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
             val fnTyWhnf = fnTy0.expr.reduce(fnTy0.levelSubst)
-            when (val fnTy = fnTyWhnf.expr) {
-                is Expression.ForallE -> {
-                    val argTy0 = this.argExpr.inferType(levelSubst, localCtx)
-                    val argTy = argTy0.expr
-                    val expectedArgTy = fnTy.typeExpr
-                    check(expectedArgTy.isDefEq(argTy, fnTyWhnf.levelSubst, argTy0.levelSubst)) {
-                        "Application argument type mismatch in ${this.toStringDetailed()}: expected ${expectedArgTy.toStringDetailed()}, got ${argTy.toStringDetailed()}"
-                    }
-                    val instantiatedBodyTy = fnTy.bodyExpr.applySubst(listOf(this.argExpr))
-                    Whnf(instantiatedBodyTy, fnTyWhnf.levelSubst)
-                }
-
-                else -> error("Expected function type for app ${this.toStringDetailed()}, got ${fnTy.toStringDetailed()}")
+            val fnTy = fnTyWhnf.expr
+            check(fnTy is Expression.ForallE) {
+                "Expected function type for app ${this.toStringDetailed()}, got ${fnTy.toStringDetailed()}"
             }
+            val argTy0 = this.argExpr.inferType(levelSubst, localCtx)
+            val argTy = argTy0.expr
+            val expectedArgTy = fnTy.typeExpr
+            check(expectedArgTy.isDefEq(argTy, fnTyWhnf.levelSubst, argTy0.levelSubst)) {
+                "Application argument type mismatch in ${this.toStringDetailed()}: expected ${expectedArgTy.toStringDetailed()}, got ${argTy.toStringDetailed()}"
+            }
+            val instantiatedBodyTy = fnTy.bodyExpr.applySubst(listOf(this.argExpr))
+            Whnf(instantiatedBodyTy, fnTyWhnf.levelSubst)
         }
 
         is Expression.Bvar -> {
@@ -255,10 +253,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
         is Expression.Const -> {
             val constLevelSubst = composeLevelSubst(levelSubst, this.levelSubstMap())
             when (val d = decl) {
-                is Declaration.Def -> {
-                    d.valueExpr.reduce(constLevelSubst)
-                }
-
+                is Declaration.Def -> d.valueExpr.reduce(constLevelSubst)
                 else -> Whnf(this, constLevelSubst)
             }
         }
@@ -403,8 +398,6 @@ private fun Expression.Const.levelSubstMap(): Map<Int, Level> {
         "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${this.levels.size}"
     }
     return params.indices.associate { index ->
-        val param = params[index] as? Level.Param
-            ?: error("Declaration level parameter is not a param for ${this.toStringDetailed()}")
-        param.il to this.levels[index]
+        params[index].il to this.levels[index]
     }
 }

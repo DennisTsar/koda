@@ -438,21 +438,20 @@ sealed class Declaration : ExportType {
         env.declarations[this._name] = this
     }
 
-    context(emv: Environment)
-    val name get() = emv.names[this._name] ?: error("Name ${this._name} not found")
+    context(env: Environment)
+    val name get() = env.names[this._name] ?: error("Name ${this._name} not found")
 
-    context(emv: Environment)
-    val levelParamsNames get() = this._levelParams.map { emv.names[it] ?: error("Level $it not found") }
+    context(env: Environment)
+    val levelParamsNames get() = this._levelParams.map { env.names[it] ?: error("Level $it not found") }
 
     // this could probably be optimized
-    context(emv: Environment)
+    context(env: Environment)
     val levelParams get() = levelParamsNames.map { name ->
-        emv.levels.entries.find { (it.value as? Level.Param)?.name == name }?.value ?: error("Level $name not found")
+        env.levels.values.filterIsInstance<Level.Param>().find { it.name == name } ?: error("Level $name not found")
     }
 
-
-    context(emv: Environment)
-    val typeExpr get() = emv.expressions[this.type] ?: error("Expression ${this.type} not found")
+    context(env: Environment)
+    val typeExpr get() = env.expressions[this.type] ?: error("Expression ${this.type} not found")
 }
 
 // TODO: add context vals + make private
