@@ -168,7 +168,7 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
 
         is Expression.Const -> {
             val ty = env.declTypeByName[this.name] ?: error("Declaration not found for ${this.name}")
-            Whnf(ty, composeLevelSubst(levelSubst, this.levelSubstMap()))
+            Whnf(ty, this.composeLevelSubst(levelSubst))
         }
 
         is Expression.ForallE -> {
@@ -251,7 +251,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
         is Expression.Lam -> Whnf(this, levelSubst)
         is Expression.Bvar -> Whnf(this, levelSubst)
         is Expression.Const -> {
-            val constLevelSubst = composeLevelSubst(levelSubst, this.levelSubstMap())
+            val constLevelSubst = this.composeLevelSubst(levelSubst)
             when (val d = decl) {
                 is Declaration.Def -> d.valueExpr.reduce(constLevelSubst)
                 else -> Whnf(this, constLevelSubst)
@@ -384,20 +384,20 @@ private fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
 }
 
 context(env: Environment)
-private fun composeLevelSubst(outer: Map<Int, Level>, inner: Map<Int, Level>): Map<Int, Level> {
+private fun Expression.Const.composeLevelSubst(outer: Map<Int, Level>): Map<Int, Level> {
+    fun Expression.Const.levelSubstMap(): Map<Int, Level> {
+        val params = this.decl.levelParams
+        check(params.size == this.levels.size) {
+            "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${this.levels.size}"
+        }
+        return params.indices.associate { index ->
+            params[index].il to this.levels[index]
+        }
+    }
+
+    val inner = this.levelSubstMap()
     if (inner.isEmpty()) return outer
     if (outer.isEmpty()) return inner
     val normalizedInner = inner.mapValues { it.value.instantiateLevelParams(outer) }
     return outer + normalizedInner
-}
-
-context(env: Environment)
-private fun Expression.Const.levelSubstMap(): Map<Int, Level> {
-    val params = this.decl.levelParams
-    check(params.size == this.levels.size) {
-        "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${this.levels.size}"
-    }
-    return params.indices.associate { index ->
-        params[index].il to this.levels[index]
-    }
 }
