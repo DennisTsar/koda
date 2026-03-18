@@ -315,6 +315,39 @@ fun Expression.applySubst(subst: List<Expression>): Expression {
 }
 
 context(env: Environment)
+private fun Expression.rewriteBinders(depth: Int = 0, rewriteBvar: (Expression.Bvar, Int) -> Expression): Expression {
+    return when (this) {
+        is Expression.Bvar -> rewriteBvar(this, depth)
+
+        is Expression.App -> {
+            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar)
+            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar)
+            env.addCustomExpr {
+                this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
+            }
+        }
+
+        is Expression.ForallE -> {
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
+            env.addCustomExpr {
+                this.copy(type = newType.ie, body = newBody.ie, ie = it)
+            }
+        }
+
+        is Expression.Lam -> {
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
+            env.addCustomExpr {
+                this.copy(type = newType.ie, body = newBody.ie, ie = it)
+            }
+        }
+
+        else -> this
+    }
+}
+
+context(env: Environment)
 private fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
     return when (this) {
         Level.Zero -> this
@@ -356,39 +389,6 @@ private fun composeLevelSubst(outer: Map<Int, Level>, inner: Map<Int, Level>): M
     if (outer.isEmpty()) return inner
     val normalizedInner = inner.mapValues { it.value.instantiateLevelParams(outer) }
     return outer + normalizedInner
-}
-
-context(env: Environment)
-private fun Expression.rewriteBinders(depth: Int = 0, rewriteBvar: (Expression.Bvar, Int) -> Expression): Expression {
-    return when (this) {
-        is Expression.Bvar -> rewriteBvar(this, depth)
-
-        is Expression.App -> {
-            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar)
-            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
-            }
-        }
-
-        is Expression.ForallE -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(type = newType.ie, body = newBody.ie, ie = it)
-            }
-        }
-
-        is Expression.Lam -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(type = newType.ie, body = newBody.ie, ie = it)
-            }
-        }
-
-        else -> this
-    }
 }
 
 context(env: Environment)
