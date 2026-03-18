@@ -72,7 +72,7 @@ fun _typeCheck(rawData: List<ExportType>) {
                 val declaredTypeSortLevel = inferSortOf(data.typeExpr)
 
                 when (data) {
-                    is Declaration.Axiom -> TODO()
+                    is Declaration.Axiom -> {} // no extra checks needed
                     is Declaration.Def -> {
                         check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
                             "value not defeq to type for $data"
