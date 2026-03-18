@@ -160,127 +160,9 @@ private fun Expression.isDefEqWhnf(
         is Expression.Sort if other is Expression.Sort ->
             this.level.instantiateLevelParams(levelSubstLeft)
                 .isEqual(other.level.instantiateLevelParams(levelSubstRight))
+
         is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
         else -> TODO("DefEq not implemented for ${this::class.simpleName} and ${other::class.simpleName}")
-    }
-}
-
-context(env: Environment)
-private fun Expression.Const.levelSubstMap(): Map<Int, Level> {
-    val params = this.decl.levelParams
-    check(params.size == this.levels.size) {
-        "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${this.levels.size}"
-    }
-    return params.indices.associate { index ->
-        val param = params[index] as? Level.Param
-            ?: error("Declaration level parameter is not a param for ${this.toStringDetailed()}")
-        param.il to this.levels[index]
-    }
-}
-
-context(env: Environment)
-private fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
-    return when (this) {
-        Level.Zero -> this
-        is Level.Param -> subst[this.il] ?: this
-        is Level.Succ -> {
-            val newLevel = this.level.instantiateLevelParams(subst)
-            if (newLevel == this.level) {
-                this
-            } else {
-                val newIndex = env.addCustomLevel { Level.Succ(newLevel.il, it) }
-                env.levels[newIndex] ?: error("Level not found for $newIndex")
-            }
-        }
-
-        is Level.Max -> {
-            val newLeft = this.left.instantiateLevelParams(subst)
-            val newRight = this.right.instantiateLevelParams(subst)
-            if (newLeft == this.left && newRight == this.right) {
-                this
-            } else {
-                val newIndex = env.addCustomLevel { Level.Max(listOf(newLeft.il, newRight.il), it) }
-                env.levels[newIndex] ?: error("Level not found for $newIndex")
-            }
-        }
-
-        is Level.Imax -> {
-            val newLeft = this.left.instantiateLevelParams(subst)
-            val newRight = this.right.instantiateLevelParams(subst)
-            if (newLeft == this.left && newRight == this.right) {
-                this
-            } else {
-                val newIndex = env.addCustomLevel { Level.Imax(listOf(newLeft.il, newRight.il), it) }
-                env.levels[newIndex] ?: error("Level not found for $newIndex")
-            }
-        }
-    }
-}
-
-context(env: Environment)
-private fun composeLevelSubst(outer: Map<Int, Level>, inner: Map<Int, Level>): Map<Int, Level> {
-    if (inner.isEmpty()) return outer
-    if (outer.isEmpty()) return inner
-    val normalizedInner = inner.mapValues { entry -> entry.value.instantiateLevelParams(outer) }
-    return outer + normalizedInner
-}
-
-context(env: Environment)
-private fun Expression.rewriteBinders(
-    depth: Int = 0,
-    rewriteBvar: (Expression.Bvar, Int) -> Expression,
-): Expression {
-    return when (this) {
-        is Expression.Bvar -> rewriteBvar(this, depth)
-
-        is Expression.App -> {
-            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar)
-            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar)
-            val newExpr = env.addCustomExpr {
-                this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
-            }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-        }
-
-        is Expression.ForallE -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            val newExpr = env.addCustomExpr {
-                this.copy(type = newType.ie, body = newBody.ie, ie = it)
-            }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-        }
-
-        is Expression.Lam -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            val newExpr = env.addCustomExpr {
-                this.copy(type = newType.ie, body = newBody.ie, ie = it)
-            }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-        }
-
-        else -> this
-    }
-}
-
-context(env: Environment)
-fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
-    if (subst.isEmpty()) return this
-
-    return this.rewriteBinders(depth) { bvarExpr, currentDepth ->
-        when {
-            bvarExpr.bvar < currentDepth -> bvarExpr
-            bvarExpr.bvar - currentDepth < subst.size ->
-                subst[bvarExpr.bvar - currentDepth].lift(currentDepth)
-
-            else -> {
-                val newExpr = env.addCustomExpr {
-                    bvarExpr.copy(bvar = bvarExpr.bvar - subst.size, ie = it)
-                }
-                env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-            }
-        }
     }
 }
 
@@ -290,39 +172,7 @@ data class Whnf(
 )
 
 context(env: Environment)
-private fun Expression.inferSort(
-    levelSubst: Map<Int, Level> = emptyMap(),
-    localCtx: List<Expression> = emptyList(),
-): Level {
-    val tyWhnf = this.inferType(levelSubst, localCtx)
-    val whnfTy = tyWhnf.expr.reduce(tyWhnf.levelSubst)
-    val sort = whnfTy.expr as? Expression.Sort
-        ?: error("Expected Sort type for ${this.toStringDetailed()}, got ${whnfTy.expr.toStringDetailed()}")
-    return sort.level.instantiateLevelParams(whnfTy.levelSubst)
-}
-
-context(env: Environment)
-fun Expression.lift(amount: Int = 1, cutoff: Int = 0): Expression {
-    if (amount == 0) return this
-
-    return this.rewriteBinders { bvarExpr, depth ->
-        val effectiveCutoff = cutoff + depth
-        if (bvarExpr.bvar >= effectiveCutoff) {
-            val newExpr = env.addCustomExpr {
-                bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it)
-            }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
-        } else {
-            bvarExpr
-        }
-    }
-}
-
-context(env: Environment)
-fun Expression.inferType(
-    levelSubst: Map<Int, Level> = emptyMap(),
-    localCtx: List<Expression> = emptyList(),
-): Whnf {
+fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: List<Expression> = emptyList()): Whnf {
     return when (this) {
         is Expression.App -> {
             val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
@@ -411,6 +261,7 @@ fun Expression.inferType(
             val instantiatedBodyTy = bodyTyWhnf.expr.applySubst(listOf(this.valueExpr))
             Whnf(instantiatedBodyTy, bodyTyWhnf.levelSubst)
         }
+
         is Expression.Mdata -> TODO()
         is Expression.NatVal -> TODO()
         is Expression.Proj -> TODO()
@@ -419,9 +270,7 @@ fun Expression.inferType(
 }
 
 context(env: Environment)
-fun Expression.reduce(
-    levelSubst: Map<Int, Level> = emptyMap(),
-): Whnf {
+fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
     println("trying to reduce ${this.toStringDetailed()}")
     return when (this) {
         is Expression.App -> {
@@ -446,9 +295,7 @@ fun Expression.reduce(
         }
 
         is Expression.Lam -> Whnf(this, levelSubst)
-
         is Expression.Bvar -> Whnf(this, levelSubst)
-
         is Expression.Const -> {
             val constLevelSubst = composeLevelSubst(levelSubst, this.levelSubstMap())
             when (val d = decl) {
@@ -462,7 +309,6 @@ fun Expression.reduce(
 
         is Expression.ForallE -> Whnf(this, levelSubst)
         is Expression.Sort -> Whnf(this, levelSubst)
-
         is Expression.LetE -> this.bodyExpr.applySubst(listOf(this.valueExpr)).reduce(levelSubst)
         is Expression.Mdata -> TODO()
         is Expression.NatVal -> TODO()
@@ -557,4 +403,149 @@ fun Level.simplify(): Level = when (this) {
     }
 
     else -> this
+}
+
+context(env: Environment)
+private fun Expression.inferSort(
+    levelSubst: Map<Int, Level> = emptyMap(),
+    localCtx: List<Expression> = emptyList(),
+): Level {
+    val tyWhnf = this.inferType(levelSubst, localCtx)
+    val whnfTy = tyWhnf.expr.reduce(tyWhnf.levelSubst)
+    val sort = whnfTy.expr as? Expression.Sort
+        ?: error("Expected Sort type for ${this.toStringDetailed()}, got ${whnfTy.expr.toStringDetailed()}")
+    return sort.level.instantiateLevelParams(whnfTy.levelSubst)
+}
+
+context(env: Environment)
+private fun Expression.lift(amount: Int = 1, cutoff: Int = 0): Expression {
+    if (amount == 0) return this
+
+    return this.rewriteBinders { bvarExpr, depth ->
+        val effectiveCutoff = cutoff + depth
+        if (bvarExpr.bvar >= effectiveCutoff) {
+            val newExpr = env.addCustomExpr {
+                bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it)
+            }
+            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+        } else {
+            bvarExpr
+        }
+    }
+}
+
+context(env: Environment)
+fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
+    if (subst.isEmpty()) return this
+
+    return this.rewriteBinders(depth) { bvarExpr, currentDepth ->
+        when {
+            bvarExpr.bvar < currentDepth -> bvarExpr
+            bvarExpr.bvar - currentDepth < subst.size ->
+                subst[bvarExpr.bvar - currentDepth].lift(currentDepth)
+
+            else -> {
+                val newExpr = env.addCustomExpr {
+                    bvarExpr.copy(bvar = bvarExpr.bvar - subst.size, ie = it)
+                }
+                env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+            }
+        }
+    }
+}
+
+context(env: Environment)
+private fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
+    return when (this) {
+        Level.Zero -> this
+        is Level.Param -> subst[this.il] ?: this
+        is Level.Succ -> {
+            val newLevel = this.level.instantiateLevelParams(subst)
+            if (newLevel == this.level) {
+                this
+            } else {
+                val newIndex = env.addCustomLevel { Level.Succ(newLevel.il, it) }
+                env.levels[newIndex] ?: error("Level not found for $newIndex")
+            }
+        }
+
+        is Level.Max -> {
+            val newLeft = this.left.instantiateLevelParams(subst)
+            val newRight = this.right.instantiateLevelParams(subst)
+            if (newLeft == this.left && newRight == this.right) {
+                this
+            } else {
+                val newIndex = env.addCustomLevel { Level.Max(listOf(newLeft.il, newRight.il), it) }
+                env.levels[newIndex] ?: error("Level not found for $newIndex")
+            }
+        }
+
+        is Level.Imax -> {
+            val newLeft = this.left.instantiateLevelParams(subst)
+            val newRight = this.right.instantiateLevelParams(subst)
+            if (newLeft == this.left && newRight == this.right) {
+                this
+            } else {
+                val newIndex = env.addCustomLevel { Level.Imax(listOf(newLeft.il, newRight.il), it) }
+                env.levels[newIndex] ?: error("Level not found for $newIndex")
+            }
+        }
+    }
+}
+
+context(env: Environment)
+private fun composeLevelSubst(outer: Map<Int, Level>, inner: Map<Int, Level>): Map<Int, Level> {
+    if (inner.isEmpty()) return outer
+    if (outer.isEmpty()) return inner
+    val normalizedInner = inner.mapValues { it.value.instantiateLevelParams(outer) }
+    return outer + normalizedInner
+}
+
+context(env: Environment)
+private fun Expression.rewriteBinders(depth: Int = 0, rewriteBvar: (Expression.Bvar, Int) -> Expression): Expression {
+    return when (this) {
+        is Expression.Bvar -> rewriteBvar(this, depth)
+
+        is Expression.App -> {
+            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar)
+            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar)
+            val newExpr = env.addCustomExpr {
+                this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
+            }
+            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+        }
+
+        is Expression.ForallE -> {
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
+            val newExpr = env.addCustomExpr {
+                this.copy(type = newType.ie, body = newBody.ie, ie = it)
+            }
+            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+        }
+
+        is Expression.Lam -> {
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
+            val newExpr = env.addCustomExpr {
+                this.copy(type = newType.ie, body = newBody.ie, ie = it)
+            }
+            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
+        }
+
+        else -> this
+    }
+}
+
+context(env: Environment)
+private fun Expression.Const.levelSubstMap(): Map<Int, Level> {
+    val params = this.decl.levelParams
+    check(params.size == this.levels.size) {
+        "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${this.levels.size}"
+    }
+    return params.indices.associate { index ->
+        val param = params[index] as? Level.Param
+            ?: error("Declaration level parameter is not a param for ${this.toStringDetailed()}")
+        param.il to this.levels[index]
+    }
 }
