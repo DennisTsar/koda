@@ -36,8 +36,8 @@ fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
         val customImax = env.addCustomLevel {
             Level.Imax(listOf(this.left.il, (this.right as Level.Imax).right.il), it)
         }
-        val customMax = env.addCustomLevel { Level.Max(listOf(customImax, this.right.il), it) }
-        env.levels[customMax]!!.isLessOrEqual(other, balance)
+        val customMax = env.addCustomLevel { Level.Max(listOf(customImax.il, this.right.il), it) }
+        customMax.isLessOrEqual(other, balance)
     }
 
     is Level.Imax if this.right is Level.Max -> TODO()
@@ -45,8 +45,8 @@ fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
         val customImax = env.addCustomLevel {
             Level.Imax(listOf(other.left.il, (other.right as Level.Imax).right.il), it)
         }
-        val customMax = env.addCustomLevel { Level.Max(listOf(customImax, other.right.il), it) }
-        this.isLessOrEqual(env.levels[customMax]!!, balance)
+        val customMax = env.addCustomLevel { Level.Max(listOf(customImax.il, other.right.il), it) }
+        this.isLessOrEqual(customMax, balance)
     }
 
     else if other is Level.Imax && other.right is Level.Max -> TODO()
@@ -72,7 +72,7 @@ context(env: Environment)
 private fun compareByCases(paramLevel: Level.Param, compare: () -> Boolean): Boolean {
     val caseZero = withTemporaryLevel(paramLevel.il, Level.Zero) { compare() }
     val tempParamLevel = env.addCustomLevel { paramLevel.copy(il = it) }
-    val succLevel = Level.Succ(tempParamLevel, paramLevel.il)
+    val succLevel = Level.Succ(tempParamLevel.il, paramLevel.il)
     val caseSucc = withTemporaryLevel(paramLevel.il, succLevel) { compare() }
     return caseZero && caseSucc
 }
@@ -81,10 +81,9 @@ context(env: Environment)
 private fun Level.simplify(): Level = when (this) {
     is Level.Imax if this.right.isEqual(Level.Zero) -> Level.Zero
     is Level.Imax if this.right is Level.Succ -> {
-        val maxLevel = env.addCustomLevel {
+        env.addCustomLevel {
             Level.Max(listOf(this.left.il, this.right.il), it)
         }
-        env.levels[maxLevel]!!
     }
 
     else -> this

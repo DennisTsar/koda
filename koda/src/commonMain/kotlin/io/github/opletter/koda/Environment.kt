@@ -10,20 +10,20 @@ class Environment {
 
     private var nextLevelIndex: Int = 0
 
-    fun addCustomLevel(levelConstructor: (Int) -> Level): Int {
+    fun addCustomLevel(levelConstructor: (Int) -> Level): Level {
         nextLevelIndex--
         val newLevel = levelConstructor(nextLevelIndex)
         levels[nextLevelIndex] = newLevel
-        return nextLevelIndex
+        return newLevel
     }
 
     private var nextExprIndex: Int = -100 // Could start with 0, but this helps while debugging vs levels
 
-    fun addCustomExpr(exprConstructor: (Int) -> Expression): Int {
+    fun addCustomExpr(exprConstructor: (Int) -> Expression): Expression {
         nextExprIndex--
         val newExpr = exprConstructor(nextExprIndex)
         expressions[nextExprIndex] = newExpr
-        return nextExprIndex
+        return newExpr
     }
 
     override fun toString(): String {

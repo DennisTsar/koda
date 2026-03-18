@@ -182,8 +182,8 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             val newLevel = env.addCustomLevel {
                 Level.Imax(listOf(left.il, right.il), it)
             }
-            val newExpr = env.addCustomExpr { Expression.Sort(newLevel, it) }
-            Whnf(env.expressions[newExpr] ?: error("Expression not found for $newExpr"), levelSubst)
+            val newExpr = env.addCustomExpr { Expression.Sort(newLevel.il, it) }
+            Whnf(newExpr, levelSubst)
         }
 
         is Expression.Lam -> {
@@ -193,15 +193,9 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             val reifiedBodyTy = bodyTyWhnf.expr
 
             val newExpr = env.addCustomExpr {
-                this.copyAsForAllE().copy(
-                    body = reifiedBodyTy.ie,
-                    ie = it
-                )
+                this.copyAsForAllE().copy(body = reifiedBodyTy.ie, ie = it)
             }
-            Whnf(
-                env.expressions[newExpr] ?: error("Expression not found for $newExpr"),
-                bodyTyWhnf.levelSubst
-            )
+            Whnf(newExpr, bodyTyWhnf.levelSubst)
         }
 
         is Expression.Sort -> {
@@ -209,8 +203,8 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             val newLevel = env.addCustomLevel {
                 Level.Succ(normalizedLevel.il, it)
             }
-            val newExpr = env.addCustomExpr { Expression.Sort(newLevel, it) }
-            Whnf(env.expressions[newExpr] ?: error("Expression not found for $newExpr"), levelSubst)
+            val newExpr = env.addCustomExpr { Expression.Sort(newLevel.il, it) }
+            Whnf(newExpr, levelSubst)
         }
 
         is Expression.LetE -> {
@@ -250,10 +244,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
                         Whnf(this, fnWhnf.levelSubst)
                     } else {
                         val newExpr = env.addCustomExpr { this.copy(fn = f.ie, ie = it) }
-                        Whnf(
-                            env.expressions[newExpr] ?: error("Expression not found for $newExpr"),
-                            fnWhnf.levelSubst
-                        )
+                        Whnf(newExpr, fnWhnf.levelSubst)
                     }
                 }
             }
@@ -300,10 +291,9 @@ private fun Expression.lift(amount: Int): Expression {
 
     return this.rewriteBinders { bvarExpr, depth ->
         if (bvarExpr.bvar >= depth) {
-            val newExpr = env.addCustomExpr {
+            env.addCustomExpr {
                 bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it)
             }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
         } else {
             bvarExpr
         }
@@ -321,10 +311,9 @@ fun Expression.applySubst(subst: List<Expression>): Expression {
                 subst[bvarExpr.bvar - currentDepth].lift(currentDepth)
 
             else -> {
-                val newExpr = env.addCustomExpr {
+                env.addCustomExpr {
                     bvarExpr.copy(bvar = bvarExpr.bvar - subst.size, ie = it)
                 }
-                env.expressions[newExpr] ?: error("Expression not found for $newExpr")
             }
         }
     }
@@ -340,8 +329,7 @@ private fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
             if (newLevel == this.level) {
                 this
             } else {
-                val newIndex = env.addCustomLevel { Level.Succ(newLevel.il, it) }
-                env.levels[newIndex] ?: error("Level not found for $newIndex")
+                env.addCustomLevel { Level.Succ(newLevel.il, it) }
             }
         }
 
@@ -351,8 +339,7 @@ private fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
             if (newLeft == this.left && newRight == this.right) {
                 this
             } else {
-                val newIndex = env.addCustomLevel { Level.Max(listOf(newLeft.il, newRight.il), it) }
-                env.levels[newIndex] ?: error("Level not found for $newIndex")
+                env.addCustomLevel { Level.Max(listOf(newLeft.il, newRight.il), it) }
             }
         }
 
@@ -362,8 +349,7 @@ private fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
             if (newLeft == this.left && newRight == this.right) {
                 this
             } else {
-                val newIndex = env.addCustomLevel { Level.Imax(listOf(newLeft.il, newRight.il), it) }
-                env.levels[newIndex] ?: error("Level not found for $newIndex")
+                env.addCustomLevel { Level.Imax(listOf(newLeft.il, newRight.il), it) }
             }
         }
     }
@@ -385,28 +371,25 @@ private fun Expression.rewriteBinders(depth: Int = 0, rewriteBvar: (Expression.B
         is Expression.App -> {
             val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar)
             val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar)
-            val newExpr = env.addCustomExpr {
+            env.addCustomExpr {
                 this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
             }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
         }
 
         is Expression.ForallE -> {
             val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
             val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            val newExpr = env.addCustomExpr {
+            env.addCustomExpr {
                 this.copy(type = newType.ie, body = newBody.ie, ie = it)
             }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
         }
 
         is Expression.Lam -> {
             val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
             val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            val newExpr = env.addCustomExpr {
+            env.addCustomExpr {
                 this.copy(type = newType.ie, body = newBody.ie, ie = it)
             }
-            env.expressions[newExpr] ?: error("Expression not found for $newExpr")
         }
 
         else -> this
