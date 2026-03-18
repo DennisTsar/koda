@@ -295,12 +295,11 @@ private fun Expression.inferSort(
 }
 
 context(env: Environment)
-private fun Expression.lift(amount: Int = 1, cutoff: Int = 0): Expression {
+private fun Expression.lift(amount: Int): Expression {
     if (amount == 0) return this
 
     return this.rewriteBinders { bvarExpr, depth ->
-        val effectiveCutoff = cutoff + depth
-        if (bvarExpr.bvar >= effectiveCutoff) {
+        if (bvarExpr.bvar >= depth) {
             val newExpr = env.addCustomExpr {
                 bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it)
             }
@@ -312,10 +311,10 @@ private fun Expression.lift(amount: Int = 1, cutoff: Int = 0): Expression {
 }
 
 context(env: Environment)
-fun Expression.applySubst(subst: List<Expression>, depth: Int = 0): Expression {
+fun Expression.applySubst(subst: List<Expression>): Expression {
     if (subst.isEmpty()) return this
 
-    return this.rewriteBinders(depth) { bvarExpr, currentDepth ->
+    return this.rewriteBinders { bvarExpr, currentDepth ->
         when {
             bvarExpr.bvar < currentDepth -> bvarExpr
             bvarExpr.bvar - currentDepth < subst.size ->
