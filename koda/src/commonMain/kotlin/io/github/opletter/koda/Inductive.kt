@@ -57,6 +57,7 @@ fun checkInductive(data: Inductive) {
             expr = constructor.typeExpr,
             expectedBinders = ctorBinderCount,
             owner = "Constructor ${constructor.name}",
+            reduceExpr = false,
         ) { binderIndex, binderType, levelSubst, localCtx ->
             if (binderIndex < constructor.numParams) {
                 // Parameter section must exactly match the inductive parameters.
@@ -77,15 +78,17 @@ fun checkInductive(data: Inductive) {
             }
         }
 
-        val ctorTailWhnf = ctorWalk.tailExpr.reduce(ctorWalk.levelSubst)
-        check(ctorTailWhnf.expr !is Expression.ForallE) {
+        val ctorTailExpr = ctorWalk.tailExpr
+        check(ctorTailExpr !is Expression.ForallE) {
             "Constructor ${constructor.name} has too many binders: expected $ctorBinderCount"
         }
 
         // Constructor result must be an application of the inductive with valid args.
-        val [resultHead, resultArgs] = ctorTailWhnf.expr.unfoldApp()
+        val unfoldedResult = ctorTailExpr.unfoldApp()
+        val resultHead: Expression = unfoldedResult.first
+        val resultArgs: List<Expression> = unfoldedResult.second
         val resultConst = resultHead as? Expression.Const
-            ?: error("Constructor ${constructor.name} must end in application of inductive ${inductive.name}, got ${ctorTailWhnf.expr.toStringDetailed()}")
+            ?: error("Constructor ${constructor.name} must end in application of inductive ${inductive.name}, got ${ctorTailExpr.toStringDetailed()}")
 
         check(resultConst.name == inductive.name) {
             "Constructor ${constructor.name} must return inductive ${inductive.name}, got ${resultConst.name}"
@@ -134,6 +137,7 @@ private fun walkForalls(
     expr: Expression,
     expectedBinders: Int,
     owner: String,
+    reduceExpr: Boolean = true,
     onBinder: (binderIndex: Int, binderType: Expression, levelSubst: Map<Int, Level>, localCtx: List<Expression>) -> Unit,
 ): ForallWalkResult {
     var currentExpr = expr
@@ -141,9 +145,14 @@ private fun walkForalls(
     var currentLocalCtx: List<Expression> = emptyList()
 
     repeat(expectedBinders) { binderIndex ->
-        val whnf = currentExpr.reduce(currentLevelSubst)
-        currentLevelSubst = whnf.levelSubst
-        val forall = whnf.expr as? Expression.ForallE
+        val current = if (reduceExpr) {
+            val whnf = currentExpr.reduce(currentLevelSubst)
+            currentLevelSubst = whnf.levelSubst
+            whnf.expr
+        } else {
+            currentExpr
+        }
+        val forall = current as? Expression.ForallE
             ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
 
         onBinder(binderIndex, forall.typeExpr, currentLevelSubst, currentLocalCtx)
