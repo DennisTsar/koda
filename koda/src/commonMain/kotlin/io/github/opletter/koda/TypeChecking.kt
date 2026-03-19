@@ -245,12 +245,12 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
                     f.bodyExpr.applySubst(listOf(this.argExpr)).reduce(fnWhnf.levelSubst)
 
                 else -> {
-                    if (f == this.fnExpr) {
-                        Whnf(this, fnWhnf.levelSubst)
+                    val appExpr: Expression.App = if (f == this.fnExpr) {
+                        this
                     } else {
-                        val newExpr = env.addCustomExpr { this.copy(fn = f.ie, ie = it) }
-                        Whnf(newExpr, fnWhnf.levelSubst)
+                        env.addCustomExpr { this.copy(fn = f.ie, ie = it) } as Expression.App
                     }
+                    appExpr.tryReduceRecursor(fnWhnf.levelSubst) ?: Whnf(appExpr, fnWhnf.levelSubst)
                 }
             }
         }
@@ -273,6 +273,54 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
         is Expression.Proj -> TODO()
         is Expression.StrVal -> TODO()
     }
+}
+
+context(env: Environment)
+private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf? {
+    val unfolded = this.unfoldApp()
+    val headExpr = unfolded.first
+    val args = unfolded.second
+    val recConst = headExpr as? Expression.Const ?: return null
+    val recursorDecl = recConst.decl as? Inductive.RecursorVal ?: return null
+
+    val majorArgIndex =
+        recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors + recursorDecl.numIndices
+    if (args.size <= majorArgIndex) return null
+
+    val majorWhnf = args[majorArgIndex].reduce(levelSubst)
+    val unfoldedMajor = majorWhnf.expr.unfoldApp()
+    val majorHead = unfoldedMajor.first
+    val majorArgs = unfoldedMajor.second
+    val majorCtor = majorHead as? Expression.Const ?: return null
+    val constructorDecl = majorCtor.decl as? Inductive.ConstructorVal ?: return null
+
+    val matchingRule = recursorDecl.rules.singleOrNull { rule ->
+        (env.names[rule.ctor] ?: error("Constructor name ${rule.ctor} not found")) == majorCtor.name
+    } ?: return null
+
+    check(constructorDecl.numParams == recursorDecl.numParams) {
+        "Recursor ${recursorDecl.name} and constructor ${constructorDecl.name} disagree on numParams"
+    }
+    check(constructorDecl.numFields == matchingRule.nfields) {
+        "Recursor rule for ${constructorDecl.name} has wrong nfields: expected ${constructorDecl.numFields}, got ${matchingRule.nfields}"
+    }
+
+    if (majorArgs.size != constructorDecl.numParams + matchingRule.nfields) return null
+
+    val recursorArgsPrefixSize = recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors
+    val prefixArgs = args.take(recursorArgsPrefixSize)
+    val fieldArgs = majorArgs.drop(constructorDecl.numParams)
+    val rhs = env.expressions[matchingRule.rhs] ?: error("Recursor rule rhs ${matchingRule.rhs} not found")
+
+    var reducedExpr: Expression = rhs
+    (prefixArgs + fieldArgs).forEach { substArg: Expression ->
+        reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, substArg.ie, it) }
+    }
+    args.drop(majorArgIndex + 1).forEach { extraArg: Expression ->
+        reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, extraArg.ie, it) }
+    }
+
+    return reducedExpr.reduce(majorWhnf.levelSubst)
 }
 
 context(env: Environment)

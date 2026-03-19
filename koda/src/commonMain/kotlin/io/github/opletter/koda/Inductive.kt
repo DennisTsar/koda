@@ -167,7 +167,7 @@ private fun walkForalls(
 }
 
 context(env: Environment)
-private fun Expression.unfoldApp(): Pair<Expression, List<Expression>> {
+fun Expression.unfoldApp(): Pair<Expression, List<Expression>> {
     val args = mutableListOf<Expression>()
     var head = this
     while (head is Expression.App) {
