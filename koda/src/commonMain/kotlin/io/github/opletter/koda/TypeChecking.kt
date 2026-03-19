@@ -177,7 +177,7 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
 
         is Expression.ForallE -> {
             val left = this.typeExpr.inferSort(levelSubst, localCtx)
-            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
+//            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
 
             val right = this.bodyExpr.inferSort(levelSubst, listOf(this.typeExpr) + localCtx)
 
@@ -189,8 +189,8 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
         }
 
         is Expression.Lam -> {
-            val left = this.typeExpr.inferSort(levelSubst, localCtx)
-            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
+            val _ = this.typeExpr.inferSort(levelSubst, localCtx)
+//            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
             val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, listOf(this.typeExpr) + localCtx)
             val reifiedBodyTy = bodyTyWhnf.expr
 
@@ -235,7 +235,7 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
 
 context(env: Environment)
 fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
-    println("trying to reduce ${this.toStringDetailed()}")
+//    println("trying to reduce ${this.toStringDetailed()}")
     return when (this) {
         is Expression.App -> {
             val fnWhnf = this.fnExpr.reduce(levelSubst = levelSubst)
@@ -288,14 +288,12 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
     if (args.size <= majorArgIndex) return null
 
     val majorWhnf = args[majorArgIndex].reduce(levelSubst)
-    val unfoldedMajor = majorWhnf.expr.unfoldApp()
-    val majorHead = unfoldedMajor.first
-    val majorArgs = unfoldedMajor.second
+    val [majorHead, majorArgs] = majorWhnf.expr.unfoldApp()
     val majorCtor = majorHead as? Expression.Const ?: return null
     val constructorDecl = majorCtor.decl as? Inductive.ConstructorVal ?: return null
 
     val matchingRule = recursorDecl.rules.singleOrNull { rule ->
-        (env.names[rule.ctor] ?: error("Constructor name ${rule.ctor} not found")) == majorCtor.name
+        rule.ctorName == majorCtor.name
     } ?: return null
 
     check(constructorDecl.numParams == recursorDecl.numParams) {
@@ -310,7 +308,7 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
     val recursorArgsPrefixSize = recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors
     val prefixArgs = args.take(recursorArgsPrefixSize)
     val fieldArgs = majorArgs.drop(constructorDecl.numParams)
-    val rhs = env.expressions[matchingRule.rhs] ?: error("Recursor rule rhs ${matchingRule.rhs} not found")
+    val rhs = matchingRule.rhsExpr
 
     var reducedExpr: Expression = rhs
     (prefixArgs + fieldArgs).forEach { substArg: Expression ->

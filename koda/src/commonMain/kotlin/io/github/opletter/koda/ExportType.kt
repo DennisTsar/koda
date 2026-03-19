@@ -512,7 +512,13 @@ data class Inductive(
         val isUnsafe: Boolean,
     ) : NamedDecl() {
         @Serializable
-        data class RecursorRule(val ctor: Int, val nfields: Int, val rhs: Int)
+        data class RecursorRule(private val ctor: Int, val nfields: Int, private val rhs: Int) {
+            context(env: Environment)
+            val ctorName get() = env.names[ctor] ?: error("Name $ctor not found")
+
+            context(env: Environment)
+            val rhsExpr get() = env.expressions[rhs] ?: error("Expression $rhs not found")
+        }
 
         fun registerInto(env: Environment) {
             val name = env.names[_name] ?: error("Name not found for $_name")
@@ -544,7 +550,7 @@ enum class BinderInfo {
 }
 
 
-abstract class NamedDecl {
+sealed class NamedDecl {
     // Not explicitly documented as part of every declaration, but they are present for all of them currently,
     // so for convenience, they are included in the interface.
     protected abstract val _name: Int
