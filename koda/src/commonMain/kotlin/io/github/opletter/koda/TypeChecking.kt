@@ -61,11 +61,15 @@ fun _typeCheck(rawData: List<ExportType>) {
                 // (4): "the declaration's type has no free variables"
                 // TODO
             }
+            is Inductive -> {
+                checkInductive(data)
+            }
 
-            else -> {}
+            is Meta -> {} // no-op
         }
     }
 }
+
 
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
@@ -226,6 +230,9 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
     }
 }
 
+//context(env: Environment)
+//fun Whnf.reduce(): Whnf = expr.reduce(levelSubst)
+
 context(env: Environment)
 fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
     println("trying to reduce ${this.toStringDetailed()}")
@@ -269,7 +276,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
 }
 
 context(env: Environment)
-private fun Expression.inferSort(
+fun Expression.inferSort(
     levelSubst: Map<Int, Level> = emptyMap(),
     localCtx: List<Expression> = emptyList(),
 ): Level {
@@ -348,7 +355,7 @@ private fun Expression.rewriteBinders(depth: Int = 0, rewriteBvar: (Expression.B
 }
 
 context(env: Environment)
-private fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
+fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
     return when (this) {
         Level.Zero -> this
         is Level.Param -> subst[this.il] ?: this

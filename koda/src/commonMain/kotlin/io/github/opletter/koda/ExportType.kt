@@ -186,7 +186,9 @@ sealed class Expression : ExportType {
 
         context(env: Environment)
         override fun toStringDetailed(): String {
-            return "App(\n fn=${fnExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n arg=${argExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n ie=$ie)"
+            return "App(\n fn=${
+                fnExpr.toStringDetailed().lines().joinToString("\n") { " $it" }
+            },\n arg=${argExpr.toStringDetailed().lines().joinToString("\n") { " $it" }},\n ie=$ie)"
         }
     }
 
@@ -210,7 +212,11 @@ sealed class Expression : ExportType {
 
         context(env: Environment)
         override fun toStringDetailed(): String {
-            return "Lam(\n name=$name,\n type=${typeExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n body=${bodyExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n binderInfo=$binderInfo, ie=$ie)"
+            return "Lam(\n name=$name,\n type=${
+                typeExpr.toStringDetailed().lines().joinToString("\n") { " $it" }
+            },\n body=${
+                bodyExpr.toStringDetailed().lines().joinToString("\n") { " $it" }
+            },\n binderInfo=$binderInfo, ie=$ie)"
         }
 
         fun copyAsForAllE(): ForallE = ForallE(_name, type, body, binderInfo, ie)
@@ -237,7 +243,11 @@ sealed class Expression : ExportType {
 
         context(env: Environment)
         override fun toStringDetailed(): String {
-            return "ForallE(\n name=$name,\n type=${typeExpr.toStringDetailed().lines().joinToString("\n") { " $it"}},\n body=${bodyExpr.toStringDetailed().lines().joinToString("\n") { " $it"}}, binderInfo=$binderInfo, ie=$ie)"
+            return "ForallE(\n name=$name,\n type=${
+                typeExpr.toStringDetailed().lines().joinToString("\n") { " $it" }
+            },\n body=${
+                bodyExpr.toStringDetailed().lines().joinToString("\n") { " $it" }
+            }, binderInfo=$binderInfo, ie=$ie)"
         }
     }
 
@@ -302,13 +312,7 @@ sealed class Expression : ExportType {
     open fun toStringDetailed(): String = this.toString() // why do I get an error without the `this`
 }
 
-sealed class Declaration : ExportType {
-    // Not explicitly documented as part of every declaration, but they are present for all of them currently,
-    // so for convenience, they are included in the interface.
-    protected abstract val _name: Int
-    protected abstract val _levelParams: List<Int>
-    protected abstract val type: Int
-
+sealed class Declaration : ExportType, NamedDecl() {
     @Serializable
     @SerialName("axiom")
     data class Axiom(
@@ -437,33 +441,23 @@ sealed class Declaration : ExportType {
         check(_name !in env.declarations) { "Duplicate declaration for ${name.str}" }
         env.declarations[this._name] = this
     }
-
-    context(env: Environment)
-    val name get() = env.names[this._name] ?: error("Name ${this._name} not found")
-
-    context(env: Environment)
-    val levelParamsNames get() = this._levelParams.map { env.names[it] ?: error("Level $it not found") }
-
-    // this could probably be optimized
-    context(env: Environment)
-    val levelParams get() = levelParamsNames.map { name ->
-        env.levels.values.filterIsInstance<Level.Param>().find { it.name == name } ?: error("Level $name not found")
-    }
-
-    context(env: Environment)
-    val typeExpr get() = env.expressions[this.type] ?: error("Expression ${this.type} not found")
 }
 
 // TODO: add context vals + make private
 @Serializable
 @SerialName("inductive")
-data class Inductive(val types: List<InductiveVal>, val ctors: List<ConstructorVal>, val recs: List<RecursorVal>) :
-    ExportType {
+data class Inductive(
+    private val types: List<InductiveVal>,
+    val ctors: List<ConstructorVal>,
+    val recs: List<RecursorVal>,
+) : ExportType {
+    val type get() = types.singleOrNull() ?: error("Inductive with more than one type not supported")
+
     @Serializable
     data class InductiveVal(
-        val name: Int,
-        val levelParams: List<Int>,
-        val type: Int,
+        @SerialName("name") override val _name: Int,
+        @SerialName("levelParams") override val _levelParams: List<Int>,
+        override val type: Int,
         val numParams: Int,
         val numIndices: Int,
         val all: List<Int>,
@@ -472,25 +466,42 @@ data class Inductive(val types: List<InductiveVal>, val ctors: List<ConstructorV
         val isRec: Boolean,
         val isUnsafe: Boolean,
         val isReflexive: Boolean,
-    )
+    ) : NamedDecl() {
+        fun registerInto(env: Environment) {
+            val name = env.names[_name] ?: error("Name not found for $_name")
+            name as? Name.Str ?: error("Expected Str name, got ${name::class.simpleName}")
+            check(_name !in env.declarations) { "Duplicate declaration for ${name.str}" }
+            env.declarations[this._name] = this
+        }
+    }
 
     @Serializable
     data class ConstructorVal(
-        val name: Int,
-        val levelParams: List<Int>,
-        val type: Int,
-        val induct: Int,
+        @SerialName("name") override val _name: Int,
+        @SerialName("levelParams") override val _levelParams: List<Int>,
+        override val type: Int,
+        private val induct: Int,
         val cidx: Int,
         val numParams: Int,
         val numFields: Int,
         val isUnsafe: Boolean,
-    )
+    ) : NamedDecl() {
+        context(env: Environment)
+        val inductName get() = env.names[induct] ?: error("Name $induct not found")
+
+        fun registerInto(env: Environment) {
+            val name = env.names[_name] ?: error("Name not found for $_name")
+            name as? Name.Str ?: error("Expected Str name, got ${name::class.simpleName}")
+            check(_name !in env.declarations) { "Duplicate declaration for ${name.str}" }
+            env.declarations[this._name] = this
+        }
+    }
 
     @Serializable
     data class RecursorVal(
-        val name: Int,
-        val levelParams: List<Int>,
-        val type: Int,
+        @SerialName("name") override val _name: Int,
+        @SerialName("levelParams") override val _levelParams: List<Int>,
+        override val type: Int,
         val all: List<Int>,
         val numParams: Int,
         val numIndices: Int,
@@ -499,13 +510,22 @@ data class Inductive(val types: List<InductiveVal>, val ctors: List<ConstructorV
         val rules: List<RecursorRule>,
         val k: Boolean,
         val isUnsafe: Boolean,
-    ) {
+    ) : NamedDecl() {
         @Serializable
         data class RecursorRule(val ctor: Int, val nfields: Int, val rhs: Int)
+
+        fun registerInto(env: Environment) {
+            val name = env.names[_name] ?: error("Name not found for $_name")
+            name as? Name.Str ?: error("Expected Str name, got ${name::class.simpleName}")
+            check(_name !in env.declarations) { "Duplicate declaration for ${name.str}" }
+            env.declarations[this._name] = this
+        }
     }
 
     override fun registerInto(env: Environment) {
-        TODO()
+        type.registerInto(env)
+        ctors.forEach { it.registerInto(env) }
+        recs.forEach { it.registerInto(env) }
     }
 }
 
@@ -521,4 +541,29 @@ enum class BinderInfo {
 
     @SerialName("instImplicit")
     InstImplicit,
+}
+
+
+abstract class NamedDecl {
+    // Not explicitly documented as part of every declaration, but they are present for all of them currently,
+    // so for convenience, they are included in the interface.
+    protected abstract val _name: Int
+    protected abstract val _levelParams: List<Int>
+    protected abstract val type: Int
+
+    context(env: Environment)
+    val name get() = env.names[this._name] ?: error("Name ${this._name} not found")
+
+    context(env: Environment)
+    val levelParamsNames get() = this._levelParams.map { env.names[it] ?: error("Level $it not found") }
+
+    // this could probably be optimized
+    context(env: Environment)
+    val levelParams
+        get() = levelParamsNames.map { name ->
+            env.levels.values.filterIsInstance<Level.Param>().find { it.name == name } ?: error("Level $name not found")
+        }
+
+    context(env: Environment)
+    val typeExpr get() = env.expressions[this.type] ?: error("Expression ${this.type} not found")
 }
