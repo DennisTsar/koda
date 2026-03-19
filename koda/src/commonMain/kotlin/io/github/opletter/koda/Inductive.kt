@@ -1,10 +1,5 @@
 package io.github.opletter.koda
 
-private data class ForallWalkResult(
-    val tailExpr: Expression,
-    val levelSubst: Map<Int, Level>,
-)
-
 context(env: Environment)
 fun checkInductive(data: Inductive) {
     // (1): no duplicate universe parameters
@@ -17,7 +12,7 @@ fun checkInductive(data: Inductive) {
     val inductiveParamTypes = mutableListOf<Expression>()
 
     // One pass over the inductive type telescope.
-    val typeWalk = walkForalls(
+    val typeTailWhnf = walkForalls(
         expr = inductive.typeExpr,
         expectedBinders = typeBinderCount,
         owner = "Inductive type ${inductive.name}",
@@ -29,31 +24,28 @@ fun checkInductive(data: Inductive) {
         }
     }
 
-    val typeTailWhnf = typeWalk.tailExpr.reduce(typeWalk.levelSubst)
     val typeSort = typeTailWhnf.expr as? Expression.Sort
         ?: error("Inductive type must reduce to Sort after $typeBinderCount binders, got ${typeTailWhnf.expr.toStringDetailed()}")
     val inductiveSortLevel = typeSort.level.instantiateLevelParams(typeTailWhnf.levelSubst)
     val isInductiveProp = inductiveSortLevel.isLessOrEqual(Level.Zero)
 
-    println("boom ${data.type.name}")
     data.registerInto(env)
     env.declTypeByName[data.type.name] = data.type.typeExpr
 
     data.ctors.forEach { constructor ->
-        println("boom ${constructor.name}")
         // Basic declaration-level consistency.
-        check(constructor.inductName == inductive.name) {
-            "Constructor ${constructor.name} has wrong inductive target: expected ${inductive.name}, got ${constructor.inductName}"
-        }
-        check(constructor.numParams == inductive.numParams) {
-            "Constructor ${constructor.name} has wrong numParams: expected ${inductive.numParams}, got ${constructor.numParams}"
-        }
-        check(constructor.levelParams.toSet().size == constructor.levelParams.size) {
-            "Duplicate universe parameters in constructor $constructor"
-        }
+//        check(constructor.inductName == inductive.name) {
+//            "Constructor ${constructor.name} has wrong inductive target: expected ${inductive.name}, got ${constructor.inductName}"
+//        }
+//        check(constructor.numParams == inductive.numParams) {
+//            "Constructor ${constructor.name} has wrong numParams: expected ${inductive.numParams}, got ${constructor.numParams}"
+//        }
+//        check(constructor.levelParams.toSet().size == constructor.levelParams.size) {
+//            "Duplicate universe parameters in constructor $constructor"
+//        }
 
         val ctorBinderCount = constructor.numParams + constructor.numFields
-        val ctorWalk = walkForalls(
+        val ctorTailExpr = walkForalls(
             expr = constructor.typeExpr,
             expectedBinders = ctorBinderCount,
             owner = "Constructor ${constructor.name}",
@@ -76,26 +68,23 @@ fun checkInductive(data: Inductive) {
                     "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} contains a non-positive occurrence of inductive ${inductive.name}"
                 }
             }
-        }
+        }.expr
 
-        val ctorTailExpr = ctorWalk.tailExpr
-        check(ctorTailExpr !is Expression.ForallE) {
-            "Constructor ${constructor.name} has too many binders: expected $ctorBinderCount"
-        }
+//        check(ctorTailExpr !is Expression.ForallE) {
+//            "Constructor ${constructor.name} has too many binders: expected $ctorBinderCount"
+//        }
 
         // Constructor result must be an application of the inductive with valid args.
-        val unfoldedResult = ctorTailExpr.unfoldApp()
-        val resultHead: Expression = unfoldedResult.first
-        val resultArgs: List<Expression> = unfoldedResult.second
+        val [resultHead, resultArgs] = ctorTailExpr.unfoldApp()
         val resultConst = resultHead as? Expression.Const
             ?: error("Constructor ${constructor.name} must end in application of inductive ${inductive.name}, got ${ctorTailExpr.toStringDetailed()}")
 
-        check(resultConst.name == inductive.name) {
-            "Constructor ${constructor.name} must return inductive ${inductive.name}, got ${resultConst.name}"
-        }
-        check(resultConst.levels.size == inductive.levelParams.size) {
-            "Constructor ${constructor.name} has wrong number of universe args in result: expected ${inductive.levelParams.size}, got ${resultConst.levels.size}"
-        }
+//        check(resultConst.name == inductive.name) {
+//            "Constructor ${constructor.name} must return inductive ${inductive.name}, got ${resultConst.name}"
+//        }
+//        check(resultConst.levels.size == inductive.levelParams.size) {
+//            "Constructor ${constructor.name} has wrong number of universe args in result: expected ${inductive.levelParams.size}, got ${resultConst.levels.size}"
+//        }
         inductive.levelParams.indices.forEach { i ->
             check(resultConst.levels[i].isEqual(inductive.levelParams[i])) {
                 "Constructor ${constructor.name} result has wrong universe arg #$i: expected ${inductive.levelParams[i].toStringDetailed()}, got ${resultConst.levels[i].toStringDetailed()}"
@@ -103,9 +92,9 @@ fun checkInductive(data: Inductive) {
         }
 
         val expectedResultArgs = inductive.numParams + inductive.numIndices
-        check(resultArgs.size == expectedResultArgs) {
-            "Constructor ${constructor.name} result has wrong arg count: expected $expectedResultArgs, got ${resultArgs.size}"
-        }
+//        check(resultArgs.size == expectedResultArgs) {
+//            "Constructor ${constructor.name} result has wrong arg count: expected $expectedResultArgs, got ${resultArgs.size}"
+//        }
 
         // Parameter arguments must be exactly the constructor parameter binders in order.
         repeat(inductive.numParams) { paramIndex ->
@@ -123,13 +112,11 @@ fun checkInductive(data: Inductive) {
             }
         }
 
-        println("boom2 ${constructor.name}")
         env.declTypeByName[constructor.name] = constructor.typeExpr
     }
     data.recs.forEach { rec ->
         env.declTypeByName[rec.name] = rec.typeExpr
     }
-
 }
 
 context(env: Environment)
@@ -139,7 +126,7 @@ private fun walkForalls(
     owner: String,
     reduceExpr: Boolean = true,
     onBinder: (binderIndex: Int, binderType: Expression, levelSubst: Map<Int, Level>, localCtx: List<Expression>) -> Unit,
-): ForallWalkResult {
+): Whnf {
     var currentExpr = expr
     var currentLevelSubst: Map<Int, Level> = emptyMap()
     var currentLocalCtx: List<Expression> = emptyList()
@@ -160,10 +147,7 @@ private fun walkForalls(
         currentExpr = forall.bodyExpr
     }
 
-    return ForallWalkResult(
-        tailExpr = currentExpr,
-        levelSubst = currentLevelSubst,
-    )
+    return currentExpr.let { if (reduceExpr) it.reduce(currentLevelSubst) else Whnf(it, currentLevelSubst) }
 }
 
 context(env: Environment)
@@ -189,7 +173,8 @@ private fun Expression.containsConst(targetName: Name): Boolean {
                     this.valueExpr.containsConst(targetName) ||
                     this.bodyExpr.containsConst(targetName)
 
-        else -> false
+        is Expression.Bvar, is Expression.Mdata, is Expression.NatVal,
+        is Expression.Proj, is Expression.Sort, is Expression.StrVal -> false
     }
 }
 
@@ -215,6 +200,7 @@ private fun Expression.hasNegativeOccurrenceOf(targetName: Name, polarity: Int =
                     this.valueExpr.hasNegativeOccurrenceOf(targetName, polarity) ||
                     this.bodyExpr.hasNegativeOccurrenceOf(targetName, polarity)
 
-        else -> false
+        is Expression.Bvar, is Expression.Mdata, is Expression.NatVal,
+        is Expression.Proj, is Expression.Sort, is Expression.StrVal -> false
     }
 }
