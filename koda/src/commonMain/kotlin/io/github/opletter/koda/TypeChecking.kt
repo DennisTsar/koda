@@ -45,7 +45,7 @@ fun _typeCheck(rawData: List<ExportType>) {
                     }
 
                     is Declaration.Opaque -> TODO()
-                    is Declaration.Quot -> TODO()
+                    is Declaration.Quot -> {} // no extra checks needed
                     is Declaration.Thm -> {
                         check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
                             "value not defeq to type for $data"
@@ -354,7 +354,9 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
                     } else {
                         env.addCustomExpr { this.copy(fn = f.ie, ie = it) } as Expression.App
                     }
-                    appExpr.tryReduceRecursor(fnWhnf.levelSubst) ?: Whnf(appExpr, fnWhnf.levelSubst)
+                    appExpr.tryReduceRecursor(fnWhnf.levelSubst)
+                        ?: appExpr.tryReduceQuot(fnWhnf.levelSubst)
+                        ?: Whnf(appExpr, fnWhnf.levelSubst)
                 }
             }
         }
@@ -633,6 +635,59 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
     }
 
     return applyRule(kRule, emptyList(), majorWhnf.levelSubst)
+}
+
+context(env: Environment)
+private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Whnf? {
+    val [headExpr, args] = this.unfoldApp()
+    val quotConst = headExpr as? Expression.Const ?: return null
+    val quotDecl = quotConst.decl as? Declaration.Quot ?: return null
+    if (quotDecl.kind != Declaration.Quot.Kind.Lift && quotDecl.kind != Declaration.Quot.Kind.Ind) return null
+
+    val arity = quotDecl.typeExpr.forallBinderCount()
+    if (args.size < arity) return null
+
+    val majorArg = args[arity - 1]
+    val majorWhnf = majorArg.reduce(levelSubst)
+    val [majorHead, majorArgs] = majorWhnf.expr.unfoldApp()
+    val majorCtorConst = majorHead as? Expression.Const ?: return null
+    val majorCtorDecl = majorCtorConst.decl as? Declaration.Quot ?: return null
+    if (majorCtorDecl.kind != Declaration.Quot.Kind.Ctor) return null
+
+    val ctorArity = majorCtorDecl.typeExpr.forallBinderCount()
+    if (majorArgs.size < ctorArity || ctorArity == 0) return null
+    val ctorValueArg = majorArgs[ctorArity - 1]
+
+    val fnArg = when (quotDecl.kind) {
+        Declaration.Quot.Kind.Lift -> {
+            if (arity < 3) return null
+            args[arity - 3]
+        }
+
+        Declaration.Quot.Kind.Ind -> {
+            if (arity < 2) return null
+            args[arity - 2]
+        }
+    }
+
+    var reducedExpr: Expression = env.addCustomExpr {
+        Expression.App(fn = fnArg.ie, arg = ctorValueArg.ie, ie = it)
+    }
+    args.drop(arity).forEach { extraArg: Expression ->
+        reducedExpr = env.addCustomExpr { Expression.App(fn = reducedExpr.ie, arg = extraArg.ie, ie = it) }
+    }
+    return reducedExpr.reduce(majorWhnf.levelSubst)
+}
+
+context(env: Environment)
+private fun Expression.forallBinderCount(): Int {
+    var count = 0
+    var tail: Expression = this
+    while (tail is Expression.ForallE) {
+        count += 1
+        tail = tail.bodyExpr
+    }
+    return count
 }
 
 context(env: Environment)
