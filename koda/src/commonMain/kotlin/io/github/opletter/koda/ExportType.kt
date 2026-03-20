@@ -282,7 +282,18 @@ sealed class Expression : ExportType {
         private val struct: Int,
         override val ie: Int,
     ) : Expression() {
-        // TODO: figure out what the indices represent
+        context(env: Environment)
+        val typeNameExpr get() = env.names[typeName] ?: error("Name $typeName not found")
+
+        context(env: Environment)
+        val typeDecl get() = env.declarations[typeName] ?: error("Declaration for $typeNameExpr not found")
+
+        val projIndex get() = idx
+
+        context(env: Environment)
+        val structExpr get() = env.expressions[struct] ?: error("Expression $struct not found")
+
+        val typeNameIndex get() = typeName
     }
 
     @Serializable
