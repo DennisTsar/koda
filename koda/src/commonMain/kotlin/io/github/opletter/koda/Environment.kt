@@ -26,6 +26,15 @@ class Environment {
         return newExpr
     }
 
+    fun clearCustom() {
+        (nextLevelIndex..-1).forEach { levels.remove(it) }
+        nextLevelIndex = 0
+        (nextExprIndex..-101).forEach { expressions.remove(it) }
+        nextExprIndex = -100
+    }
+
+    var shouldLog = true
+
     override fun toString(): String {
         return "Names:\n${names.toList().joinToString("\n")}\n\n" +
                 "Declarations:\n${declarations.toList().joinToString("\n")}\n\n" +

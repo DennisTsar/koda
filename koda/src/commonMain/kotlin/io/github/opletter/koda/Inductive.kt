@@ -121,13 +121,20 @@ fun checkInductive(data: Inductive) {
 
         env.declTypeByName[constructor.name] = constructor.typeExpr
     }
-    data.recs.forEach { rec ->
+    // TODO: yikes this is bad code
+    val recNamedRecCount = data.recs.count { rec ->
         val recName = rec.name as? Name.Str
             ?: error("Recursor name must be a string name, got ${rec.name}")
-        check(recName.str == "rec" && env.names[recName.pre] == inductiveName) {
-            "Recursor ${rec.name} must be named ${inductive.name}.rec"
+        val recParent = env.names[recName.pre]
+            ?: error("Recursor ${rec.name} has missing parent name index ${recName.pre}")
+        check(recParent == inductiveName) {
+            "Recursor ${rec.name} must be in namespace ${inductive.name}"
         }
         env.declTypeByName[rec.name] = rec.typeExpr
+        recName.str == "rec"
+    }
+    check(recNamedRecCount == 1) {
+        "Inductive ${inductive.name} must declare exactly one recursor named ${inductive.name}.rec, got $recNamedRecCount"
     }
 }
 
