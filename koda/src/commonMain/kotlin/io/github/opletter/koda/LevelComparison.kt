@@ -40,7 +40,17 @@ fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
         customMax.isLessOrEqual(other, balance)
     }
 
-    is Level.Imax if this.right is Level.Max -> TODO()
+    is Level.Imax if this.right is Level.Max -> {
+        val rightMax = this.right as Level.Max
+        val leftImax = env.addCustomLevel {
+            Level.Imax(listOf(this.left.il, rightMax.left.il), it)
+        }
+        val rightImax = env.addCustomLevel {
+            Level.Imax(listOf(this.left.il, rightMax.right.il), it)
+        }
+        val customMax = env.addCustomLevel { Level.Max(listOf(leftImax.il, rightImax.il), it) }
+        customMax.isLessOrEqual(other, balance)
+    }
     else if other is Level.Imax && other.right is Level.Imax -> {
         val customImax = env.addCustomLevel {
             Level.Imax(listOf(other.left.il, (other.right as Level.Imax).right.il), it)
@@ -49,7 +59,17 @@ fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
         this.isLessOrEqual(customMax, balance)
     }
 
-    else if other is Level.Imax && other.right is Level.Max -> TODO()
+    else if other is Level.Imax && other.right is Level.Max -> {
+        val rightMax = other.right as Level.Max
+        val leftImax = env.addCustomLevel {
+            Level.Imax(listOf(other.left.il, rightMax.left.il), it)
+        }
+        val rightImax = env.addCustomLevel {
+            Level.Imax(listOf(other.left.il, rightMax.right.il), it)
+        }
+        val customMax = env.addCustomLevel { Level.Max(listOf(leftImax.il, rightImax.il), it) }
+        this.isLessOrEqual(customMax, balance)
+    }
     else if (this != this.simplify() || other != other.simplify()) ->
         this.simplify().isLessOrEqual(other.simplify(), balance)
 
