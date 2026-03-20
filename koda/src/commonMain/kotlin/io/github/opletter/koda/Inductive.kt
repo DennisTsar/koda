@@ -10,6 +10,7 @@ fun checkInductive(data: Inductive) {
     val inductive = data.type
     val typeBinderCount = inductive.numParams + inductive.numIndices
     val inductiveParamTypes = mutableListOf<Expression>()
+    val inductiveParamSortLevels = mutableListOf<Level>()
 
     // One pass over the inductive type telescope.
     val typeTailWhnf = walkForalls(
@@ -18,9 +19,10 @@ fun checkInductive(data: Inductive) {
         owner = "Inductive type ${inductive.name}",
     ) { binderIndex, binderType, levelSubst, localCtx ->
         // Every binder domain in the type constructor must itself be a type.
-        val _ = binderType.inferSort(levelSubst, localCtx)
+        val binderSort = binderType.inferSort(levelSubst, localCtx)
         if (binderIndex < inductive.numParams) {
             inductiveParamTypes += binderType
+            inductiveParamSortLevels += binderSort
         }
     }
 
@@ -28,6 +30,9 @@ fun checkInductive(data: Inductive) {
         ?: error("Inductive type must reduce to Sort after $typeBinderCount binders, got ${typeTailWhnf.expr.toStringDetailed()}")
     val inductiveSortLevel = typeSort.level.instantiateLevelParams(typeTailWhnf.levelSubst)
     val isInductiveProp = inductiveSortLevel.isLessOrEqual(Level.Zero)
+    val maxFieldSortLevel = (listOf(inductiveSortLevel) + inductiveParamSortLevels).reduce { acc, level ->
+        env.addCustomLevel { Level.Max(listOf(acc.il, level.il), it) }
+    }
 
     data.registerInto(env)
     env.declTypeByName[data.type.name] = data.type.typeExpr
@@ -63,8 +68,8 @@ fun checkInductive(data: Inductive) {
             } else {
                 // Field domain must be a type and satisfy universe + positivity checks.
                 val fieldSort = binderType.inferSort(levelSubst, localCtx)
-                check(isInductiveProp || fieldSort.isLessOrEqual(inductiveSortLevel)) {
-                    "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above inductive sort ${inductiveSortLevel.toStringDetailed()}"
+                check(isInductiveProp || fieldSort.isLessOrEqual(maxFieldSortLevel)) {
+                    "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above allowed sort ${maxFieldSortLevel.toStringDetailed()}"
                 }
                 check(!binderType.hasNegativeOccurrenceOf(inductive.name)) {
                     "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} contains a non-positive occurrence of inductive ${inductive.name}"

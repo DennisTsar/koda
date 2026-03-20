@@ -1,7 +1,7 @@
 package io.github.opletter.koda
 
 class Environment {
-    val names: MutableMap<Int, Name> = mutableMapOf()
+    val names: MutableMap<Int, Name> = mutableMapOf(0 to Name.Str(0, "", 0))
     val declarations: MutableMap<Int, NamedDecl> = mutableMapOf()
     val expressions: MutableMap<Int, Expression> = mutableMapOf()
     val levels: MutableMap<Int, Level> = mutableMapOf(0 to Level.Zero)
