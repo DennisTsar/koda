@@ -31,6 +31,8 @@ fun checkInductive(data: Inductive) {
 
     data.registerInto(env)
     env.declTypeByName[data.type.name] = data.type.typeExpr
+    val inductiveName = inductive.name as? Name.Str
+        ?: error("Inductive name must be a string name, got ${inductive.name}")
 
     data.ctors.forEach { constructor ->
         // Basic declaration-level consistency.
@@ -115,6 +117,11 @@ fun checkInductive(data: Inductive) {
         env.declTypeByName[constructor.name] = constructor.typeExpr
     }
     data.recs.forEach { rec ->
+        val recName = rec.name as? Name.Str
+            ?: error("Recursor name must be a string name, got ${rec.name}")
+        check(recName.str == "rec" && env.names[recName.pre] == inductiveName) {
+            "Recursor ${rec.name} must be named ${inductive.name}.rec"
+        }
         env.declTypeByName[rec.name] = rec.typeExpr
     }
 }
