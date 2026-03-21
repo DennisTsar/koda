@@ -39,9 +39,6 @@ fun _typeCheck(rawData: List<ExportType>) {
                 when (data) {
                     is Declaration.Axiom -> {} // no extra checks needed
                     is Declaration.Def -> {
-                        if (data.typeExpr.ie == 10830) {
-                            env.shouldLog = true
-                        }
                         check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
                             "value not defeq to type for $data"
                         }
@@ -56,6 +53,9 @@ fun _typeCheck(rawData: List<ExportType>) {
 
                     is Declaration.Quot -> {} // no extra checks needed
                     is Declaration.Thm -> {
+                        if (data.typeExpr.ie == 1854) {
+                            env.shouldLog = true
+                        }
                         check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
                             "value not defeq to type for $data"
                         }
@@ -341,6 +341,7 @@ fun Expression.isDefEq(
     localCtxRight: List<Expression> = emptyList(),
 ): Boolean {
     if (this == other) return true
+    if (this.sameShape(other)) return true
     if (env.shouldLog) {
         println("comparing:\n$this\n$other")
     }
@@ -356,6 +357,44 @@ fun Expression.isDefEq(
 }
 
 context(env: Environment)
+private fun Expression.sameShape(other: Expression): Boolean {
+    return when {
+        this is Expression.Bvar && other is Expression.Bvar -> this.bvar == other.bvar
+        this is Expression.NatVal && other is Expression.NatVal -> this.natVal == other.natVal
+        this is Expression.StrVal && other is Expression.StrVal -> this.strVal == other.strVal
+        this is Expression.Sort && other is Expression.Sort -> this.level.sameShape(other.level)
+        this is Expression.Const && other is Expression.Const ->
+            this.name == other.name &&
+                    this.levels.size == other.levels.size &&
+                    this.levels.zip(other.levels).all { it.first.sameShape(it.second) }
+
+        this is Expression.App && other is Expression.App ->
+            this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr)
+
+        this is Expression.ForallE && other is Expression.ForallE ->
+            this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
+
+        this is Expression.Lam && other is Expression.Lam ->
+            this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
+
+        this is Expression.LetE && other is Expression.LetE ->
+            this.typeExpr.sameShape(other.typeExpr) &&
+                    this.valueExpr.sameShape(other.valueExpr) &&
+                    this.bodyExpr.sameShape(other.bodyExpr)
+
+        this is Expression.Mdata && other is Expression.Mdata ->
+            this.expr.sameShape(other.expr)
+
+        this is Expression.Proj && other is Expression.Proj ->
+            this.typeNameExpr == other.typeNameExpr &&
+                    this.projIndex == other.projIndex &&
+                    this.structExpr.sameShape(other.structExpr)
+
+        else -> false
+    }
+}
+
+context(env: Environment)
 private fun Expression.isDefEqWhnf(
     other: Expression,
     levelSubstLeft: Map<Int, Level>,
@@ -364,9 +403,41 @@ private fun Expression.isDefEqWhnf(
     localCtxRight: List<Expression>,
 ): Boolean {
     return when (this) {
-        is Expression.App if other is Expression.App ->
-            this.fnExpr.isDefEq(other.fnExpr, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) &&
-                    this.argExpr.isDefEq(other.argExpr, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight)
+        is Expression.App if other is Expression.App -> {
+            val lhsNat = this.tryUnfoldNatSuccChain()
+            val rhsNat = other.tryUnfoldNatSuccChain()
+            if (lhsNat != null && rhsNat != null && lhsNat.count == rhsNat.count) {
+                lhsNat.base.isDefEq(
+                    rhsNat.base,
+                    levelSubstLeft,
+                    levelSubstRight,
+                    localCtxLeft,
+                    localCtxRight
+                )
+            } else {
+                this.fnExpr.isDefEq(other.fnExpr, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) &&
+                        this.argExpr.isDefEq(
+                            other.argExpr,
+                            levelSubstLeft,
+                            levelSubstRight,
+                            localCtxLeft,
+                            localCtxRight
+                        )
+            }
+        }
+
+        is Expression.App if other is Expression.NatVal ->
+            this.tryUnfoldNatSuccChain()
+                ?.let { chain ->
+                    other.tryCompareWithNatSuccChain(
+                        chain,
+                        chainLevelSubst = levelSubstLeft,
+                        natLevelSubst = levelSubstRight,
+                        chainLocalCtx = localCtxLeft,
+                        natLocalCtx = localCtxRight,
+                    )
+                }
+                ?: false
 
         is Expression.Bvar if other is Expression.Bvar -> {
             if (this.bvar == other.bvar) {
@@ -404,8 +475,9 @@ private fun Expression.isDefEqWhnf(
             this.name == other.name &&
                     this.levels.size == other.levels.size &&
                     this.levels.zip(other.levels).all { [l1, l2] ->
-                        l1.instantiateLevelParams(levelSubstLeft)
-                            .isEqual(l2.instantiateLevelParams(levelSubstRight))
+                        val leftLevel = l1.instantiateLevelParams(levelSubstLeft)
+                        val rightLevel = l2.instantiateLevelParams(levelSubstRight)
+                        leftLevel.sameShape(rightLevel) || leftLevel.isEqual(rightLevel)
                     }
 
         is Expression.ForallE if other is Expression.ForallE -> {
@@ -436,6 +508,18 @@ private fun Expression.isDefEqWhnf(
         is Expression.LetE if other is Expression.LetE -> TODO()
         is Expression.Mdata if other is Expression.Mdata -> TODO()
         is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
+        is Expression.NatVal if other is Expression.App ->
+            other.tryUnfoldNatSuccChain()
+                ?.let { chain ->
+                    this.tryCompareWithNatSuccChain(
+                        chain,
+                        chainLevelSubst = levelSubstRight,
+                        natLevelSubst = levelSubstLeft,
+                        chainLocalCtx = localCtxRight,
+                        natLocalCtx = localCtxLeft,
+                    )
+                }
+                ?: false
         is Expression.Proj if other is Expression.Proj ->
             this.typeNameExpr == other.typeNameExpr &&
                     this.projIndex == other.projIndex &&
@@ -478,6 +562,63 @@ private fun Expression.isDefEqWhnf(
     }
 }
 
+private data class NatSuccChain(
+    val count: Long,
+    val base: Expression,
+)
+
+private const val MAX_NAT_LITERAL_RECURSOR_REDUCTION = 1L
+
+context(env: Environment)
+private fun Expression.tryUnfoldNatSuccChain(): NatSuccChain? {
+    var current: Expression = this
+    var succCount = 0L
+
+    while (true) {
+        val app = current as? Expression.App ?: break
+        val fnConst = app.fnExpr as? Expression.Const ?: break
+        val ctorDecl = fnConst.decl as? Inductive.ConstructorVal ?: break
+        val inductiveName = ctorDecl.inductName as? Name.Str ?: break
+        if (inductiveName.pre != 0 || inductiveName.str != "Nat") break
+        if (ctorDecl.numParams != 0 || ctorDecl.numFields != 1) break
+
+        succCount += 1
+        current = app.argExpr
+    }
+
+    return if (succCount == 0L) null else NatSuccChain(succCount, current)
+}
+
+context(env: Environment)
+private fun Expression.NatVal.tryCompareWithNatSuccChain(
+    chain: NatSuccChain,
+    chainLevelSubst: Map<Int, Level>,
+    natLevelSubst: Map<Int, Level>,
+    chainLocalCtx: List<Expression>,
+    natLocalCtx: List<Expression>,
+): Boolean {
+    if (this.natVal < chain.count) return false
+    val remaining = this.natVal - chain.count
+    val baseExpr = chain.base
+    return when {
+        baseExpr is Expression.NatVal -> baseExpr.natVal == remaining
+        baseExpr.isNatZeroCtorConst() -> remaining == 0L
+        else -> {
+            val remainingExpr = env.addCustomExpr { Expression.NatVal(remaining, it) }
+            baseExpr.isDefEq(remainingExpr, chainLevelSubst, natLevelSubst, chainLocalCtx, natLocalCtx)
+        }
+    }
+}
+
+context(env: Environment)
+private fun Expression.isNatZeroCtorConst(): Boolean {
+    val constExpr = this as? Expression.Const ?: return false
+    val ctorDecl = constExpr.decl as? Inductive.ConstructorVal ?: return false
+    if (ctorDecl.numParams != 0 || ctorDecl.numFields != 0) return false
+    val inductiveName = ctorDecl.inductName as? Name.Str ?: return false
+    return inductiveName.pre == 0 && inductiveName.str == "Nat"
+}
+
 data class Whnf(
     val expr: Expression,
     val levelSubst: Map<Int, Level> = emptyMap(),
@@ -493,8 +634,6 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             check(fnTy is Expression.ForallE) {
                 "Expected function type for app ${this.toStringDetailed()}, got ${fnTy.toStringDetailed()}"
             }
-            val argTy0 = this.argExpr.inferType(levelSubst, localCtx)
-            val argTy = argTy0.expr
             val expectedArgTy = fnTy.typeExpr
             // TODO: this breaks in init-prelude
 //            check(expectedArgTy.isDefEq(argTy, emptyMap(), argTy0.levelSubst, localCtx, localCtx)) {
@@ -562,9 +701,11 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
                 "Let value type mismatch in ${this.toStringDetailed()}: expected ${this.typeExpr.toStringDetailed()}, got ${valueTyWhnf.expr.toStringDetailed()}"
             }
 
-            val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, listOf(this.typeExpr) + localCtx)
-            val instantiatedBodyTy = bodyTyWhnf.expr.applySubst(listOf(this.valueExpr))
-            Whnf(instantiatedBodyTy, bodyTyWhnf.levelSubst)
+            // Typechecking lets through localCtx alone loses let-definitional equality for nested dependent lets.
+            // Use zeta-style inference directly on the instantiated body.
+            this.bodyExpr
+                .applySubst(listOf(this.valueExpr))
+                .inferType(levelSubst, localCtx)
         }
 
         is Expression.Mdata -> TODO()
@@ -635,39 +776,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
         is Expression.Sort -> Whnf(this, levelSubst)
         is Expression.LetE -> this.bodyExpr.applySubst(listOf(this.valueExpr)).reduce(levelSubst)
         is Expression.Mdata -> TODO()
-        is Expression.NatVal -> {
-            if (this.natVal < 0) {
-                Whnf(this, levelSubst)
-            } else {
-                val natDecl = env.findRootInductive("Nat")?.second
-                val zeroCtorIndex = natDecl?.ctors?.singleOrNull { ctorIndex ->
-                    val ctorDecl = env.declarations[ctorIndex] as? Inductive.ConstructorVal ?: return@singleOrNull false
-                    ctorDecl.numParams == natDecl.numParams && ctorDecl.numFields == 0
-                }
-                val succCtorIndex = natDecl?.ctors?.singleOrNull { ctorIndex ->
-                    val ctorDecl = env.declarations[ctorIndex] as? Inductive.ConstructorVal ?: return@singleOrNull false
-                    ctorDecl.numParams == natDecl.numParams && ctorDecl.numFields == 1
-                }
-                if (natDecl == null || natDecl.numParams != 0 || zeroCtorIndex == null || succCtorIndex == null) {
-                    Whnf(this, levelSubst)
-                } else {
-                    val zeroCtor = env.addCustomExpr {
-                        Expression.Const(_name = zeroCtorIndex, us = emptyList(), ie = it)
-                    }
-                    val succCtor = env.addCustomExpr {
-                        Expression.Const(_name = succCtorIndex, us = emptyList(), ie = it)
-                    }
-                    var reducedNat: Expression = zeroCtor
-                    var remaining = this.natVal
-                    while (remaining > 0) {
-                        reducedNat =
-                            env.addCustomExpr { Expression.App(fn = succCtor.ie, arg = reducedNat.ie, ie = it) }
-                        remaining--
-                    }
-                    Whnf(reducedNat, levelSubst)
-                }
-            }
-        }
+        is Expression.NatVal -> Whnf(this, levelSubst)
 
         is Expression.Proj -> {
             val structWhnf = this.structExpr.reduce(levelSubst)
@@ -862,6 +971,41 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
         if (majorArgs.size != constructorDecl.numParams + matchingRule.nfields) return null
         val fieldArgs = majorArgs.drop(constructorDecl.numParams)
         return applyRule(matchingRule, fieldArgs, majorWhnf.levelSubst)
+    }
+
+    val majorNatLit = majorWhnf.expr as? Expression.NatVal
+    if (majorNatLit != null) {
+        if (majorNatLit.natVal !in 0L..MAX_NAT_LITERAL_RECURSOR_REDUCTION) return null
+        val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
+            recursorDecl.rules.mapNotNull { rule ->
+                val ctorDecl = env.declarations.values.filterIsInstance<Inductive.ConstructorVal>()
+                    .singleOrNull { it.name == rule.ctorName } ?: return@mapNotNull null
+                val inductiveName = ctorDecl.inductName as? Name.Str ?: return@mapNotNull null
+                if (
+                    inductiveName.pre == 0 &&
+                    inductiveName.str == "Nat" &&
+                    ctorDecl.numParams == recursorDecl.numParams &&
+                    ctorDecl.numFields == rule.nfields
+                ) {
+                    Pair(ctorDecl.numFields, rule)
+                } else {
+                    null
+                }
+            }
+        if (natRulesByFields.size == recursorDecl.rules.size) {
+            val zeroRule = natRulesByFields.singleOrNull { it.first == 0 }?.second
+            val succRule = natRulesByFields.singleOrNull { it.first == 1 }?.second
+            if (zeroRule != null && succRule != null) {
+                return if (majorNatLit.natVal == 0L) {
+                    applyRule(zeroRule, emptyList(), majorWhnf.levelSubst)
+                } else if (majorNatLit.natVal > 0L) {
+                    val predNat = env.addCustomExpr { Expression.NatVal(majorNatLit.natVal - 1, it) }
+                    applyRule(succRule, listOf(predNat), majorWhnf.levelSubst)
+                } else {
+                    null
+                }
+            }
+        }
     }
 
     // K-like reduction: for recursors marked `k`, allow reducing neutral major premises
@@ -1082,47 +1226,64 @@ private fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expressio
 
         is Expression.Sort -> {
             val newLevel = this.level.instantiateLevelParams(subst)
-            if (newLevel == this.level) this else env.addCustomExpr { this.copy(sort = newLevel.il, ie = it) }
+            if (newLevel.sameShape(this.level)) this else env.addCustomExpr { this.copy(sort = newLevel.il, ie = it) }
         }
 
         is Expression.Const -> {
             val newUs = this.levels.map { it.instantiateLevelParams(subst).il }
-            env.addCustomExpr { this.copy(us = newUs, ie = it) }
+            val oldUs = this.levels.map { it.il }
+            if (newUs == oldUs) this else env.addCustomExpr { this.copy(us = newUs, ie = it) }
         }
 
         is Expression.App -> {
             val newFn = this.fnExpr.instantiateLevelParams(subst)
             val newArg = this.argExpr.instantiateLevelParams(subst)
-            env.addCustomExpr { this.copy(fn = newFn.ie, arg = newArg.ie, ie = it) }
+            if (newFn == this.fnExpr && newArg == this.argExpr) {
+                this
+            } else {
+                env.addCustomExpr { this.copy(fn = newFn.ie, arg = newArg.ie, ie = it) }
+            }
         }
 
         is Expression.ForallE -> {
             val newType = this.typeExpr.instantiateLevelParams(subst)
             val newBody = this.bodyExpr.instantiateLevelParams(subst)
-            env.addCustomExpr { this.copy(type = newType.ie, body = newBody.ie, ie = it) }
+            if (newType == this.typeExpr && newBody == this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr { this.copy(type = newType.ie, body = newBody.ie, ie = it) }
+            }
         }
 
         is Expression.Lam -> {
             val newType = this.typeExpr.instantiateLevelParams(subst)
             val newBody = this.bodyExpr.instantiateLevelParams(subst)
-            env.addCustomExpr { this.copy(type = newType.ie, body = newBody.ie, ie = it) }
+            if (newType == this.typeExpr && newBody == this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr { this.copy(type = newType.ie, body = newBody.ie, ie = it) }
+            }
         }
 
         is Expression.LetE -> {
             val newType = this.typeExpr.instantiateLevelParams(subst)
             val newValue = this.valueExpr.instantiateLevelParams(subst)
             val newBody = this.bodyExpr.instantiateLevelParams(subst)
-            env.addCustomExpr { this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it) }
+            if (newType == this.typeExpr && newValue == this.valueExpr && newBody == this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr { this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it) }
+            }
         }
 
         is Expression.Mdata -> {
             val newExpr = this.expr.instantiateLevelParams(subst)
-            env.addCustomExpr { this.copy(_expr = newExpr.ie, ie = it) }
+            if (newExpr == this.expr) this else env.addCustomExpr { this.copy(_expr = newExpr.ie, ie = it) }
         }
 
         is Expression.Proj -> {
             val newStruct = this.structExpr.instantiateLevelParams(subst)
-            env.addCustomExpr { this.copy(struct = newStruct.ie, ie = it) }
+            if (newStruct == this.structExpr) this else env.addCustomExpr { this.copy(struct = newStruct.ie, ie = it) }
         }
     }
 }
@@ -1209,7 +1370,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
         is Level.Param -> subst[this.il] ?: this
         is Level.Succ -> {
             val newLevel = this.level.instantiateLevelParams(subst)
-            if (newLevel == this.level) {
+            if (newLevel.sameShape(this.level)) {
                 this
             } else {
                 env.addCustomLevel { Level.Succ(newLevel.il, it) }
@@ -1219,7 +1380,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
         is Level.Max -> {
             val newLeft = this.left.instantiateLevelParams(subst)
             val newRight = this.right.instantiateLevelParams(subst)
-            if (newLeft == this.left && newRight == this.right) {
+            if (newLeft.sameShape(this.left) && newRight.sameShape(this.right)) {
                 this
             } else {
                 env.addCustomLevel { Level.Max(listOf(newLeft.il, newRight.il), it) }
@@ -1229,12 +1390,28 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
         is Level.Imax -> {
             val newLeft = this.left.instantiateLevelParams(subst)
             val newRight = this.right.instantiateLevelParams(subst)
-            if (newLeft == this.left && newRight == this.right) {
+            if (newLeft.sameShape(this.left) && newRight.sameShape(this.right)) {
                 this
             } else {
                 env.addCustomLevel { Level.Imax(listOf(newLeft.il, newRight.il), it) }
             }
         }
+    }
+}
+
+context(env: Environment)
+private fun Level.sameShape(other: Level): Boolean {
+    return when (this) {
+        is Level.Zero if other is Level.Zero -> true
+        is Level.Param if other is Level.Param -> this.name == other.name
+        is Level.Succ if other is Level.Succ -> this.level.sameShape(other.level)
+        is Level.Max if other is Level.Max ->
+            this.left.sameShape(other.left) && this.right.sameShape(other.right)
+
+        is Level.Imax if other is Level.Imax ->
+            this.left.sameShape(other.left) && this.right.sameShape(other.right)
+
+        else -> false
     }
 }
 
