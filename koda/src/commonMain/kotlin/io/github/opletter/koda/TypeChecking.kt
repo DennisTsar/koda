@@ -53,9 +53,9 @@ fun _typeCheck(rawData: List<ExportType>) {
 
                     is Declaration.Quot -> {} // no extra checks needed
                     is Declaration.Thm -> {
-                        if (data.typeExpr.ie == 1854) {
-                            env.shouldLog = true
-                        }
+//                        if (data.typeExpr.ie == 70618) {
+//                            env.shouldLog = true
+//                        }
                         check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
                             "value not defeq to type for $data"
                         }
@@ -358,34 +358,34 @@ fun Expression.isDefEq(
 
 context(env: Environment)
 private fun Expression.sameShape(other: Expression): Boolean {
-    return when {
-        this is Expression.Bvar && other is Expression.Bvar -> this.bvar == other.bvar
-        this is Expression.NatVal && other is Expression.NatVal -> this.natVal == other.natVal
-        this is Expression.StrVal && other is Expression.StrVal -> this.strVal == other.strVal
-        this is Expression.Sort && other is Expression.Sort -> this.level.sameShape(other.level)
-        this is Expression.Const && other is Expression.Const ->
+    return when (this) {
+        is Expression.Bvar if other is Expression.Bvar -> this.bvar == other.bvar
+        is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
+        is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
+        is Expression.Sort if other is Expression.Sort -> this.level.sameShape(other.level)
+        is Expression.Const if other is Expression.Const ->
             this.name == other.name &&
                     this.levels.size == other.levels.size &&
                     this.levels.zip(other.levels).all { it.first.sameShape(it.second) }
 
-        this is Expression.App && other is Expression.App ->
+        is Expression.App if other is Expression.App ->
             this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr)
 
-        this is Expression.ForallE && other is Expression.ForallE ->
+        is Expression.ForallE if other is Expression.ForallE ->
             this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
 
-        this is Expression.Lam && other is Expression.Lam ->
+        is Expression.Lam if other is Expression.Lam ->
             this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
 
-        this is Expression.LetE && other is Expression.LetE ->
+        is Expression.LetE if other is Expression.LetE ->
             this.typeExpr.sameShape(other.typeExpr) &&
                     this.valueExpr.sameShape(other.valueExpr) &&
                     this.bodyExpr.sameShape(other.bodyExpr)
 
-        this is Expression.Mdata && other is Expression.Mdata ->
+        is Expression.Mdata if other is Expression.Mdata ->
             this.expr.sameShape(other.expr)
 
-        this is Expression.Proj && other is Expression.Proj ->
+        is Expression.Proj if other is Expression.Proj ->
             this.typeNameExpr == other.typeNameExpr &&
                     this.projIndex == other.projIndex &&
                     this.structExpr.sameShape(other.structExpr)
@@ -472,13 +472,29 @@ private fun Expression.isDefEqWhnf(
         }
 
         is Expression.Const if other is Expression.Const ->
-            this.name == other.name &&
-                    this.levels.size == other.levels.size &&
-                    this.levels.zip(other.levels).all { [l1, l2] ->
-                        val leftLevel = l1.instantiateLevelParams(levelSubstLeft)
-                        val rightLevel = l2.instantiateLevelParams(levelSubstRight)
-                        leftLevel.sameShape(rightLevel) || leftLevel.isEqual(rightLevel)
+            if (this.name != other.name || this.levels.size != other.levels.size) {
+                false
+            } else {
+                this.levels.zip(other.levels).all { [l1, l2] ->
+                    val leftLevel = l1.instantiateLevelParams(levelSubstLeft)
+                    val rightLevel = l2.instantiateLevelParams(levelSubstRight)
+                    val standardResult = leftLevel.sameShape(rightLevel) || leftLevel.isEqual(rightLevel)
+                    if (standardResult) {
+                        true
+                    } else {
+                        val shouldTrySelfRefFallback =
+                            l1.hasNestedSelfReferentialParam(levelSubstLeft) ||
+                                    l2.hasNestedSelfReferentialParam(levelSubstRight)
+                        if (!shouldTrySelfRefFallback) {
+                            false
+                        } else {
+                            val leftFallback = l1.instantiateLevelParamsForConstEq(levelSubstLeft)
+                            val rightFallback = l2.instantiateLevelParamsForConstEq(levelSubstRight)
+                            leftFallback.sameShape(rightFallback) || leftFallback.isEqual(rightFallback)
+                        }
                     }
+                }
+            }
 
         is Expression.ForallE if other is Expression.ForallE -> {
             this.typeExpr.isDefEq(other.typeExpr, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) &&
@@ -767,7 +783,11 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
         is Expression.Const -> {
             val constLevelSubst = this.composeLevelSubst(levelSubst)
             when (val d = decl) {
-                is Declaration.Def -> d.valueExpr.reduce(constLevelSubst)
+                is Declaration.Def -> {
+                    val instantiatedValue = d.valueExpr.instantiateLevelParams(constLevelSubst)
+                    instantiatedValue.reduce(levelSubst)
+                }
+
                 else -> Whnf(this, constLevelSubst)
             }
         }
@@ -1368,6 +1388,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
     return when (this) {
         Level.Zero -> this
         is Level.Param -> subst[this.il] ?: this
+
         is Level.Succ -> {
             val newLevel = this.level.instantiateLevelParams(subst)
             if (newLevel.sameShape(this.level)) {
@@ -1433,8 +1454,96 @@ context(env: Environment)
 private fun mergeLevelSubst(outer: Map<Int, Level>, inner: Map<Int, Level>): Map<Int, Level> {
     if (outer.isEmpty()) return inner
     if (inner.isEmpty()) return outer
-    val normalizedInner = inner.mapValues { entry -> entry.value.instantiateLevelParams(outer) }
+    val normalizedInner = inner.mapValues { (key, value) ->
+        val outerForKey = if (key in outer && outer.getValue(key).containsParamId(key)) {
+            outer - key
+        } else {
+            outer
+        }
+        value.instantiateLevelParams(outerForKey)
+    }
     return outer + normalizedInner
+}
+
+context(env: Environment)
+private fun Level.containsParamId(paramId: Int): Boolean {
+    return when (this) {
+        Level.Zero -> false
+        is Level.Param -> this.il == paramId
+        is Level.Succ -> this.level.containsParamId(paramId)
+        is Level.Max -> this.left.containsParamId(paramId) || this.right.containsParamId(paramId)
+        is Level.Imax -> this.left.containsParamId(paramId) || this.right.containsParamId(paramId)
+    }
+}
+
+context(env: Environment)
+private fun Level.instantiateLevelParamsForConstEq(
+    subst: Map<Int, Level>,
+    depth: Int = 0,
+): Level {
+    return when (this) {
+        Level.Zero -> this
+        is Level.Param -> {
+            val replacement = subst[this.il] ?: return this
+            if (replacement.containsParamId(this.il)) {
+                if (depth == 0) {
+                    replacement.instantiateLevelParamsForConstEq(subst - this.il, depth)
+                } else {
+                    this
+                }
+            } else {
+                replacement.instantiateLevelParamsForConstEq(subst, depth)
+            }
+        }
+
+        is Level.Succ -> {
+            val newLevel = this.level.instantiateLevelParamsForConstEq(subst, depth + 1)
+            if (newLevel.sameShape(this.level)) {
+                this
+            } else {
+                env.addCustomLevel { Level.Succ(newLevel.il, it) }
+            }
+        }
+
+        is Level.Max -> {
+            val newLeft = this.left.instantiateLevelParamsForConstEq(subst, depth + 1)
+            val newRight = this.right.instantiateLevelParamsForConstEq(subst, depth + 1)
+            if (newLeft.sameShape(this.left) && newRight.sameShape(this.right)) {
+                this
+            } else {
+                env.addCustomLevel { Level.Max(listOf(newLeft.il, newRight.il), it) }
+            }
+        }
+
+        is Level.Imax -> {
+            val newLeft = this.left.instantiateLevelParamsForConstEq(subst, depth + 1)
+            val newRight = this.right.instantiateLevelParamsForConstEq(subst, depth + 1)
+            if (newLeft.sameShape(this.left) && newRight.sameShape(this.right)) {
+                this
+            } else {
+                env.addCustomLevel { Level.Imax(listOf(newLeft.il, newRight.il), it) }
+            }
+        }
+    }
+}
+
+context(env: Environment)
+private fun Level.hasNestedSelfReferentialParam(
+    subst: Map<Int, Level>,
+    depth: Int = 0,
+): Boolean {
+    return when (this) {
+        Level.Zero -> false
+        is Level.Param -> depth > 0 && (subst[this.il]?.containsParamId(this.il) == true)
+        is Level.Succ -> this.level.hasNestedSelfReferentialParam(subst, depth + 1)
+        is Level.Max ->
+            this.left.hasNestedSelfReferentialParam(subst, depth + 1) ||
+                    this.right.hasNestedSelfReferentialParam(subst, depth + 1)
+
+        is Level.Imax ->
+            this.left.hasNestedSelfReferentialParam(subst, depth + 1) ||
+                    this.right.hasNestedSelfReferentialParam(subst, depth + 1)
+    }
 }
 
 context(env: Environment)
