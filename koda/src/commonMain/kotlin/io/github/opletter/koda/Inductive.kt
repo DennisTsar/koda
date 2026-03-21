@@ -153,8 +153,8 @@ private fun walkForalls(
     repeat(expectedBinders) { binderIndex ->
         val current = if (reduceExpr) {
             val whnf = currentExpr.reduce(currentLevelSubst)
-            currentLevelSubst = whnf.levelSubst
-            whnf.expr
+            currentLevelSubst = emptyMap()
+            whnf.expr.instantiateLevelParams(whnf.levelSubst)
         } else {
             currentExpr
         }
@@ -166,7 +166,12 @@ private fun walkForalls(
         currentExpr = forall.bodyExpr
     }
 
-    return currentExpr.let { if (reduceExpr) it.reduce(currentLevelSubst) else Whnf(it, currentLevelSubst) }
+    return if (reduceExpr) {
+        val whnf = currentExpr.reduce(currentLevelSubst)
+        Whnf(whnf.expr.instantiateLevelParams(whnf.levelSubst))
+    } else {
+        Whnf(currentExpr.instantiateLevelParams(currentLevelSubst))
+    }
 }
 
 context(env: Environment)
