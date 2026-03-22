@@ -81,7 +81,6 @@ fun _typeCheck(rawData: List<ExportType>) {
     }
 }
 
-
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     if (env.shouldLog) println("found value: ${value.toStringDetailed()}")
@@ -116,7 +115,7 @@ fun Expression.isDefEq(
     val leftWhnfExpr = lhsWhnf.reifyWhnf()
     val rightWhnfExpr = rhsWhnf.reifyWhnf()
     if (leftWhnfExpr == rightWhnfExpr) return true
-    if (leftWhnfExpr.sameShape(rightWhnfExpr)) return true
+//    if (leftWhnfExpr.sameShape(rightWhnfExpr)) return true
     if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) return true
     return leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
 }
