@@ -117,61 +117,22 @@ fun Expression.isDefEq(
     val rightWhnfExpr = rhsWhnf.reifyWhnf()
     if (leftWhnfExpr == rightWhnfExpr) return true
     if (leftWhnfExpr.sameShape(rightWhnfExpr)) return true
-    if (leftWhnfExpr.isDefEqWhnf(
-        rightWhnfExpr,
-        localCtxLeft,
-        localCtxRight,
-        )
-    ) return true
+    if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) return true
     return leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
-}
-
-private fun pairKey(a: Int, b: Int): Long {
-    val left = minOf(a, b).toLong() and 0xffffffffL
-    val right = maxOf(a, b).toLong() and 0xffffffffL
-    return (left shl 32) or right
-}
-
-private data class LevelShapeKey(
-    val tag: Int,
-    val name: Name? = null,
-    val left: Int = 0,
-    val right: Int = 0,
-)
-
-context(env: Environment)
-private fun Level.shapeId(): Int {
-    env.levelShapeIdByLevel[this.il]?.let { return it }
-    val key = when (this) {
-        Level.Zero -> LevelShapeKey(tag = 0)
-        is Level.Param -> LevelShapeKey(tag = 1, name = this.name)
-        is Level.Succ -> LevelShapeKey(tag = 2, left = this.level.shapeId())
-        is Level.Max -> LevelShapeKey(tag = 3, left = this.left.shapeId(), right = this.right.shapeId())
-        is Level.Imax -> LevelShapeKey(tag = 4, left = this.left.shapeId(), right = this.right.shapeId())
-    }
-    val shapeId = env.levelShapeInterner.getOrPut(key) {
-        val next = env.nextLevelShapeId
-        env.nextLevelShapeId += 1
-        next
-    }
-    env.levelShapeIdByLevel[this.il] = shapeId
-    return shapeId
 }
 
 context(env: Environment)
 private fun Expression.sameShape(other: Expression): Boolean {
     if (this.ie == other.ie) return true
-    val cacheKey = pairKey(this.ie, other.ie)
-    env.sameShapeExprCache[cacheKey]?.let { return it }
     val result = when (this) {
         is Expression.Bvar if other is Expression.Bvar -> this.bvar == other.bvar
         is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
         is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
-        is Expression.Sort if other is Expression.Sort -> this.level.sameShape(other.level)
+        is Expression.Sort if other is Expression.Sort -> this.level == other.level//this.level.sameShape(other.level)
         is Expression.Const if other is Expression.Const ->
             this.name == other.name &&
                     this.levels.size == other.levels.size &&
-                    this.levels.zip(other.levels).all { it.first.sameShape(it.second) }
+                    this.levels.zip(other.levels).all { it.first == it.second }
 
         is Expression.App if other is Expression.App ->
             this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr)
@@ -197,7 +158,6 @@ private fun Expression.sameShape(other: Expression): Boolean {
 
         else -> false
     }
-    env.sameShapeExprCache[cacheKey] = result
     return result
 }
 
@@ -529,9 +489,6 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
 
 context(env: Environment)
 fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
-    if (levelSubst.isEmpty()) {
-        env.reduceCacheEmpty[this.ie]?.let { return it }
-    }
     if (env.shouldLog) println("trying to reduce ${this}")
     val result = when (this) {
         is Expression.App -> {
@@ -609,9 +566,6 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
         }
 
         is Expression.StrVal -> Whnf(this)
-    }
-    if (levelSubst.isEmpty()) {
-        env.reduceCacheEmpty[this.ie] = result
     }
     return result
 }
@@ -1240,12 +1194,6 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
             }
         }
     }
-}
-
-context(env: Environment)
-private fun Level.sameShape(other: Level): Boolean {
-    if (this.il == other.il) return true
-    return this.shapeId() == other.shapeId()
 }
 
 context(env: Environment)
