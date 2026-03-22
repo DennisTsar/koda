@@ -111,8 +111,13 @@ fun Expression.isDefEq(
     }
     val lhsWhnf = leftExpr.reduce()
     val rhsWhnf = rightExpr.reduce()
-    return lhsWhnf.reifyWhnf().isDefEqWhnf(
-        rhsWhnf.reifyWhnf(),
+    val leftWhnfExpr = lhsWhnf.reifyWhnf()
+    val rightWhnfExpr = rhsWhnf.reifyWhnf()
+    if (leftWhnfExpr == rightWhnfExpr) return true
+    if (leftWhnfExpr.sameShape(rightWhnfExpr)) return true
+    if (leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)) return true
+    return leftWhnfExpr.isDefEqWhnf(
+        rightWhnfExpr,
         localCtxLeft,
         localCtxRight,
     )
@@ -173,34 +178,15 @@ private fun Expression.isDefEqWhnf(
                     localCtxRight = localCtxRight,
                 )
             } else {
-                val fnDefEq = this.fnExpr.isDefEq(
-                    other.fnExpr,
-                    localCtxLeft = localCtxLeft,
-                    localCtxRight = localCtxRight,
-                )
-                if (!fnDefEq) {
-                    return this.tryProofIrrelevanceDefEq(other, localCtxLeft, localCtxRight)
-                }
-                val argDefEq = this.argExpr.isDefEq(
-                    other.argExpr,
-                    localCtxLeft = localCtxLeft,
-                    localCtxRight = localCtxRight,
-                )
-                if (!argDefEq) {
-                    return this.tryProofIrrelevanceDefEq(other, localCtxLeft, localCtxRight)
-                }
-                true
+                this.fnExpr.isDefEq(other.fnExpr, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight) &&
+                        this.argExpr.isDefEq(other.argExpr, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
             }
         }
 
         is Expression.App if other is Expression.NatVal ->
             this.tryUnfoldNatSuccChain()
                 ?.let { chain ->
-                    other.tryCompareWithNatSuccChain(
-                        chain,
-                        chainLocalCtx = localCtxLeft,
-                        natLocalCtx = localCtxRight,
-                    )
+                    other.tryCompareWithNatSuccChain(chain, chainLocalCtx = localCtxLeft, natLocalCtx = localCtxRight)
                 }
                 ?: false
 
@@ -210,18 +196,11 @@ private fun Expression.isDefEqWhnf(
             } else if (this.bvar < localCtxLeft.size && other.bvar < localCtxRight.size) {
                 val thisType = localCtxLeft[this.bvar].lift(this.bvar + 1)
                 val otherType = localCtxRight[other.bvar].lift(other.bvar + 1)
-                val typesDefEq = thisType.isDefEq(
-                    otherType,
-                    localCtxLeft = localCtxLeft,
-                    localCtxRight = localCtxRight,
-                )
+                val typesDefEq = thisType.isDefEq(otherType, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
                 if (!typesDefEq) {
                     false
                 } else {
-                    val thisSort = thisType.inferSort(localCtx = localCtxLeft)
-                    val otherSort = otherType.inferSort(localCtx = localCtxRight)
-                    (thisSort.isLessOrEqual(Level.Zero) && otherSort.isLessOrEqual(Level.Zero))
-                            || this.tryStructureEtaDefEq(
+                    this.tryStructureEtaDefEq(
                         other,
                         localCtxLeft,
                         localCtxRight,
@@ -296,9 +275,6 @@ private fun Expression.isDefEqWhnf(
 
         is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
         else -> {
-            if (this.tryProofIrrelevanceDefEq(other, localCtxLeft, localCtxRight)) {
-                return true
-            }
             if (other is Expression.Lam) {
                 other.tryEtaReduce()?.let {
                     return this.isDefEq(it, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
@@ -932,8 +908,8 @@ private fun Expression.tryProofIrrelevanceDefEq(
 ): Boolean {
     val thisTy0 = this.inferType(localCtx = localCtxLeft)
     val otherTy0 = other.inferType(localCtx = localCtxRight)
-    val thisTy = thisTy0.expr.reduce(thisTy0.levelSubst).reifyWhnf()
-    val otherTy = otherTy0.expr.reduce(otherTy0.levelSubst).reifyWhnf()
+    val thisTy = thisTy0.reifyWhnf()
+    val otherTy = otherTy0.reifyWhnf()
     val thisSort = thisTy.inferSort(localCtx = localCtxLeft)
     val otherSort = otherTy.inferSort(localCtx = localCtxRight)
     if (!thisSort.isLessOrEqual(Level.Zero) || !otherSort.isLessOrEqual(Level.Zero)) {
