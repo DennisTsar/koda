@@ -94,241 +94,6 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     return expectedType.isDefEq(actualType, levelSubstRight = inferredValueType.levelSubst)
 }
 
-class Everything(
-    val env: Environment,
-    val _this: Expression,
-    val other: Expression,
-    val levelSubstLeft: Map<Int, Level> = emptyMap(),
-    val levelSubstRight: Map<Int, Level> = emptyMap(),
-    val localCtxLeft: List<Expression> = emptyList(),
-    val localCtxRight: List<Expression> = emptyList(),
-)
-
-object Blah {
-    val isDefEq: DeepRecursiveFunction<Everything, Boolean> = DeepRecursiveFunction { t ->
-        context(t.env) {
-            val (env, _this, other, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) = t
-            val lhsWhnf = _this.reduce(levelSubst = levelSubstLeft)
-            val rhsWhnf = other.reduce(levelSubst = levelSubstRight)
-            isDefEqWhnf.callRecursive(
-                Everything(
-                    env,
-                    lhsWhnf.expr,
-                    rhsWhnf.expr,
-                    lhsWhnf.levelSubst,
-                    rhsWhnf.levelSubst,
-                    localCtxLeft,
-                    localCtxRight,
-                )
-            )
-        }
-    }
-    val isDefEqWhnf: DeepRecursiveFunction<Everything, Boolean> = DeepRecursiveFunction { t ->
-        val (env, _this, other, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) = t
-        context(t.env) {
-            when (_this) {
-                is Expression.App if other is Expression.App ->
-                    isDefEq.callRecursive(
-                        Everything(
-                            env,
-                            _this.fnExpr,
-                            other.fnExpr,
-                            levelSubstLeft,
-                            levelSubstRight,
-                            localCtxLeft,
-                            localCtxRight
-                        )
-                    ) &&
-                            isDefEq.callRecursive(
-                                Everything(
-                                    env,
-                                    _this.argExpr,
-                                    other.argExpr,
-                                    levelSubstLeft,
-                                    levelSubstRight,
-                                    localCtxLeft,
-                                    localCtxRight
-                                )
-                            )
-
-                is Expression.Bvar if other is Expression.Bvar -> {
-                    if (_this.bvar == other.bvar) {
-                        true
-                    } else if (_this.bvar < localCtxLeft.size && other.bvar < localCtxRight.size) {
-                        val thisType = localCtxLeft[_this.bvar].lift(_this.bvar + 1)
-                        val otherType = localCtxRight[other.bvar].lift(other.bvar + 1)
-                        val typesDefEq = isDefEq.callRecursive(
-                            Everything(
-                                env, thisType,
-                                otherType,
-                                levelSubstLeft,
-                                levelSubstRight,
-                                localCtxLeft,
-                                localCtxRight,
-                            )
-                        )
-                        if (!typesDefEq) {
-                            false
-                        } else {
-                            val thisSort = thisType.inferSort(levelSubstLeft, localCtxLeft)
-                            val otherSort = otherType.inferSort(levelSubstRight, localCtxRight)
-                            (thisSort.isLessOrEqual(Level.Zero) && otherSort.isLessOrEqual(Level.Zero))
-                                    || _this.tryStructureEtaDefEq(
-                                other,
-                                levelSubstLeft,
-                                levelSubstRight,
-                                localCtxLeft,
-                                localCtxRight,
-                            )
-                        }
-                    } else {
-                        false
-                    }
-                }
-
-                is Expression.Const if other is Expression.Const ->
-                    _this.name == other.name &&
-                            _this.levels.size == other.levels.size &&
-                            _this.levels.zip(other.levels).all { [l1, l2] ->
-                                l1.instantiateLevelParams(levelSubstLeft)
-                                    .isEqual(l2.instantiateLevelParams(levelSubstRight))
-                            }
-
-                is Expression.ForallE if other is Expression.ForallE -> {
-                    isDefEq.callRecursive(
-                        Everything(
-                            env,
-                            _this.typeExpr,
-                            other.typeExpr,
-                            levelSubstLeft,
-                            levelSubstRight,
-                            localCtxLeft,
-                            localCtxRight
-                        )
-                    ) &&
-                            isDefEq.callRecursive(
-                                Everything(
-                                    env, _this.bodyExpr,
-                                    other.bodyExpr,
-                                    levelSubstLeft,
-                                    levelSubstRight,
-                                    listOf(_this.typeExpr) + localCtxLeft,
-                                    listOf(other.typeExpr) + localCtxRight,
-                                )
-                            )
-                }
-
-                is Expression.Lam if other is Expression.Lam -> {
-                    isDefEq.callRecursive(
-                        Everything(
-                            env,
-                            _this.typeExpr,
-                            other.typeExpr,
-                            levelSubstLeft,
-                            levelSubstRight,
-                            localCtxLeft,
-                            localCtxRight
-                        )
-                    ) &&
-                            isDefEq.callRecursive(
-                                Everything(
-                                    env, _this.bodyExpr,
-                                    other.bodyExpr,
-                                    levelSubstLeft,
-                                    levelSubstRight,
-                                    listOf(_this.typeExpr) + localCtxLeft,
-                                    listOf(other.typeExpr) + localCtxRight,
-                                )
-                            )
-                }
-
-                is Expression.Lam ->
-                    _this.tryEtaReduce()
-                        ?.let {
-                            isDefEq.callRecursive(
-                                Everything(
-                                    env,
-                                    it,
-                                    other,
-                                    levelSubstLeft,
-                                    levelSubstRight,
-                                    localCtxLeft,
-                                    localCtxRight
-                                )
-                            )
-                        }
-                        ?: false
-
-                is Expression.LetE if other is Expression.LetE -> TODO()
-                is Expression.Mdata if other is Expression.Mdata -> TODO()
-                is Expression.NatVal if other is Expression.NatVal -> _this.natVal == other.natVal
-                is Expression.Proj if other is Expression.Proj ->
-                    _this.typeNameExpr == other.typeNameExpr &&
-                            _this.projIndex == other.projIndex &&
-                            isDefEq.callRecursive(
-                                Everything(
-                                    env, _this.structExpr,
-                                    other.structExpr,
-                                    levelSubstLeft,
-                                    levelSubstRight,
-                                    localCtxLeft,
-                                    localCtxRight
-                                )
-                            )
-
-                is Expression.Sort if other is Expression.Sort ->
-                    _this.level.instantiateLevelParams(levelSubstLeft)
-                        .isEqual(other.level.instantiateLevelParams(levelSubstRight))
-
-                is Expression.StrVal if other is Expression.StrVal -> _this.strVal == other.strVal
-                else -> {
-                    if (other is Expression.Lam) {
-                        other.tryEtaReduce()?.let {
-                            return@DeepRecursiveFunction isDefEq.callRecursive(
-                                Everything(
-                                    env,
-                                    _this,
-                                    it,
-                                    levelSubstLeft,
-                                    levelSubstRight,
-                                    localCtxLeft,
-                                    localCtxRight
-                                )
-                            )
-                        }
-                    }
-                    if (_this.tryStructureEtaDefEq(
-                            other,
-                            levelSubstLeft,
-                            levelSubstRight,
-                            localCtxLeft,
-                            localCtxRight
-                        )
-                    ) {
-                        return@DeepRecursiveFunction true
-                    }
-                    val reducedThis = _this.reduce(levelSubstLeft)
-                    val reducedOther = other.reduce(levelSubstRight)
-                    if (reducedThis.expr == _this && reducedOther.expr == other) {
-                        false
-                    } else {
-                        isDefEq.callRecursive(
-                            Everything(
-                                env, reducedThis.expr,
-                                reducedOther.expr,
-                                reducedThis.levelSubst,
-                                reducedOther.levelSubst,
-                                localCtxLeft,
-                                localCtxRight,
-                            )
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
 context(env: Environment)
 fun Expression.isDefEq(
     other: Expression,
@@ -348,8 +113,6 @@ fun Expression.isDefEq(
     val rhsWhnf = rightExpr.reduce()
     return lhsWhnf.reifyWhnf().isDefEqWhnf(
         rhsWhnf.reifyWhnf(),
-        emptyMap(),
-        emptyMap(),
         localCtxLeft,
         localCtxRight,
     )
@@ -396,8 +159,6 @@ private fun Expression.sameShape(other: Expression): Boolean {
 context(env: Environment)
 private fun Expression.isDefEqWhnf(
     other: Expression,
-    levelSubstLeft: Map<Int, Level>,
-    levelSubstRight: Map<Int, Level>,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
@@ -408,19 +169,19 @@ private fun Expression.isDefEqWhnf(
             if (lhsNat != null && rhsNat != null && lhsNat.count == rhsNat.count) {
                 lhsNat.base.isDefEq(
                     rhsNat.base,
-                    levelSubstLeft,
-                    levelSubstRight,
-                    localCtxLeft,
-                    localCtxRight
+                    localCtxLeft = localCtxLeft,
+                    localCtxRight = localCtxRight,
                 )
             } else {
-                this.fnExpr.isDefEq(other.fnExpr, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) &&
+                this.fnExpr.isDefEq(
+                    other.fnExpr,
+                    localCtxLeft = localCtxLeft,
+                    localCtxRight = localCtxRight,
+                ) &&
                         this.argExpr.isDefEq(
                             other.argExpr,
-                            levelSubstLeft,
-                            levelSubstRight,
-                            localCtxLeft,
-                            localCtxRight
+                            localCtxLeft = localCtxLeft,
+                            localCtxRight = localCtxRight,
                         )
             }
         }
@@ -430,8 +191,6 @@ private fun Expression.isDefEqWhnf(
                 ?.let { chain ->
                     other.tryCompareWithNatSuccChain(
                         chain,
-                        chainLevelSubst = levelSubstLeft,
-                        natLevelSubst = levelSubstRight,
                         chainLocalCtx = localCtxLeft,
                         natLocalCtx = localCtxRight,
                     )
@@ -446,21 +205,17 @@ private fun Expression.isDefEqWhnf(
                 val otherType = localCtxRight[other.bvar].lift(other.bvar + 1)
                 val typesDefEq = thisType.isDefEq(
                     otherType,
-                    levelSubstLeft,
-                    levelSubstRight,
-                    localCtxLeft,
-                    localCtxRight,
+                    localCtxLeft = localCtxLeft,
+                    localCtxRight = localCtxRight,
                 )
                 if (!typesDefEq) {
                     false
                 } else {
-                    val thisSort = thisType.inferSort(levelSubstLeft, localCtxLeft)
-                    val otherSort = otherType.inferSort(levelSubstRight, localCtxRight)
+                    val thisSort = thisType.inferSort(localCtx = localCtxLeft)
+                    val otherSort = otherType.inferSort(localCtx = localCtxRight)
                     (thisSort.isLessOrEqual(Level.Zero) && otherSort.isLessOrEqual(Level.Zero))
                             || this.tryStructureEtaDefEq(
                         other,
-                        levelSubstLeft,
-                        levelSubstRight,
                         localCtxLeft,
                         localCtxRight,
                     )
@@ -474,35 +229,39 @@ private fun Expression.isDefEqWhnf(
             this.name == other.name &&
                     this.levels.size == other.levels.size &&
                     this.levels.zip(other.levels).all { [l1, l2] ->
-                        val leftLevel = l1.instantiateLevelParams(levelSubstLeft)
-                        val rightLevel = l2.instantiateLevelParams(levelSubstRight)
-                        leftLevel.sameShape(rightLevel) || leftLevel.isEqual(rightLevel)
+                        l1.sameShape(l2) || l1.isEqual(l2)
                     }
 
         is Expression.ForallE if other is Expression.ForallE -> {
-            this.typeExpr.isDefEq(other.typeExpr, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) &&
+            this.typeExpr.isDefEq(
+                other.typeExpr,
+                localCtxLeft = localCtxLeft,
+                localCtxRight = localCtxRight,
+            ) &&
                     this.bodyExpr.isDefEq(
                         other.bodyExpr,
-                        levelSubstLeft,
-                        levelSubstRight,
-                        listOf(this.typeExpr) + localCtxLeft,
-                        listOf(other.typeExpr) + localCtxRight,
+                        localCtxLeft = listOf(this.typeExpr) + localCtxLeft,
+                        localCtxRight = listOf(other.typeExpr) + localCtxRight,
                     )
         }
 
         is Expression.Lam if other is Expression.Lam -> {
-            this.typeExpr.isDefEq(other.typeExpr, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) &&
+            this.typeExpr.isDefEq(
+                other.typeExpr,
+                localCtxLeft = localCtxLeft,
+                localCtxRight = localCtxRight,
+            ) &&
                     this.bodyExpr.isDefEq(
                         other.bodyExpr,
-                        levelSubstLeft,
-                        levelSubstRight,
-                        listOf(this.typeExpr) + localCtxLeft,
-                        listOf(other.typeExpr) + localCtxRight,
+                        localCtxLeft = listOf(this.typeExpr) + localCtxLeft,
+                        localCtxRight = listOf(other.typeExpr) + localCtxRight,
                     )
         }
 
         is Expression.Lam ->
-            this.tryEtaReduce()?.isDefEq(other, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight) ?: false
+            this.tryEtaReduce()
+                ?.isDefEq(other, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
+                ?: false
 
         is Expression.LetE if other is Expression.LetE -> TODO()
         is Expression.Mdata if other is Expression.Mdata -> TODO()
@@ -512,8 +271,6 @@ private fun Expression.isDefEqWhnf(
                 ?.let { chain ->
                     this.tryCompareWithNatSuccChain(
                         chain,
-                        chainLevelSubst = levelSubstRight,
-                        natLevelSubst = levelSubstLeft,
                         chainLocalCtx = localCtxRight,
                         natLocalCtx = localCtxLeft,
                     )
@@ -524,28 +281,24 @@ private fun Expression.isDefEqWhnf(
                     this.projIndex == other.projIndex &&
                     this.structExpr.isDefEq(
                         other.structExpr,
-                        levelSubstLeft,
-                        levelSubstRight,
-                        localCtxLeft,
-                        localCtxRight
+                        localCtxLeft = localCtxLeft,
+                        localCtxRight = localCtxRight,
                     )
 
-        is Expression.Sort if other is Expression.Sort ->
-            this.level.instantiateLevelParams(levelSubstLeft)
-                .isEqual(other.level.instantiateLevelParams(levelSubstRight))
+        is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
 
         is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
         else -> {
             if (other is Expression.Lam) {
                 other.tryEtaReduce()?.let {
-                    return this.isDefEq(it, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight)
+                    return this.isDefEq(it, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
                 }
             }
-            if (this.tryStructureEtaDefEq(other, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight)) {
+            if (this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)) {
                 return true
             }
-            val reducedThis = this.reduce(levelSubstLeft).reifyWhnf()
-            val reducedOther = other.reduce(levelSubstRight).reifyWhnf()
+            val reducedThis = this.reduce().reifyWhnf()
+            val reducedOther = other.reduce().reifyWhnf()
             if (reducedThis == this && reducedOther == other) {
                 false
             } else {
@@ -589,8 +342,6 @@ private fun Expression.tryUnfoldNatSuccChain(): NatSuccChain? {
 context(env: Environment)
 private fun Expression.NatVal.tryCompareWithNatSuccChain(
     chain: NatSuccChain,
-    chainLevelSubst: Map<Int, Level>,
-    natLevelSubst: Map<Int, Level>,
     chainLocalCtx: List<Expression>,
     natLocalCtx: List<Expression>,
 ): Boolean {
@@ -602,7 +353,11 @@ private fun Expression.NatVal.tryCompareWithNatSuccChain(
         baseExpr.isNatZeroCtorConst() -> remaining == 0L
         else -> {
             val remainingExpr = env.addCustomExpr { Expression.NatVal(remaining, it) }
-            baseExpr.isDefEq(remainingExpr, chainLevelSubst, natLevelSubst, chainLocalCtx, natLocalCtx)
+            baseExpr.isDefEq(
+                remainingExpr,
+                localCtxLeft = chainLocalCtx,
+                localCtxRight = natLocalCtx,
+            )
         }
     }
 }
@@ -1113,13 +868,11 @@ private fun Expression.forallBinderCount(): Int {
 context(env: Environment)
 private fun Expression.tryStructureEtaDefEq(
     other: Expression,
-    levelSubstLeft: Map<Int, Level>,
-    levelSubstRight: Map<Int, Level>,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    val leftType0 = this.inferType(levelSubstLeft, localCtxLeft)
-    val rightType0 = other.inferType(levelSubstRight, localCtxRight)
+    val leftType0 = this.inferType(localCtx = localCtxLeft)
+    val rightType0 = other.inferType(localCtx = localCtxRight)
     val leftTypeExpr = leftType0.expr.reduce(leftType0.levelSubst).reifyWhnf()
     val rightTypeExpr = rightType0.expr.reduce(rightType0.levelSubst).reifyWhnf()
 
@@ -1154,7 +907,7 @@ private fun Expression.tryStructureEtaDefEq(
         val rhsProj = env.addCustomExpr {
             Expression.Proj(typeName = typeNameIndex, idx = fieldIndex, struct = other.ie, ie = it)
         }
-        if (!lhsProj.isDefEq(rhsProj, levelSubstLeft, levelSubstRight, localCtxLeft, localCtxRight)) {
+        if (!lhsProj.isDefEq(rhsProj, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)) {
             return false
         }
     }

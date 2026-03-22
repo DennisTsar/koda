@@ -17,9 +17,9 @@ fun checkInductive(data: Inductive) {
         expr = inductive.typeExpr,
         expectedBinders = typeBinderCount,
         owner = "Inductive type ${inductive.name}",
-    ) { binderIndex, binderType, levelSubst, localCtx ->
+    ) { binderIndex, binderType, localCtx ->
         // Every binder domain in the type constructor must itself be a type.
-        val binderSort = binderType.inferSort(levelSubst, localCtx)
+        val binderSort = binderType.inferSort(localCtx = localCtx)
         if (binderIndex < inductive.numParams) {
             inductiveParamTypes += binderType
             inductiveParamSortLevels += binderSort
@@ -28,7 +28,7 @@ fun checkInductive(data: Inductive) {
 
     val typeSort = typeTailWhnf.expr as? Expression.Sort
         ?: error("Inductive type must reduce to Sort after $typeBinderCount binders, got ${typeTailWhnf.expr.toStringDetailed()}")
-    val inductiveSortLevel = typeSort.level.instantiateLevelParams(typeTailWhnf.levelSubst)
+    val inductiveSortLevel = typeSort.level
     val isInductiveProp = inductiveSortLevel.isLessOrEqual(Level.Zero)
     val maxFieldSortLevel = (listOf(inductiveSortLevel) + inductiveParamSortLevels).reduce { acc, level ->
         env.addCustomLevel { Level.Max(listOf(acc.il, level.il), it) }
@@ -57,17 +57,23 @@ fun checkInductive(data: Inductive) {
             expectedBinders = ctorBinderCount,
             owner = "Constructor ${constructor.name}",
             reduceExpr = false,
-        ) { binderIndex, binderType, levelSubst, localCtx ->
+        ) { binderIndex, binderType, localCtx ->
             if (binderIndex < constructor.numParams) {
                 // Parameter section must exactly match the inductive parameters.
                 val expectedParamType = inductiveParamTypes.getOrNull(binderIndex)
                     ?: error("Missing expected parameter type #$binderIndex for constructor ${constructor.name}")
-                check(binderType.isDefEq(expectedParamType, levelSubst, levelSubst, localCtx, localCtx)) {
+                check(
+                    binderType.isDefEq(
+                        expectedParamType,
+                        localCtxLeft = localCtx,
+                        localCtxRight = localCtx,
+                    )
+                ) {
                     "Constructor ${constructor.name} parameter #$binderIndex type mismatch: expected ${expectedParamType.toStringDetailed()}, got ${binderType.toStringDetailed()}"
                 }
             } else {
                 // Field domain must be a type and satisfy universe + positivity checks.
-                val fieldSort = binderType.inferSort(levelSubst, localCtx)
+                val fieldSort = binderType.inferSort(localCtx = localCtx)
                 check(isInductiveProp || fieldSort.isLessOrEqual(maxFieldSortLevel)) {
                     "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above allowed sort ${maxFieldSortLevel.toStringDetailed()}"
                 }
@@ -144,16 +150,14 @@ private fun walkForalls(
     expectedBinders: Int,
     owner: String,
     reduceExpr: Boolean = true,
-    onBinder: (binderIndex: Int, binderType: Expression, levelSubst: Map<Int, Level>, localCtx: List<Expression>) -> Unit,
+    onBinder: (binderIndex: Int, binderType: Expression, localCtx: List<Expression>) -> Unit,
 ): Whnf {
     var currentExpr = expr
-    var currentLevelSubst: Map<Int, Level> = emptyMap()
     var currentLocalCtx: List<Expression> = emptyList()
 
     repeat(expectedBinders) { binderIndex ->
         val current = if (reduceExpr) {
-            val whnf = currentExpr.reduce(currentLevelSubst)
-            currentLevelSubst = emptyMap()
+            val whnf = currentExpr.reduce()
             whnf.expr.instantiateLevelParams(whnf.levelSubst)
         } else {
             currentExpr
@@ -161,16 +165,16 @@ private fun walkForalls(
         val forall = current as? Expression.ForallE
             ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
 
-        onBinder(binderIndex, forall.typeExpr, currentLevelSubst, currentLocalCtx)
+        onBinder(binderIndex, forall.typeExpr, currentLocalCtx)
         currentLocalCtx = listOf(forall.typeExpr) + currentLocalCtx
         currentExpr = forall.bodyExpr
     }
 
     return if (reduceExpr) {
-        val whnf = currentExpr.reduce(currentLevelSubst)
+        val whnf = currentExpr.reduce()
         Whnf(whnf.expr.instantiateLevelParams(whnf.levelSubst))
     } else {
-        Whnf(currentExpr.instantiateLevelParams(currentLevelSubst))
+        Whnf(currentExpr)
     }
 }
 
