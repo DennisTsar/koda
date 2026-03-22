@@ -31,9 +31,19 @@ class Environment {
         nextLevelIndex = 0
         (nextExprIndex..-101).forEach { expressions.remove(it) }
         nextExprIndex = -100
+        sameShapeExprCache.clear()
+        levelShapeIdByLevel.clear()
+        levelShapeInterner.clear()
+        nextLevelShapeId = 1
+        reduceCacheEmpty.clear()
     }
 
-    var shouldLog = true
+    var shouldLog = false
+    val sameShapeExprCache: MutableMap<Long, Boolean> = mutableMapOf()
+    val levelShapeIdByLevel: MutableMap<Int, Int> = mutableMapOf()
+    val levelShapeInterner: MutableMap<Any, Int> = mutableMapOf()
+    var nextLevelShapeId: Int = 1
+    val reduceCacheEmpty: MutableMap<Int, Whnf> = mutableMapOf()
 
     override fun toString(): String {
         return "Names:\n${names.toList().joinToString("\n")}\n\n" +

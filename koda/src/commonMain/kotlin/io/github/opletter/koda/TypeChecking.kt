@@ -11,8 +11,10 @@ fun typeCheck(data: List<ExportType>) {
 context(env: Environment)
 fun _typeCheck(rawData: List<ExportType>) {
     rawData.forEach { data ->
-        println(data)
-        println("---")
+        if (env.shouldLog) {
+            println(data)
+            println("---")
+        }
         when (data) {
             is Name -> {
                 data.registerInto(env)
@@ -88,7 +90,7 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     val actualType = inferredValueType.expr
     // made it to: Def(_name=2098, _levelParams=[22, 6], type=12166, value=12236, hints=Abbrev, safety=Safe, all=[2098])
     // before Java heap space error, ran for 1 min 21 sec
-//    return Blah.isDefEq(Everything(env, expectedType, actualType, levelSubstRight = inferredValueType.levelSubst))
+    //    return Blah.isDefEq(Everything(env, expectedType, actualType, levelSubstRight = inferredValueType.levelSubst))
     // made it to: Def(_name=1944, _levelParams=[6], type=10830, value=10837, hints=Abbrev, safety=Safe, all=[1944])
     // before stack overflow, ran for 30 sec
     return expectedType.isDefEq(actualType, levelSubstRight = inferredValueType.levelSubst)
@@ -115,17 +117,53 @@ fun Expression.isDefEq(
     val rightWhnfExpr = rhsWhnf.reifyWhnf()
     if (leftWhnfExpr == rightWhnfExpr) return true
     if (leftWhnfExpr.sameShape(rightWhnfExpr)) return true
-    if (leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)) return true
-    return leftWhnfExpr.isDefEqWhnf(
+    if (leftWhnfExpr.isDefEqWhnf(
         rightWhnfExpr,
         localCtxLeft,
         localCtxRight,
-    )
+        )
+    ) return true
+    return leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
+}
+
+private fun pairKey(a: Int, b: Int): Long {
+    val left = minOf(a, b).toLong() and 0xffffffffL
+    val right = maxOf(a, b).toLong() and 0xffffffffL
+    return (left shl 32) or right
+}
+
+private data class LevelShapeKey(
+    val tag: Int,
+    val name: Name? = null,
+    val left: Int = 0,
+    val right: Int = 0,
+)
+
+context(env: Environment)
+private fun Level.shapeId(): Int {
+    env.levelShapeIdByLevel[this.il]?.let { return it }
+    val key = when (this) {
+        Level.Zero -> LevelShapeKey(tag = 0)
+        is Level.Param -> LevelShapeKey(tag = 1, name = this.name)
+        is Level.Succ -> LevelShapeKey(tag = 2, left = this.level.shapeId())
+        is Level.Max -> LevelShapeKey(tag = 3, left = this.left.shapeId(), right = this.right.shapeId())
+        is Level.Imax -> LevelShapeKey(tag = 4, left = this.left.shapeId(), right = this.right.shapeId())
+    }
+    val shapeId = env.levelShapeInterner.getOrPut(key) {
+        val next = env.nextLevelShapeId
+        env.nextLevelShapeId += 1
+        next
+    }
+    env.levelShapeIdByLevel[this.il] = shapeId
+    return shapeId
 }
 
 context(env: Environment)
 private fun Expression.sameShape(other: Expression): Boolean {
-    return when (this) {
+    if (this.ie == other.ie) return true
+    val cacheKey = pairKey(this.ie, other.ie)
+    env.sameShapeExprCache[cacheKey]?.let { return it }
+    val result = when (this) {
         is Expression.Bvar if other is Expression.Bvar -> this.bvar == other.bvar
         is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
         is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
@@ -159,6 +197,8 @@ private fun Expression.sameShape(other: Expression): Boolean {
 
         else -> false
     }
+    env.sameShapeExprCache[cacheKey] = result
+    return result
 }
 
 context(env: Environment)
@@ -214,9 +254,8 @@ private fun Expression.isDefEqWhnf(
         is Expression.Const if other is Expression.Const ->
             this.name == other.name &&
                     this.levels.size == other.levels.size &&
-                    this.levels.zip(other.levels).all { [l1, l2] ->
-                        l1.sameShape(l2) || l1.isEqual(l2)
-                    }
+                    (this.levels == other.levels ||
+                            this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) })
 
         is Expression.ForallE if other is Expression.ForallE -> {
             this.typeExpr.isDefEq(
@@ -262,6 +301,7 @@ private fun Expression.isDefEqWhnf(
                     )
                 }
                 ?: false
+
         is Expression.Proj if other is Expression.Proj ->
             this.typeNameExpr == other.typeNameExpr &&
                     this.projIndex == other.projIndex &&
@@ -489,9 +529,18 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
 
 context(env: Environment)
 fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
-//    if (env.shouldLog) println("trying to reduce ${this.toStringDetailed()}")
-    return when (this) {
+    if (levelSubst.isEmpty()) {
+        env.reduceCacheEmpty[this.ie]?.let { return it }
+    }
+    if (env.shouldLog) println("trying to reduce ${this}")
+    val result = when (this) {
         is Expression.App -> {
+            if (!this.fnExpr.canReduceAtHead()) {
+                val appExpr = this.instantiateLevelParams(levelSubst) as Expression.App
+                appExpr.tryReduceRecursor(levelSubst)
+                    ?: appExpr.tryReduceQuot(levelSubst)
+                    ?: Whnf(appExpr)
+            } else {
             val fnWhnf = this.fnExpr.reduce(levelSubst = levelSubst)
             when (val f = fnWhnf.reifyWhnf()) {
                 is Expression.Lam -> {
@@ -508,6 +557,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
                         ?: appExpr.tryReduceQuot(levelSubst)
                         ?: Whnf(appExpr.instantiateLevelParams(levelSubst))
                 }
+            }
             }
         }
 
@@ -559,6 +609,23 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
         }
 
         is Expression.StrVal -> Whnf(this)
+    }
+    if (levelSubst.isEmpty()) {
+        env.reduceCacheEmpty[this.ie] = result
+    }
+    return result
+}
+
+context(env: Environment)
+private fun Expression.canReduceAtHead(): Boolean {
+    return when (this) {
+        is Expression.App -> this.fnExpr.canReduceAtHead()
+        is Expression.Lam -> true
+        is Expression.LetE -> true
+        is Expression.Proj -> true
+        is Expression.Const -> this.decl is Declaration.Def
+        is Expression.Mdata -> this.expr.canReduceAtHead()
+        is Expression.Bvar, is Expression.ForallE, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
     }
 }
 
@@ -1001,7 +1068,7 @@ fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
 
         is Expression.Sort -> {
             val newLevel = this.level.instantiateLevelParams(subst)
-            if (newLevel.sameShape(this.level)) this else env.addCustomExpr { this.copy(sort = newLevel.il, ie = it) }
+            if (newLevel == this.level) this else env.addCustomExpr { this.copy(sort = newLevel.il, ie = it) }
         }
 
         is Expression.Const -> {
@@ -1146,7 +1213,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
 
         is Level.Succ -> {
             val newLevel = this.level.instantiateLevelParams(subst)
-            if (newLevel.sameShape(this.level)) {
+            if (newLevel == this.level) {
                 this
             } else {
                 env.addCustomLevel { Level.Succ(newLevel.il, it) }
@@ -1156,7 +1223,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
         is Level.Max -> {
             val newLeft = this.left.instantiateLevelParams(subst)
             val newRight = this.right.instantiateLevelParams(subst)
-            if (newLeft.sameShape(this.left) && newRight.sameShape(this.right)) {
+            if (newLeft == this.left && newRight == this.right) {
                 this
             } else {
                 env.addCustomLevel { Level.Max(listOf(newLeft.il, newRight.il), it) }
@@ -1166,7 +1233,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
         is Level.Imax -> {
             val newLeft = this.left.instantiateLevelParams(subst)
             val newRight = this.right.instantiateLevelParams(subst)
-            if (newLeft.sameShape(this.left) && newRight.sameShape(this.right)) {
+            if (newLeft == this.left && newRight == this.right) {
                 this
             } else {
                 env.addCustomLevel { Level.Imax(listOf(newLeft.il, newRight.il), it) }
@@ -1177,18 +1244,8 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
 
 context(env: Environment)
 private fun Level.sameShape(other: Level): Boolean {
-    return when (this) {
-        is Level.Zero if other is Level.Zero -> true
-        is Level.Param if other is Level.Param -> this.name == other.name
-        is Level.Succ if other is Level.Succ -> this.level.sameShape(other.level)
-        is Level.Max if other is Level.Max ->
-            this.left.sameShape(other.left) && this.right.sameShape(other.right)
-
-        is Level.Imax if other is Level.Imax ->
-            this.left.sameShape(other.left) && this.right.sameShape(other.right)
-
-        else -> false
-    }
+    if (this.il == other.il) return true
+    return this.shapeId() == other.shapeId()
 }
 
 context(env: Environment)
