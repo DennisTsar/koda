@@ -62,13 +62,7 @@ fun checkInductive(data: Inductive) {
                 // Parameter section must exactly match the inductive parameters.
                 val expectedParamType = inductiveParamTypes.getOrNull(binderIndex)
                     ?: error("Missing expected parameter type #$binderIndex for constructor ${constructor.name}")
-                check(
-                    binderType.isDefEq(
-                        expectedParamType,
-                        localCtxLeft = localCtx,
-                        localCtxRight = localCtx,
-                    )
-                ) {
+                check(binderType.isDefEq(expectedParamType, localCtx, localCtx)) {
                     "Constructor ${constructor.name} parameter #$binderIndex type mismatch: expected ${expectedParamType.toStringDetailed()}, got ${binderType.toStringDetailed()}"
                 }
             } else {

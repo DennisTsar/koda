@@ -117,43 +117,40 @@ fun Expression.isDefEq(
 }
 
 context(env: Environment)
-private fun Expression.sameShape(other: Expression): Boolean {
-    if (this.ie == other.ie) return true
-    val result = when (this) {
-        is Expression.Bvar if other is Expression.Bvar -> this.bvar == other.bvar
-        is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
-        is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
-        is Expression.Sort if other is Expression.Sort -> this.level == other.level//this.level.sameShape(other.level)
-        is Expression.Const if other is Expression.Const ->
-            this.name == other.name &&
-                    this.levels.size == other.levels.size &&
-                    this.levels.zip(other.levels).all { it.first == it.second }
+private fun Expression.sameShape(other: Expression): Boolean = when (this) {
+    else if this.ie == other.ie -> true
+    is Expression.Bvar if other is Expression.Bvar -> this.bvar == other.bvar
+    is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
+    is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
+    is Expression.Sort if other is Expression.Sort -> this.level == other.level//this.level.sameShape(other.level)
+    is Expression.Const if other is Expression.Const ->
+        this.name == other.name &&
+                this.levels.size == other.levels.size &&
+                this.levels.zip(other.levels).all { it.first == it.second }
 
-        is Expression.App if other is Expression.App ->
-            this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr)
+    is Expression.App if other is Expression.App ->
+        this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr)
 
-        is Expression.ForallE if other is Expression.ForallE ->
-            this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
+    is Expression.ForallE if other is Expression.ForallE ->
+        this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
 
-        is Expression.Lam if other is Expression.Lam ->
-            this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
+    is Expression.Lam if other is Expression.Lam ->
+        this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
 
-        is Expression.LetE if other is Expression.LetE ->
-            this.typeExpr.sameShape(other.typeExpr) &&
-                    this.valueExpr.sameShape(other.valueExpr) &&
-                    this.bodyExpr.sameShape(other.bodyExpr)
+    is Expression.LetE if other is Expression.LetE ->
+        this.typeExpr.sameShape(other.typeExpr) &&
+                this.valueExpr.sameShape(other.valueExpr) &&
+                this.bodyExpr.sameShape(other.bodyExpr)
 
-        is Expression.Mdata if other is Expression.Mdata ->
-            this.expr.sameShape(other.expr)
+    is Expression.Mdata if other is Expression.Mdata ->
+        this.expr.sameShape(other.expr)
 
-        is Expression.Proj if other is Expression.Proj ->
-            this.typeNameExpr == other.typeNameExpr &&
-                    this.projIndex == other.projIndex &&
-                    this.structExpr.sameShape(other.structExpr)
+    is Expression.Proj if other is Expression.Proj ->
+        this.typeNameExpr == other.typeNameExpr &&
+                this.projIndex == other.projIndex &&
+                this.structExpr.sameShape(other.structExpr)
 
-        else -> false
-    }
-    return result
+    else -> false
 }
 
 context(env: Environment)
@@ -161,134 +158,106 @@ private fun Expression.isDefEqWhnf(
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
-): Boolean {
-    return when (this) {
-        is Expression.App if other is Expression.App -> {
-            val lhsNat = this.tryUnfoldNatSuccChain()
-            val rhsNat = other.tryUnfoldNatSuccChain()
-            if (lhsNat != null && rhsNat != null && lhsNat.count == rhsNat.count) {
-                lhsNat.base.isDefEq(
-                    rhsNat.base,
-                    localCtxLeft = localCtxLeft,
-                    localCtxRight = localCtxRight,
-                )
-            } else {
-                this.fnExpr.isDefEq(other.fnExpr, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight) &&
-                        this.argExpr.isDefEq(other.argExpr, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
-            }
+): Boolean = when (this) {
+    is Expression.App if other is Expression.App -> {
+        val lhsNat = this.tryUnfoldNatSuccChain()
+        val rhsNat = other.tryUnfoldNatSuccChain()
+        if (lhsNat != null && rhsNat != null && lhsNat.count == rhsNat.count) {
+            lhsNat.base.isDefEq(rhsNat.base, localCtxLeft, localCtxRight)
+        } else {
+            this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
+                    this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
         }
+    }
 
-        is Expression.App if other is Expression.NatVal ->
-            this.tryUnfoldNatSuccChain()
-                ?.let { chain ->
-                    other.tryCompareWithNatSuccChain(chain, chainLocalCtx = localCtxLeft, natLocalCtx = localCtxRight)
-                }
-                ?: false
+    is Expression.App if other is Expression.NatVal ->
+        this.tryUnfoldNatSuccChain()
+            ?.let { chain ->
+                other.tryCompareWithNatSuccChain(chain, localCtxLeft, localCtxRight)
+            } ?: false
 
-        is Expression.Bvar if other is Expression.Bvar -> {
-            if (this.bvar == other.bvar) {
-                true
-            } else if (this.bvar < localCtxLeft.size && other.bvar < localCtxRight.size) {
-                val thisType = localCtxLeft[this.bvar].lift(this.bvar + 1)
-                val otherType = localCtxRight[other.bvar].lift(other.bvar + 1)
-                val typesDefEq = thisType.isDefEq(otherType, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
-                if (!typesDefEq) {
-                    false
-                } else {
-                    this.tryStructureEtaDefEq(
-                        other,
-                        localCtxLeft,
-                        localCtxRight,
-                    )
-                }
-            } else {
-                false
-            }
-        }
-
-        is Expression.Const if other is Expression.Const ->
-            this.name == other.name &&
-                    this.levels.size == other.levels.size &&
-                    (this.levels == other.levels ||
-                            this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) })
-
-        is Expression.ForallE if other is Expression.ForallE -> {
-            this.typeExpr.isDefEq(
-                other.typeExpr,
-                localCtxLeft = localCtxLeft,
-                localCtxRight = localCtxRight,
-            ) &&
-                    this.bodyExpr.isDefEq(
-                        other.bodyExpr,
-                        localCtxLeft = listOf(this.typeExpr) + localCtxLeft,
-                        localCtxRight = listOf(other.typeExpr) + localCtxRight,
-                    )
-        }
-
-        is Expression.Lam if other is Expression.Lam -> {
-            this.typeExpr.isDefEq(
-                other.typeExpr,
-                localCtxLeft = localCtxLeft,
-                localCtxRight = localCtxRight,
-            ) &&
-                    this.bodyExpr.isDefEq(
-                        other.bodyExpr,
-                        localCtxLeft = listOf(this.typeExpr) + localCtxLeft,
-                        localCtxRight = listOf(other.typeExpr) + localCtxRight,
-                    )
-        }
-
-        is Expression.Lam ->
-            this.tryEtaReduce()
-                ?.isDefEq(other, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
-                ?: false
-
-        is Expression.LetE if other is Expression.LetE -> TODO()
-        is Expression.Mdata if other is Expression.Mdata -> TODO()
-        is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
-        is Expression.NatVal if other is Expression.App ->
-            other.tryUnfoldNatSuccChain()
-                ?.let { chain ->
-                    this.tryCompareWithNatSuccChain(
-                        chain,
-                        chainLocalCtx = localCtxRight,
-                        natLocalCtx = localCtxLeft,
-                    )
-                }
-                ?: false
-
-        is Expression.Proj if other is Expression.Proj ->
-            this.typeNameExpr == other.typeNameExpr &&
-                    this.projIndex == other.projIndex &&
-                    this.structExpr.isDefEq(
-                        other.structExpr,
-                        localCtxLeft = localCtxLeft,
-                        localCtxRight = localCtxRight,
-                    )
-
-        is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
-
-        is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
-        else -> {
-            if (other is Expression.Lam) {
-                other.tryEtaReduce()?.let {
-                    return this.isDefEq(it, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)
-                }
-            }
-            if (this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)) {
-                return true
-            }
-            val reducedThis = this.reduce()
-            val reducedOther = other.reduce()
-            if (reducedThis == this && reducedOther == other) {
+    is Expression.Bvar if other is Expression.Bvar -> {
+        if (this.bvar == other.bvar) {
+            true
+        } else if (this.bvar < localCtxLeft.size && other.bvar < localCtxRight.size) {
+            val thisType = localCtxLeft[this.bvar].lift(this.bvar + 1)
+            val otherType = localCtxRight[other.bvar].lift(other.bvar + 1)
+            val typesDefEq = thisType.isDefEq(otherType, localCtxLeft, localCtxRight)
+            if (!typesDefEq) {
                 false
             } else {
-                reducedThis.isDefEq(
-                    reducedOther,
-                    localCtxLeft = localCtxLeft,
-                    localCtxRight = localCtxRight,
+                this.tryStructureEtaDefEq(
+                    other,
+                    localCtxLeft,
+                    localCtxRight,
                 )
             }
+        } else {
+            false
+        }
+    }
+
+    is Expression.Const if other is Expression.Const ->
+        this.name == other.name &&
+                this.levels.size == other.levels.size &&
+                (this.levels == other.levels ||
+                        this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) })
+
+    is Expression.ForallE if other is Expression.ForallE -> {
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
+                this.bodyExpr.isDefEq(
+                    other.bodyExpr,
+                    listOf(this.typeExpr) + localCtxLeft,
+                    listOf(other.typeExpr) + localCtxRight,
+                )
+    }
+
+    is Expression.Lam if other is Expression.Lam -> {
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
+                this.bodyExpr.isDefEq(
+                    other.bodyExpr,
+                    listOf(this.typeExpr) + localCtxLeft,
+                    listOf(other.typeExpr) + localCtxRight,
+                )
+    }
+
+    is Expression.Lam ->
+        this.tryEtaReduce()
+            ?.isDefEq(other, localCtxLeft, localCtxRight)
+            ?: false
+
+    is Expression.LetE if other is Expression.LetE -> TODO()
+    is Expression.Mdata if other is Expression.Mdata -> TODO()
+    is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
+    is Expression.NatVal if other is Expression.App ->
+        other.tryUnfoldNatSuccChain()
+            ?.let { chain ->
+                this.tryCompareWithNatSuccChain(chain, chainLocalCtx = localCtxRight, natLocalCtx = localCtxLeft)
+            } ?: false
+
+    is Expression.Proj if other is Expression.Proj ->
+        this.typeNameExpr == other.typeNameExpr &&
+                this.projIndex == other.projIndex &&
+                this.structExpr.isDefEq(other.structExpr, localCtxLeft, localCtxRight)
+
+    is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
+
+    is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
+    else -> {
+        if (other is Expression.Lam) {
+            other.tryEtaReduce()?.let {
+                return this.isDefEq(it, localCtxLeft, localCtxRight)
+            }
+        }
+        if (this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)) {
+            return true
+        }
+        val reducedThis = this.reduce()
+        val reducedOther = other.reduce()
+        if (reducedThis == this && reducedOther == other) {
+            false
+        } else {
+            reducedThis.isDefEq(reducedOther, localCtxLeft, localCtxRight)
         }
     }
 }
@@ -334,11 +303,7 @@ private fun Expression.NatVal.tryCompareWithNatSuccChain(
         baseExpr.isNatZeroCtorConst() -> remaining == 0L
         else -> {
             val remainingExpr = env.addCustomExpr { Expression.NatVal(remaining, it) }
-            baseExpr.isDefEq(
-                remainingExpr,
-                localCtxLeft = chainLocalCtx,
-                localCtxRight = natLocalCtx,
-            )
+            baseExpr.isDefEq(remainingExpr, chainLocalCtx, natLocalCtx)
         }
     }
 }
@@ -809,15 +774,8 @@ private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Expressio
     val ctorValueArg = majorArgs[ctorArity - 1]
 
     val fnArg = when (quotDecl.kind) {
-        Declaration.Quot.Kind.Lift -> {
-            if (arity < 3) return null
-            args[arity - 3]
-        }
-
-        Declaration.Quot.Kind.Ind -> {
-            if (arity < 2) return null
-            args[arity - 2]
-        }
+        Declaration.Quot.Kind.Lift -> args.getOrNull(arity - 3) ?: return null
+        Declaration.Quot.Kind.Ind -> args.getOrNull(arity - 2) ?: return null
     }
 
     var reducedExpr: Expression = env.addCustomExpr {
@@ -857,13 +815,7 @@ private fun Expression.tryStructureEtaDefEq(
     val rightTypeConst = rightTypeHead as? Expression.Const ?: return false
     if (leftTypeConst.name != rightTypeConst.name) return false
     if (leftTypeArgs.size != rightTypeArgs.size) return false
-    if (!leftTypeArgs.indices.all { i ->
-            leftTypeArgs[i].isDefEq(
-                rightTypeArgs[i],
-                localCtxLeft = localCtxLeft,
-                localCtxRight = localCtxRight,
-            )
-        }) {
+    if (!leftTypeArgs.indices.all { leftTypeArgs[it].isDefEq(rightTypeArgs[it], localCtxLeft, localCtxRight) }) {
         return false
     }
 
@@ -882,7 +834,7 @@ private fun Expression.tryStructureEtaDefEq(
         val rhsProj = env.addCustomExpr {
             Expression.Proj(typeName = typeNameIndex, idx = fieldIndex, struct = other.ie, ie = it)
         }
-        if (!lhsProj.isDefEq(rhsProj, localCtxLeft = localCtxLeft, localCtxRight = localCtxRight)) {
+        if (!lhsProj.isDefEq(rhsProj, localCtxLeft, localCtxRight)) {
             return false
         }
     }
@@ -902,11 +854,7 @@ private fun Expression.tryProofIrrelevanceDefEq(
     if (!thisSort.isLessOrEqual(Level.Zero) || !otherSort.isLessOrEqual(Level.Zero)) {
         return false
     }
-    return thisTy.isDefEq(
-        otherTy,
-        localCtxLeft = localCtxLeft,
-        localCtxRight = localCtxRight,
-    )
+    return thisTy.isDefEq(otherTy, localCtxLeft, localCtxRight)
 }
 
 context(env: Environment)
@@ -1162,7 +1110,6 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
     }
 }
 
-context(env: Environment)
 private fun Environment.findRootInductive(shortName: String): Pair<Int, Inductive.InductiveVal>? {
     return this.declarations.entries.firstNotNullOfOrNull { entry ->
         val nameIndex = entry.key
