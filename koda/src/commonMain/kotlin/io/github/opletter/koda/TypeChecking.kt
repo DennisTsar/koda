@@ -295,12 +295,12 @@ private fun Expression.NatVal.tryCompareWithNatSuccChain(
     chainLocalCtx: List<Expression>,
     natLocalCtx: List<Expression>,
 ): Boolean {
-    if (this.natVal < chain.count) return false
-    val remaining = this.natVal - chain.count
+    if (this.natVal.compareTo(chain.count) < 0) return false
+    val remaining = this.natVal.minus(chain.count)
     val baseExpr = chain.base
     return when {
         baseExpr is Expression.NatVal -> baseExpr.natVal == remaining
-        baseExpr.isNatZeroCtorConst() -> remaining == 0L
+        baseExpr.isNatZeroCtorConst() -> remaining.isZero()
         else -> {
             val remainingExpr = env.addCustomExpr { Expression.NatVal(remaining, it) }
             baseExpr.isDefEq(remainingExpr, chainLocalCtx, natLocalCtx)
@@ -683,7 +683,7 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
 
     val majorNatLit = majorWhnf as? Expression.NatVal
     if (majorNatLit != null) {
-        if (majorNatLit.natVal !in 0L..MAX_NAT_LITERAL_RECURSOR_REDUCTION) return null
+        if (majorNatLit.natVal.compareTo(MAX_NAT_LITERAL_RECURSOR_REDUCTION) > 0) return null
         val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
             recursorDecl.rules.mapNotNull { rule ->
                 val ctorDecl = env.declarations.values.filterIsInstance<Inductive.ConstructorVal>()
@@ -704,13 +704,11 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
             val zeroRule = natRulesByFields.singleOrNull { it.first == 0 }?.second
             val succRule = natRulesByFields.singleOrNull { it.first == 1 }?.second
             if (zeroRule != null && succRule != null) {
-                return if (majorNatLit.natVal == 0L) {
+                return if (majorNatLit.natVal.isZero()) {
                     applyRule(zeroRule, emptyList())
-                } else if (majorNatLit.natVal > 0L) {
-                    val predNat = env.addCustomExpr { Expression.NatVal(majorNatLit.natVal - 1, it) }
-                    applyRule(succRule, listOf(predNat))
                 } else {
-                    null
+                    val predNat = env.addCustomExpr { Expression.NatVal(majorNatLit.natVal.minus(1L), it) }
+                    applyRule(succRule, listOf(predNat))
                 }
             }
         }

@@ -298,7 +298,7 @@ sealed class Expression : ExportType {
 
     @Serializable
     @SerialName("natVal")
-    data class NatVal(val natVal: Long, override val ie: Int) : Expression()
+    data class NatVal(val natVal: NatValue, override val ie: Int) : Expression()
 
     @Serializable
     @SerialName("strVal")
