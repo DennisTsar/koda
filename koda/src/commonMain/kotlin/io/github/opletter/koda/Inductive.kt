@@ -26,8 +26,8 @@ fun checkInductive(data: Inductive) {
         }
     }
 
-    val typeSort = typeTailWhnf.expr as? Expression.Sort
-        ?: error("Inductive type must reduce to Sort after $typeBinderCount binders, got ${typeTailWhnf.expr.toStringDetailed()}")
+    val typeSort = typeTailWhnf as? Expression.Sort
+        ?: error("Inductive type must reduce to Sort after $typeBinderCount binders, got ${typeTailWhnf.toStringDetailed()}")
     val inductiveSortLevel = typeSort.level
     val isInductiveProp = inductiveSortLevel.isLessOrEqual(Level.Zero)
     val maxFieldSortLevel = (listOf(inductiveSortLevel) + inductiveParamSortLevels).reduce { acc, level ->
@@ -81,7 +81,7 @@ fun checkInductive(data: Inductive) {
                     "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} contains a non-positive occurrence of inductive ${inductive.name}"
                 }
             }
-        }.expr
+        }
 
 //        check(ctorTailExpr !is Expression.ForallE) {
 //            "Constructor ${constructor.name} has too many binders: expected $ctorBinderCount"
@@ -151,17 +151,12 @@ private fun walkForalls(
     owner: String,
     reduceExpr: Boolean = true,
     onBinder: (binderIndex: Int, binderType: Expression, localCtx: List<Expression>) -> Unit,
-): Whnf {
+): Expression {
     var currentExpr = expr
     var currentLocalCtx: List<Expression> = emptyList()
 
     repeat(expectedBinders) { binderIndex ->
-        val current = if (reduceExpr) {
-            val whnf = currentExpr.reduce()
-            whnf.expr.instantiateLevelParams(whnf.levelSubst)
-        } else {
-            currentExpr
-        }
+        val current = if (reduceExpr) currentExpr.reduce() else currentExpr
         val forall = current as? Expression.ForallE
             ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
 
@@ -170,12 +165,7 @@ private fun walkForalls(
         currentExpr = forall.bodyExpr
     }
 
-    return if (reduceExpr) {
-        val whnf = currentExpr.reduce()
-        Whnf(whnf.expr.instantiateLevelParams(whnf.levelSubst))
-    } else {
-        Whnf(currentExpr)
-    }
+    return if (reduceExpr) currentExpr.reduce() else currentExpr
 }
 
 context(env: Environment)

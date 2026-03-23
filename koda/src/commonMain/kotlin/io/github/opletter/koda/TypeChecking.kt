@@ -85,35 +85,31 @@ context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     if (env.shouldLog) println("found value: ${value.toStringDetailed()}")
     val inferredValueType = value.inferType()
-    if (env.shouldLog) println("inferred type of value: ${inferredValueType.expr.toStringDetailed()}")
-    val actualType = inferredValueType.expr
+    if (env.shouldLog) println("inferred type of value: ${inferredValueType.toStringDetailed()}")
+    val actualType = inferredValueType
     // made it to: Def(_name=2098, _levelParams=[22, 6], type=12166, value=12236, hints=Abbrev, safety=Safe, all=[2098])
     // before Java heap space error, ran for 1 min 21 sec
     //    return Blah.isDefEq(Everything(env, expectedType, actualType, levelSubstRight = inferredValueType.levelSubst))
     // made it to: Def(_name=1944, _levelParams=[6], type=10830, value=10837, hints=Abbrev, safety=Safe, all=[1944])
     // before stack overflow, ran for 30 sec
-    return expectedType.isDefEq(actualType, levelSubstRight = inferredValueType.levelSubst)
+    return expectedType.isDefEq(actualType)
 }
 
 context(env: Environment)
 fun Expression.isDefEq(
     other: Expression,
-    levelSubstLeft: Map<Int, Level> = emptyMap(),
-    levelSubstRight: Map<Int, Level> = emptyMap(),
     localCtxLeft: List<Expression> = emptyList(),
     localCtxRight: List<Expression> = emptyList(),
 ): Boolean {
-    val leftExpr = this.instantiateLevelParams(levelSubstLeft)
-    val rightExpr = other.instantiateLevelParams(levelSubstRight)
+    val leftExpr = this
+    val rightExpr = other
     if (leftExpr == rightExpr) return true
     if (leftExpr.sameShape(rightExpr)) return true
     if (env.shouldLog) {
         println("comparing:\n$leftExpr\n$rightExpr")
     }
-    val lhsWhnf = leftExpr.reduce()
-    val rhsWhnf = rightExpr.reduce()
-    val leftWhnfExpr = lhsWhnf.reifyWhnf()
-    val rightWhnfExpr = rhsWhnf.reifyWhnf()
+    val leftWhnfExpr = leftExpr.reduce()
+    val rightWhnfExpr = rightExpr.reduce()
     if (leftWhnfExpr == rightWhnfExpr) return true
 //    if (leftWhnfExpr.sameShape(rightWhnfExpr)) return true
     if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) return true
@@ -282,8 +278,8 @@ private fun Expression.isDefEqWhnf(
             if (this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)) {
                 return true
             }
-            val reducedThis = this.reduce().reifyWhnf()
-            val reducedOther = other.reduce().reifyWhnf()
+            val reducedThis = this.reduce()
+            val reducedOther = other.reduce()
             if (reducedThis == this && reducedOther == other) {
                 false
             } else {
@@ -356,23 +352,15 @@ private fun Expression.isNatZeroCtorConst(): Boolean {
     return inductiveName.pre == 0 && inductiveName.str == "Nat"
 }
 
-data class Whnf(
-    val expr: Expression,
-    val levelSubst: Map<Int, Level> = emptyMap(),
-)
-
 context(env: Environment)
-private fun Whnf.reifyWhnf(): Expression {
-    return this.expr.instantiateLevelParams(this.levelSubst)
-}
-
-context(env: Environment)
-fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: List<Expression> = emptyList()): Whnf {
+fun Expression.inferType(
+    levelSubst: Map<Int, Level> = emptyMap(),
+    localCtx: List<Expression> = emptyList()
+): Expression {
     return when (this) {
         is Expression.App -> {
             val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
-            val fnTyWhnf = fnTy0.expr.reduce(fnTy0.levelSubst)
-            val fnTy = fnTyWhnf.reifyWhnf()
+            val fnTy = fnTy0.reduce()
             check(fnTy is Expression.ForallE) {
                 "Expected function type for app ${this.toStringDetailed()}, got ${fnTy.toStringDetailed()}"
             }
@@ -382,14 +370,14 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
 //                "Application argument type mismatch in ${this.toStringDetailed()}: expected ${expectedArgTy.toStringDetailed()}, got ${argTy.toStringDetailed()}"
 //            }
             val instantiatedBodyTy = fnTy.bodyExpr.applySubst(listOf(this.argExpr))
-            Whnf(instantiatedBodyTy.instantiateLevelParams(levelSubst))
+            instantiatedBodyTy.instantiateLevelParams(levelSubst)
         }
 
         is Expression.Bvar -> {
             if (this.bvar < localCtx.size) {
                 // live binder: its stored type was recorded outside this binder,
                 // so lift it back under the current live-binder depth.
-                Whnf(localCtx[this.bvar].lift(this.bvar + 1).instantiateLevelParams(levelSubst))
+                localCtx[this.bvar].lift(this.bvar + 1).instantiateLevelParams(levelSubst)
             } else {
                 error("Unbound bvar ${this.bvar} in ${this.toStringDetailed()}")
             }
@@ -397,7 +385,7 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
 
         is Expression.Const -> {
             val ty = env.declTypeByName[this.name] ?: error("Declaration not found for ${this.name}")
-            Whnf(ty.instantiateLevelParams(this.composeLevelSubst(levelSubst)))
+            ty.instantiateLevelParams(this.composeLevelSubst(levelSubst))
         }
 
         is Expression.ForallE -> {
@@ -409,20 +397,16 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             val newLevel = env.addCustomLevel {
                 Level.Imax(listOf(left.il, right.il), it)
             }
-            val newExpr = env.addCustomExpr { Expression.Sort(newLevel.il, it) }
-            Whnf(newExpr)
+            env.addCustomExpr { Expression.Sort(newLevel.il, it) }
         }
 
         is Expression.Lam -> {
             val _ = this.typeExpr.inferSort(levelSubst, localCtx)
 //            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
             val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, listOf(this.typeExpr) + localCtx)
-            val reifiedBodyTy = bodyTyWhnf.reifyWhnf()
-
-            val newExpr = env.addCustomExpr {
-                this.copyAsForAllE().copy(body = reifiedBodyTy.ie, ie = it)
+            env.addCustomExpr {
+                this.copyAsForAllE().copy(body = bodyTyWhnf.ie, ie = it)
             }
-            Whnf(newExpr)
         }
 
         is Expression.Sort -> {
@@ -430,8 +414,7 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             val newLevel = env.addCustomLevel {
                 Level.Succ(normalizedLevel.il, it)
             }
-            val newExpr = env.addCustomExpr { Expression.Sort(newLevel.il, it) }
-            Whnf(newExpr)
+            env.addCustomExpr { Expression.Sort(newLevel.il, it) }
         }
 
         is Expression.LetE -> {
@@ -439,16 +422,10 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             val _ = this.typeExpr.inferSort(levelSubst, localCtx)
 
             val valueTyWhnf = this.valueExpr.inferType(levelSubst, localCtx)
-            check(
-                this.typeExpr.isDefEq(
-                    valueTyWhnf.reifyWhnf(),
-                    levelSubstLeft = levelSubst,
-                    localCtxLeft = localCtx,
-                    localCtxRight = localCtx
-                )
-            ) {
-                "Let value type mismatch in ${this.toStringDetailed()}: expected ${this.typeExpr.toStringDetailed()}, got ${
-                    valueTyWhnf.reifyWhnf().toStringDetailed()
+            val expectedTypeExpr = this.typeExpr.instantiateLevelParams(levelSubst)
+            check(expectedTypeExpr.isDefEq(valueTyWhnf, localCtx, localCtx)) {
+                "Let value type mismatch in ${this.toStringDetailed()}: expected ${expectedTypeExpr.toStringDetailed()}, got ${
+                    valueTyWhnf.toStringDetailed()
                 }"
             }
 
@@ -464,10 +441,9 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             val natInfo = env.findRootInductive("Nat")
                 ?: error("Nat literal ${this.natVal} used without Nat inductive in environment")
             val natTypeIndex = natInfo.first
-            val natTypeExpr = env.addCustomExpr {
+            env.addCustomExpr {
                 Expression.Const(_name = natTypeIndex, us = emptyList(), ie = it)
             }
-            Whnf(natTypeExpr)
         }
 
         is Expression.Proj -> this.inferProjectionType(levelSubst, localCtx)
@@ -475,19 +451,15 @@ fun Expression.inferType(levelSubst: Map<Int, Level> = emptyMap(), localCtx: Lis
             val stringInfo = env.findRootInductive("String")
                 ?: error("String literal used without String inductive in environment")
             val stringTypeIndex = stringInfo.first
-            val stringTypeExpr = env.addCustomExpr {
+            env.addCustomExpr {
                 Expression.Const(_name = stringTypeIndex, us = emptyList(), ie = it)
             }
-            Whnf(stringTypeExpr)
         }
     }
 }
 
-//context(env: Environment)
-//fun Whnf.reduce(): Whnf = expr.reduce(levelSubst)
-
 context(env: Environment)
-fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
+fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
     if (env.shouldLog) println("trying to reduce ${this}")
     val result = when (this) {
         is Expression.App -> {
@@ -495,30 +467,29 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
                 val appExpr = this.instantiateLevelParams(levelSubst) as Expression.App
                 appExpr.tryReduceRecursor(levelSubst)
                     ?: appExpr.tryReduceQuot(levelSubst)
-                    ?: Whnf(appExpr)
+                    ?: appExpr
             } else {
-            val fnWhnf = this.fnExpr.reduce(levelSubst = levelSubst)
-            when (val f = fnWhnf.reifyWhnf()) {
-                is Expression.Lam -> {
-                    f.bodyExpr.applySubst(listOf(this.argExpr)).reduce(levelSubst)
-                }
-
-                else -> {
-                    val appExpr: Expression.App = if (f == this.fnExpr) {
-                        this.instantiateLevelParams(levelSubst) as Expression.App
-                    } else {
-                        env.addCustomExpr { this.copy(fn = f.ie, ie = it) } as Expression.App
+                when (val fnWhnf = this.fnExpr.reduce(levelSubst)) {
+                    is Expression.Lam -> {
+                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce(levelSubst)
                     }
-                    appExpr.tryReduceRecursor(levelSubst)
-                        ?: appExpr.tryReduceQuot(levelSubst)
-                        ?: Whnf(appExpr.instantiateLevelParams(levelSubst))
+
+                    else -> {
+                        val appExpr: Expression.App = if (fnWhnf == this.fnExpr) {
+                            this.instantiateLevelParams(levelSubst) as Expression.App
+                        } else {
+                            env.addCustomExpr { this.copy(fn = fnWhnf.ie, ie = it) } as Expression.App
+                        }
+                        appExpr.tryReduceRecursor(levelSubst)
+                            ?: appExpr.tryReduceQuot(levelSubst)
+                            ?: appExpr.instantiateLevelParams(levelSubst)
+                    }
                 }
-            }
             }
         }
 
-        is Expression.Lam -> Whnf(this.instantiateLevelParams(levelSubst))
-        is Expression.Bvar -> Whnf(this)
+        is Expression.Lam -> this.instantiateLevelParams(levelSubst)
+        is Expression.Bvar -> this
         is Expression.Const -> {
             val constLevelSubst = this.composeLevelSubst(levelSubst)
             when (val d = decl) {
@@ -527,18 +498,18 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
                     instantiatedValue.reduce()
                 }
 
-                else -> Whnf(this.instantiateLevelParams(constLevelSubst))
+                else -> this.instantiateLevelParams(constLevelSubst)
             }
         }
 
-        is Expression.ForallE -> Whnf(this.instantiateLevelParams(levelSubst))
-        is Expression.Sort -> Whnf(this.instantiateLevelParams(levelSubst))
+        is Expression.ForallE -> this.instantiateLevelParams(levelSubst)
+        is Expression.Sort -> this.instantiateLevelParams(levelSubst)
         is Expression.LetE -> this.bodyExpr.applySubst(listOf(this.valueExpr)).reduce(levelSubst)
         is Expression.Mdata -> TODO()
-        is Expression.NatVal -> Whnf(this)
+        is Expression.NatVal -> this
 
         is Expression.Proj -> {
-            val structExpr = this.structExpr.reduce(levelSubst).reifyWhnf()
+            val structExpr = this.structExpr.reduce(levelSubst)
             val [head, args] = structExpr.unfoldApp()
             val ctorConst = head as? Expression.Const
             val ctorDecl = ctorConst?.decl as? Inductive.ConstructorVal
@@ -550,9 +521,9 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
             ) {
                 args[ctorDecl.numParams + this.projIndex].reduce(levelSubst)
             } else if (structExpr == this.structExpr.instantiateLevelParams(levelSubst)) {
-                Whnf(this.instantiateLevelParams(levelSubst))
+                this.instantiateLevelParams(levelSubst)
             } else {
-                val newExpr = env.addCustomExpr {
+                env.addCustomExpr {
                     Expression.Proj(
                         typeName = this.typeNameIndex,
                         idx = this.projIndex,
@@ -560,11 +531,10 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Whnf {
                         ie = it,
                     )
                 }
-                Whnf(newExpr)
             }
         }
 
-        is Expression.StrVal -> Whnf(this)
+        is Expression.StrVal -> this
     }
     return result
 }
@@ -583,9 +553,9 @@ private fun Expression.canReduceAtHead(): Boolean {
 }
 
 context(env: Environment)
-private fun Expression.Proj.inferProjectionType(levelSubst: Map<Int, Level>, localCtx: List<Expression>): Whnf {
+private fun Expression.Proj.inferProjectionType(levelSubst: Map<Int, Level>, localCtx: List<Expression>): Expression {
     val structType0 = this.structExpr.inferType(levelSubst, localCtx)
-    val structTypeExpr = structType0.expr.reduce(structType0.levelSubst).reifyWhnf()
+    val structTypeExpr = structType0.reduce()
     val [structTypeHead, structTypeArgs] = structTypeExpr.unfoldApp()
     val structTypeConst = structTypeHead as? Expression.Const
         ?: error("Projection ${this.toStringDetailed()} expects structure type, got ${structTypeExpr.toStringDetailed()}")
@@ -666,7 +636,7 @@ private fun Expression.Proj.inferProjectionType(levelSubst: Map<Int, Level>, loc
         }
     }
 
-    return Whnf(projectedType)
+    return projectedType
 }
 
 context(env: Environment)
@@ -695,7 +665,7 @@ private fun Expression.containsProjectionOf(typeName: Name, projIndices: Set<Int
 }
 
 context(env: Environment)
-private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf? {
+private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expression? {
     val unfolded = this.unfoldApp()
     val headExpr = unfolded.first
     val args = unfolded.second
@@ -713,8 +683,7 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
     fun applyRule(
         rule: Inductive.RecursorVal.RecursorRule,
         fieldArgs: List<Expression>,
-        resultLevelSubst: Map<Int, Level> = emptyMap(),
-    ): Whnf {
+    ): Expression {
         var reducedExpr: Expression = rule.rhsExpr
         (prefixArgs + fieldArgs).forEach { substArg: Expression ->
             reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, substArg.ie, it) }
@@ -722,12 +691,11 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
         args.drop(majorArgIndex + 1).forEach { extraArg: Expression ->
             reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, extraArg.ie, it) }
         }
-        val mergedSubst = mergeLevelSubst(recursorLevelSubst, resultLevelSubst)
-        return reducedExpr.reduce(mergedSubst)
+        return reducedExpr.reduce(recursorLevelSubst)
     }
 
     val majorWhnf = args[majorArgIndex].reduce(levelSubst)
-    val [majorHead, majorArgs] = majorWhnf.expr.unfoldApp()
+    val [majorHead, majorArgs] = majorWhnf.unfoldApp()
 
     val majorCtor = majorHead as? Expression.Const
     val constructorDecl = majorCtor?.decl as? Inductive.ConstructorVal
@@ -745,10 +713,10 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
 
         if (majorArgs.size != constructorDecl.numParams + matchingRule.nfields) return null
         val fieldArgs = majorArgs.drop(constructorDecl.numParams)
-        return applyRule(matchingRule, fieldArgs, majorWhnf.levelSubst)
+        return applyRule(matchingRule, fieldArgs)
     }
 
-    val majorNatLit = majorWhnf.expr as? Expression.NatVal
+    val majorNatLit = majorWhnf as? Expression.NatVal
     if (majorNatLit != null) {
         if (majorNatLit.natVal !in 0L..MAX_NAT_LITERAL_RECURSOR_REDUCTION) return null
         val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
@@ -772,10 +740,10 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
             val succRule = natRulesByFields.singleOrNull { it.first == 1 }?.second
             if (zeroRule != null && succRule != null) {
                 return if (majorNatLit.natVal == 0L) {
-                    applyRule(zeroRule, emptyList(), majorWhnf.levelSubst)
+                    applyRule(zeroRule, emptyList())
                 } else if (majorNatLit.natVal > 0L) {
                     val predNat = env.addCustomExpr { Expression.NatVal(majorNatLit.natVal - 1, it) }
-                    applyRule(succRule, listOf(predNat), majorWhnf.levelSubst)
+                    applyRule(succRule, listOf(predNat))
                 } else {
                     null
                 }
@@ -808,16 +776,18 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Whnf?
     if (ctorResultArgs.size != recursorDecl.numParams + recursorDecl.numIndices) return null
     val expectedIndexArgs = ctorResultArgs.drop(recursorDecl.numParams)
     repeat(recursorDecl.numIndices) { index ->
-        if (!expectedIndexArgs[index].isDefEq(indexArgs[index], recursorLevelSubst, recursorLevelSubst)) {
+        val expectedIndex = expectedIndexArgs[index].instantiateLevelParams(recursorLevelSubst)
+        val actualIndex = indexArgs[index].instantiateLevelParams(recursorLevelSubst)
+        if (!expectedIndex.isDefEq(actualIndex)) {
             return null
         }
     }
 
-    return applyRule(kRule, emptyList(), majorWhnf.levelSubst)
+    return applyRule(kRule, emptyList())
 }
 
 context(env: Environment)
-private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Whnf? {
+private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Expression? {
     val [headExpr, args] = this.unfoldApp()
     val quotConst = headExpr as? Expression.Const ?: return null
     val quotDecl = quotConst.decl as? Declaration.Quot ?: return null
@@ -829,7 +799,7 @@ private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Whnf? {
 
     val majorArg = args[arity - 1]
     val majorWhnf = majorArg.reduce(levelSubst)
-    val [majorHead, majorArgs] = majorWhnf.expr.unfoldApp()
+    val [majorHead, majorArgs] = majorWhnf.unfoldApp()
     val majorCtorConst = majorHead as? Expression.Const ?: return null
     val majorCtorDecl = majorCtorConst.decl as? Declaration.Quot ?: return null
     if (majorCtorDecl.kind != Declaration.Quot.Kind.Ctor) return null
@@ -856,8 +826,7 @@ private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Whnf? {
     args.drop(arity).forEach { extraArg: Expression ->
         reducedExpr = env.addCustomExpr { Expression.App(fn = reducedExpr.ie, arg = extraArg.ie, ie = it) }
     }
-    val mergedSubst = mergeLevelSubst(quotLevelSubst, majorWhnf.levelSubst)
-    return reducedExpr.reduce(mergedSubst)
+    return reducedExpr.reduce(quotLevelSubst)
 }
 
 context(env: Environment)
@@ -879,8 +848,8 @@ private fun Expression.tryStructureEtaDefEq(
 ): Boolean {
     val leftType0 = this.inferType(localCtx = localCtxLeft)
     val rightType0 = other.inferType(localCtx = localCtxRight)
-    val leftTypeExpr = leftType0.expr.reduce(leftType0.levelSubst).reifyWhnf()
-    val rightTypeExpr = rightType0.expr.reduce(rightType0.levelSubst).reifyWhnf()
+    val leftTypeExpr = leftType0.reduce()
+    val rightTypeExpr = rightType0.reduce()
 
     val [leftTypeHead, leftTypeArgs] = leftTypeExpr.unfoldApp()
     val [rightTypeHead, rightTypeArgs] = rightTypeExpr.unfoldApp()
@@ -926,10 +895,8 @@ private fun Expression.tryProofIrrelevanceDefEq(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    val thisTy0 = this.inferType(localCtx = localCtxLeft)
-    val otherTy0 = other.inferType(localCtx = localCtxRight)
-    val thisTy = thisTy0.reifyWhnf()
-    val otherTy = otherTy0.reifyWhnf()
+    val thisTy = this.inferType(localCtx = localCtxLeft)
+    val otherTy = other.inferType(localCtx = localCtxRight)
     val thisSort = thisTy.inferSort(localCtx = localCtxLeft)
     val otherSort = otherTy.inferSort(localCtx = localCtxRight)
     if (!thisSort.isLessOrEqual(Level.Zero) || !otherSort.isLessOrEqual(Level.Zero)) {
@@ -948,7 +915,7 @@ fun Expression.inferSort(
     localCtx: List<Expression> = emptyList(),
 ): Level {
     val tyWhnf = this.inferType(levelSubst, localCtx)
-    val whnfTyExpr = tyWhnf.expr.reduce(tyWhnf.levelSubst).reifyWhnf()
+    val whnfTyExpr = tyWhnf.reduce()
     val sort = whnfTyExpr as? Expression.Sort
         ?: error("Expected Sort type for ${this.toStringDetailed()}, got ${whnfTyExpr.toStringDetailed()}")
     return sort.level
@@ -1210,14 +1177,6 @@ private fun Environment.findRootInductive(shortName: String): Pair<Int, Inductiv
 }
 
 context(env: Environment)
-private fun mergeLevelSubst(outer: Map<Int, Level>, inner: Map<Int, Level>): Map<Int, Level> {
-    if (outer.isEmpty()) return inner
-    if (inner.isEmpty()) return outer
-    val normalizedInner = inner.mapValues { entry -> entry.value.instantiateLevelParams(outer) }
-    return outer + normalizedInner
-}
-
-context(env: Environment)
 private fun Expression.Const.composeLevelSubst(outer: Map<Int, Level>): Map<Int, Level> {
     fun Expression.Const.levelSubstMap(): Map<Int, Level> {
         val params = this.decl.levelParams
@@ -1232,5 +1191,6 @@ private fun Expression.Const.composeLevelSubst(outer: Map<Int, Level>): Map<Int,
     val inner = this.levelSubstMap()
     if (inner.isEmpty()) return outer
     if (outer.isEmpty()) return inner
-    return mergeLevelSubst(outer, inner)
+    val normalizedInner = inner.mapValues { entry -> entry.value.instantiateLevelParams(outer) }
+    return outer + normalizedInner
 }
