@@ -66,8 +66,8 @@ value class NatValue private constructor(private val digits: String) : Comparabl
             var rightIndex = right.length - 1
 
             while (leftIndex >= 0) {
-                val leftDigit = (left[leftIndex].code - '0'.code) - borrow
-                val rightDigit = if (rightIndex >= 0) right[rightIndex].code - '0'.code else 0
+                val leftDigit = (left[leftIndex] - '0') - borrow
+                val rightDigit = if (rightIndex >= 0) right[rightIndex] - '0' else 0
                 var diff = leftDigit - rightDigit
                 if (diff < 0) {
                     diff += 10
@@ -75,7 +75,7 @@ value class NatValue private constructor(private val digits: String) : Comparabl
                 } else {
                     borrow = 0
                 }
-                output[leftIndex] = ('0'.code + diff).toChar()
+                output[leftIndex] = '0' + diff
                 leftIndex -= 1
                 rightIndex -= 1
             }
