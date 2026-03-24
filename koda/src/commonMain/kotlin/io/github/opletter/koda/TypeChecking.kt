@@ -802,6 +802,9 @@ private fun Expression.tryStructureEtaDefEq(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
+    if (!this.hasNoUnboundBvars(localCtxLeft.size) || !other.hasNoUnboundBvars(localCtxRight.size)) {
+        return false
+    }
     val leftType0 = this.inferType(localCtx = localCtxLeft)
     val rightType0 = other.inferType(localCtx = localCtxRight)
     val leftTypeExpr = leftType0.reduce()
@@ -845,6 +848,9 @@ private fun Expression.tryProofIrrelevanceDefEq(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
+    if (!this.hasNoUnboundBvars(localCtxLeft.size) || !other.hasNoUnboundBvars(localCtxRight.size)) {
+        return false
+    }
     val thisTy = this.inferType(localCtx = localCtxLeft)
     val otherTy = other.inferType(localCtx = localCtxRight)
     val thisSort = thisTy.inferSort(localCtx = localCtxLeft)
@@ -893,6 +899,30 @@ private fun Expression.containsLooseBvarZero(depth: Int = 0): Boolean {
         is Expression.Mdata -> this.expr.containsLooseBvarZero(depth)
         is Expression.Proj -> this.structExpr.containsLooseBvarZero(depth)
         is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
+    }
+}
+
+context(env: Environment)
+private fun Expression.hasNoUnboundBvars(localCtxSize: Int, depth: Int = 0): Boolean {
+    return when (this) {
+        is Expression.Bvar -> this.bvar < depth + localCtxSize
+        is Expression.App -> this.fnExpr.hasNoUnboundBvars(localCtxSize, depth) &&
+                this.argExpr.hasNoUnboundBvars(localCtxSize, depth)
+
+        is Expression.ForallE -> this.typeExpr.hasNoUnboundBvars(localCtxSize, depth) &&
+                this.bodyExpr.hasNoUnboundBvars(localCtxSize, depth + 1)
+
+        is Expression.Lam -> this.typeExpr.hasNoUnboundBvars(localCtxSize, depth) &&
+                this.bodyExpr.hasNoUnboundBvars(localCtxSize, depth + 1)
+
+        is Expression.LetE ->
+            this.typeExpr.hasNoUnboundBvars(localCtxSize, depth) &&
+                    this.valueExpr.hasNoUnboundBvars(localCtxSize, depth) &&
+                    this.bodyExpr.hasNoUnboundBvars(localCtxSize, depth + 1)
+
+        is Expression.Mdata -> this.expr.hasNoUnboundBvars(localCtxSize, depth)
+        is Expression.Proj -> this.structExpr.hasNoUnboundBvars(localCtxSize, depth)
+        is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> true
     }
 }
 
