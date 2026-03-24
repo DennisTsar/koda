@@ -8,7 +8,6 @@ fun Level.isEqual(other: Level): Boolean = this.isLessOrEqual(other) && other.is
 context(env: Environment)
 fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
     is Level.Zero if balance >= 0 -> true
-    is Level.Zero if other is Level.Imax -> true
     else if other is Level.Zero && balance < 0 -> false
     is Level.Param if other is Level.Param -> this.name == other.name && balance >= 0
     is Level.Param if other is Level.Zero -> false
@@ -24,14 +23,14 @@ fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
             || this.isLessOrEqual(other.right, balance)
 
     is Level.Imax if this.right is Level.Param -> {
-        compareByCases(this.right as Level.Param) { this.isLessOrEqual(other, balance) }
+        compareByCases(this.right as Level.Param) { this.isLessOrEqual(env.levels[other.il]!!, balance) }
     }
 
     else if other is Level.Imax && other.right is Level.Param -> {
-        compareByCases(other.right as Level.Param) { this.isLessOrEqual(other, balance) }
+        compareByCases(other.right as Level.Param) { env.levels[this.il]!!.isLessOrEqual(other, balance) }
     }
 
-    is Level.Imax if other is Level.Imax -> balance >= 0 && this.left.isEqual(other.left) && this.right.isEqual(other.right)
+    is Level.Imax if other is Level.Imax && balance >= 0 && this.left.isEqual(other.left) && this.right.isEqual(other.right) -> true
     is Level.Imax if this.right is Level.Imax -> {
         val customImax = env.addCustomLevel {
             Level.Imax(listOf(this.left.il, (this.right as Level.Imax).right.il), it)
@@ -105,6 +104,9 @@ private fun Level.simplify(): Level = when (this) {
             Level.Max(listOf(this.left.il, this.right.il), it)
         }
     }
+    // In case of emergency, uncomment code
+//    is Level.Imax if this.right.isEqual(this.left) -> this.left
+//    is Level.Max if this.right.isEqual(this.left) -> this.left
 
     else -> this
 }
