@@ -7,6 +7,7 @@ class Environment {
     val levels: MutableMap<Int, Level> = mutableMapOf(0 to Level.Zero)
 
     val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
+    val reduceCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
 
     private var nextLevelIndex: Int = 0
 
@@ -21,16 +22,17 @@ class Environment {
 
     fun addCustomExpr(exprConstructor: (Int) -> Expression): Expression {
         nextExprIndex--
-        val newExpr = exprConstructor(nextExprIndex)
-        expressions[nextExprIndex] = newExpr
+        val newExpr = exprConstructor(nextExprIndex) // MEM: 3.71 GB
+        expressions[nextExprIndex] = newExpr // MEM: 5.68 GB
         return newExpr
     }
 
     fun clearCustom() {
-        (nextLevelIndex..-1).forEach { levels.remove(it) }
+        (nextLevelIndex..-1).forEach { levels.remove(it) } // MEM: 100 MB
         nextLevelIndex = 0
-        (nextExprIndex..-101).forEach { expressions.remove(it) }
+        (nextExprIndex..-101).forEach { expressions.remove(it) } // MEM: 924 MB
         nextExprIndex = -100
+        reduceCacheNoLevelSubst.clear()
     }
 
     var shouldLog = false

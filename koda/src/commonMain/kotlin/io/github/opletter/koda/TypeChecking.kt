@@ -1,6 +1,6 @@
 package io.github.opletter.koda
 
-fun typeCheck(data: List<ExportType>) {
+fun typeCheck(data: Sequence<ExportType>) {
     val env = Environment()
 //    typeCheck(data, env = env)
     context(env) {
@@ -9,8 +9,11 @@ fun typeCheck(data: List<ExportType>) {
 }
 
 context(env: Environment)
-fun _typeCheck(rawData: List<ExportType>) {
-    rawData.forEach { data ->
+fun _typeCheck(rawData: Sequence<ExportType>) {
+    rawData.forEachIndexed { index, data ->
+        if (index % 100000 == 0) {
+            println("i: progress = $index")
+        }
         if (env.shouldLog) {
             println(data)
             println("---")
@@ -42,21 +45,21 @@ fun _typeCheck(rawData: List<ExportType>) {
                     is Declaration.Axiom -> {} // no extra checks needed
                     is Declaration.Def -> {
                         check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                            "value not defeq to type for $data"
+                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
                         }
                     }
 
                     is Declaration.Opaque -> {
                         // TODO: treat opqaue differently
                         check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                            "value not defeq to type for $data"
+                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
                         }
                     }
 
                     is Declaration.Quot -> {} // no extra checks needed
                     is Declaration.Thm -> {
                         check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                            "value not defeq to type for $data"
+                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
                         }
                         check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
                             "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
@@ -84,7 +87,7 @@ fun _typeCheck(rawData: List<ExportType>) {
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     if (env.shouldLog) println("found value: ${value.toStringDetailed()}")
-    val inferredValueType = value.inferType()
+    val inferredValueType = value.inferType() // MEM: 200 MB
     if (env.shouldLog) println("inferred type of value: ${inferredValueType.toStringDetailed()}")
     val actualType = inferredValueType
     // made it to: Def(_name=2098, _levelParams=[22, 6], type=12166, value=12236, hints=Abbrev, safety=Safe, all=[2098])
@@ -92,7 +95,7 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     //    return Blah.isDefEq(Everything(env, expectedType, actualType, levelSubstRight = inferredValueType.levelSubst))
     // made it to: Def(_name=1944, _levelParams=[6], type=10830, value=10837, hints=Abbrev, safety=Safe, all=[1944])
     // before stack overflow, ran for 30 sec
-    return expectedType.isDefEq(actualType)
+    return expectedType.isDefEq(actualType) // MEM: 13 GB
 }
 
 context(env: Environment)
@@ -104,16 +107,22 @@ fun Expression.isDefEq(
     val leftExpr = this
     val rightExpr = other
     if (leftExpr == rightExpr) return true
-    if (leftExpr.sameShape(rightExpr)) return true
+    if (leftExpr.sameShape(rightExpr)) return true // MEM: 180 MB
     if (env.shouldLog) {
-        println("comparing:\n$leftExpr\n$rightExpr")
+        println("comparing:\n${leftExpr.toStringDetailed()}\n${rightExpr.toStringDetailed()}")
     }
-    val leftWhnfExpr = leftExpr.reduce()
-    val rightWhnfExpr = rightExpr.reduce()
+    val leftWhnfExpr = leftExpr.reduce() // MEM: 6.3 GB
+    val rightWhnfExpr = rightExpr.reduce()// MEM: 6.3 GB
+    if (env.shouldLog) {
+        println("comparing (reduced):\n${leftWhnfExpr.toStringDetailed()}\n${rightWhnfExpr.toStringDetailed()}")
+    }
     if (leftWhnfExpr == rightWhnfExpr) return true
 //    if (leftWhnfExpr.sameShape(rightWhnfExpr)) return true
-    if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) return true
+    if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) return true // MEM: 13 GB
+    val tempLog = env.shouldLog
+    env.shouldLog = false
     return leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
+        .also { env.shouldLog = tempLog }
 }
 
 context(env: Environment)
@@ -129,7 +138,7 @@ private fun Expression.sameShape(other: Expression): Boolean = when (this) {
                 this.levels.zip(other.levels).all { it.first == it.second }
 
     is Expression.App if other is Expression.App ->
-        this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr)
+        this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr) // MEM: 160 MB
 
     is Expression.ForallE if other is Expression.ForallE ->
         this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
@@ -165,8 +174,8 @@ private fun Expression.isDefEqWhnf(
         if (lhsNat != null && rhsNat != null && lhsNat.count == rhsNat.count) {
             lhsNat.base.isDefEq(rhsNat.base, localCtxLeft, localCtxRight)
         } else {
-            this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
-                    this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
+            this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) && // MEM: 12.7 GB
+                    this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight) // MEM: 12.8 GB
         }
     }
 
@@ -204,8 +213,9 @@ private fun Expression.isDefEqWhnf(
                         this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) })
 
     is Expression.ForallE if other is Expression.ForallE -> {
-        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) && // MEM: 3 GB
                 this.bodyExpr.isDefEq(
+                    // MEM: 12.9 GB
                     other.bodyExpr,
                     listOf(this.typeExpr) + localCtxLeft,
                     listOf(other.typeExpr) + localCtxRight,
@@ -213,8 +223,9 @@ private fun Expression.isDefEqWhnf(
     }
 
     is Expression.Lam if other is Expression.Lam -> {
-        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) && // MEM: 5.2 GB
                 this.bodyExpr.isDefEq(
+                    // MEM: 12.2 GB
                     other.bodyExpr,
                     listOf(this.typeExpr) + localCtxLeft,
                     listOf(other.typeExpr) + localCtxRight,
@@ -238,7 +249,7 @@ private fun Expression.isDefEqWhnf(
     is Expression.Proj if other is Expression.Proj ->
         this.typeNameExpr == other.typeNameExpr &&
                 this.projIndex == other.projIndex &&
-                this.structExpr.isDefEq(other.structExpr, localCtxLeft, localCtxRight)
+                this.structExpr.isDefEq(other.structExpr, localCtxLeft, localCtxRight) // MEM: 10.5 GB
 
     is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
 
@@ -323,6 +334,19 @@ fun Expression.inferType(
     localCtx: List<Expression> = emptyList()
 ): Expression {
     return when (this) {
+//        is Expression.App -> {
+//            val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
+//            val fnTy = fnTy0.reduce(levelSubst)
+//            check(fnTy is Expression.ForallE) {
+//                "Expected function type for app ${this.toStringDetailed()}, got ${fnTy.toStringDetailed()}"
+//            }
+//
+//            val arg = this.argExpr.instantiateLevelParams(levelSubst)
+//            fnTy.bodyExpr
+//                .applySubst(listOf(arg))
+//                .instantiateLevelParams(levelSubst)
+//                .reduce(levelSubst)
+//        }
         is Expression.App -> {
             val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
             val fnTy = fnTy0.reduce()
@@ -425,20 +449,23 @@ fun Expression.inferType(
 
 context(env: Environment)
 fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
+    if (levelSubst.isEmpty()) {
+        env.reduceCacheNoLevelSubst[this.ie]?.let { return it }
+    }
     if (env.shouldLog) println("trying to reduce ${this}")
     val result = when (this) {
         is Expression.App -> {
             if (!this.fnExpr.canReduceAtHead()) {
                 val appExpr = this.instantiateLevelParams(levelSubst) as Expression.App
-                appExpr.tryReduceRecursor(levelSubst)
+                appExpr.tryReduceRecursor(levelSubst) // MEM: 3.6 GB
                     ?: appExpr.tryReduceQuot(levelSubst)
                     ?: appExpr
             } else {
-                when (val fnWhnf = this.fnExpr.reduce(levelSubst)) {
+                when (val fnWhnf = this.fnExpr.reduce(levelSubst)) { // MEM: 10.1 GB
                     is Expression.Lam -> {
 //                        val instArg = this.argExpr.instantiateLevelParams(levelSubst)
 //                        fnWhnf.bodyExpr.applySubst(listOf(instArg)).reduce(levelSubst)
-                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce()
+                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce() // MEM: 12.2 GB
                     }
 
                     else -> {
@@ -448,11 +475,11 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                             env.addCustomExpr { this.copy(fn = fnWhnf.ie, ie = it) } as Expression.App
                         }
                         val reducedApp = appExpr.tryReduceRecursor(levelSubst)
-                            ?: appExpr.tryReduceQuot(levelSubst)
+                            ?: appExpr.tryReduceQuot(levelSubst) // MEM: 100 MB
                             ?: appExpr.instantiateLevelParams(levelSubst)
 //                        if (fnWhnf != this.fnExpr) reducedApp.reduce(levelSubst) else reducedApp
 //                        if (fnWhnf != this.fnExpr) reducedApp.reduce(levelSubst) else reducedApp
-                        if (fnWhnf != this.fnExpr) reducedApp.reduce() else reducedApp
+                        if (fnWhnf != this.fnExpr) reducedApp.reduce() else reducedApp // MEM: 200 MB
                     }
                 }
             }
@@ -461,7 +488,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         is Expression.Lam -> this.instantiateLevelParams(levelSubst)
         is Expression.Bvar -> this
         is Expression.Const -> {
-            val constLevelSubst = this.composeLevelSubst(levelSubst)
+            val constLevelSubst = this.composeLevelSubst(levelSubst) // MEM: 300 MB
             when (val d = decl) {
                 is Declaration.Def -> {
                     val instantiatedValue = d.valueExpr.instantiateLevelParams(constLevelSubst)
@@ -479,7 +506,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         is Expression.NatVal -> this
 
         is Expression.Proj -> {
-            val structExpr = this.structExpr.reduce(levelSubst)
+            val structExpr = this.structExpr.reduce(levelSubst) // MEM: 2 GB
             val [head, args] = structExpr.unfoldApp()
             val ctorConst = head as? Expression.Const
             val ctorDecl = ctorConst?.decl as? Inductive.ConstructorVal
@@ -489,7 +516,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                 this.projIndex in 0 until ctorDecl.numFields &&
                 args.size == ctorDecl.numParams + ctorDecl.numFields
             ) {
-                args[ctorDecl.numParams + this.projIndex].reduce()
+                args[ctorDecl.numParams + this.projIndex].reduce() // MEM: 1 GB
             } else if (structExpr == this.structExpr.instantiateLevelParams(levelSubst)) {
                 this.instantiateLevelParams(levelSubst)
             } else {
@@ -505,6 +532,9 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         }
 
         is Expression.StrVal -> this
+    }
+    if (levelSubst.isEmpty()) {
+        env.reduceCacheNoLevelSubst[this.ie] = result
     }
     return result
 }
@@ -636,7 +666,7 @@ private fun Expression.containsProjectionOf(typeName: Name, projIndices: Set<Int
 
 context(env: Environment)
 private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expression? {
-    val unfolded = this.unfoldApp()
+    val unfolded = this.unfoldApp() // MEM: 100 MB
     val headExpr = unfolded.first
     val args = unfolded.second
     val recConst = headExpr as? Expression.Const ?: return null
@@ -661,10 +691,10 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
         args.drop(majorArgIndex + 1).forEach { extraArg: Expression ->
             reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, extraArg.ie, it) }
         }
-        return reducedExpr.reduce(recursorLevelSubst)
+        return reducedExpr.reduce(recursorLevelSubst) // MEM: 1 GB
     }
 
-    val majorWhnf = args[majorArgIndex].reduce(levelSubst)
+    val majorWhnf = args[majorArgIndex].reduce(levelSubst) // MEM: 2.5 GB
     val [majorHead, majorArgs] = majorWhnf.unfoldApp()
 
     val majorCtor = majorHead as? Expression.Const
@@ -683,7 +713,7 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
 
         if (majorArgs.size != constructorDecl.numParams + matchingRule.nfields) return null
         val fieldArgs = majorArgs.drop(constructorDecl.numParams)
-        return applyRule(matchingRule, fieldArgs)
+        return applyRule(matchingRule, fieldArgs) // MEM: 1 GB
     }
 
     val majorNatLit = majorWhnf as? Expression.NatVal
@@ -766,7 +796,7 @@ private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Expressio
     if (args.size < arity) return null
 
     val majorArg = args[arity - 1]
-    val majorWhnf = majorArg.reduce(levelSubst)
+    val majorWhnf = majorArg.reduce(levelSubst) // MEM: 346 GB
     val [majorHead, majorArgs] = majorWhnf.unfoldApp()
     val majorCtorConst = majorHead as? Expression.Const ?: return null
     val majorCtorDecl = majorCtorConst.decl as? Declaration.Quot ?: return null
@@ -881,8 +911,24 @@ fun Expression.inferSort(
 context(env: Environment)
 private fun Expression.tryEtaReduce(): Expression? {
     val lam = this as? Expression.Lam ?: return null
-    val bodyApp = lam.bodyExpr as? Expression.App ?: return null
-    val bodyArg = bodyApp.argExpr as? Expression.Bvar ?: return null
+
+    // Try to reduce the body first to enable more eta-reductions
+    val reducedBody = lam.bodyExpr.reduce()
+    val bodyToCheck = if (reducedBody != lam.bodyExpr) reducedBody else lam.bodyExpr
+    val bodyApp = bodyToCheck as? Expression.App ?: return null
+    // If the arg is not Bvar(0), try reducing it first
+    val argToCheck = if (bodyApp.argExpr !is Expression.Bvar) {
+        val reducedArg = bodyApp.argExpr.reduce()
+        if (reducedArg != bodyApp.argExpr) {
+            // Create new app with reduced arg
+            val newApp = env.addCustomExpr { Expression.App(fn = bodyApp.fnExpr.ie, arg = reducedArg.ie, ie = it) }
+            return env.addCustomExpr { lam.copy(body = newApp.ie, ie = it) }.tryEtaReduce()
+        }
+        bodyApp.argExpr
+    } else {
+        bodyApp.argExpr
+    }
+    val bodyArg = argToCheck as? Expression.Bvar ?: return null
     if (bodyArg.bvar != 0) return null
     val fnExpr = bodyApp.fnExpr
     if (fnExpr.containsLooseBvarZero()) return null
@@ -948,10 +994,10 @@ context(env: Environment)
 private fun Expression.lift(amount: Int): Expression {
     if (amount == 0) return this
 
-    return this.rewriteBinders { bvarExpr, depth ->
+    return this.rewriteBinders { bvarExpr, depth -> // MEM: 3 GB
         if (bvarExpr.bvar >= depth) {
-            env.addCustomExpr {
-                bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it)
+            env.addCustomExpr { // MEM: 750 MB
+                bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it) // MEM: 150 MB
             }
         } else {
             bvarExpr
@@ -962,88 +1008,163 @@ private fun Expression.lift(amount: Int): Expression {
 context(env: Environment)
 fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
     if (subst.isEmpty()) return this
-    return when (this) {
-        is Expression.Bvar -> this
-        is Expression.NatVal -> this
-        is Expression.StrVal -> this
+    val levelCache = mutableMapOf<Int, Level>()
+    fun Level.instantiateCached(): Level {
+        levelCache[this.il]?.let { return it }
+        val result = when (this) {
+            Level.Zero -> this
+            is Level.Param -> subst[this.il] ?: this
 
-        is Expression.Sort -> {
-            val newLevel = this.level.instantiateLevelParams(subst)
-            if (newLevel == this.level) this else env.addCustomExpr { this.copy(sort = newLevel.il, ie = it) }
-        }
+            is Level.Succ -> {
+                val newLevel = this.level.instantiateCached()
+                if (newLevel === this.level) {
+                    this
+                } else {
+                    env.addCustomLevel { Level.Succ(newLevel.il, it) }
+                }
+            }
 
-        is Expression.Const -> {
-            val newUs = this.levels.map { it.instantiateLevelParams(subst).il }
-            val oldUs = this.levels.map { it.il }
-            if (newUs == oldUs) this else env.addCustomExpr { this.copy(us = newUs, ie = it) }
-        }
+            is Level.Max -> {
+                val newLeft = this.left.instantiateCached()
+                val newRight = this.right.instantiateCached()
+                if (newLeft === this.left && newRight === this.right) {
+                    this
+                } else {
+                    env.addCustomLevel { Level.Max(listOf(newLeft.il, newRight.il), it) }
+                }
+            }
 
-        is Expression.App -> {
-            val newFn = this.fnExpr.instantiateLevelParams(subst)
-            val newArg = this.argExpr.instantiateLevelParams(subst)
-            if (newFn == this.fnExpr && newArg == this.argExpr) {
-                this
-            } else {
-                env.addCustomExpr { this.copy(fn = newFn.ie, arg = newArg.ie, ie = it) }
+            is Level.Imax -> {
+                val newLeft = this.left.instantiateCached()
+                val newRight = this.right.instantiateCached()
+                if (newLeft === this.left && newRight === this.right) {
+                    this
+                } else {
+                    env.addCustomLevel { Level.Imax(listOf(newLeft.il, newRight.il), it) }
+                }
             }
         }
-
-        is Expression.ForallE -> {
-            val newType = this.typeExpr.instantiateLevelParams(subst)
-            val newBody = this.bodyExpr.instantiateLevelParams(subst)
-            if (newType == this.typeExpr && newBody == this.bodyExpr) {
-                this
-            } else {
-                env.addCustomExpr { this.copy(type = newType.ie, body = newBody.ie, ie = it) }
-            }
-        }
-
-        is Expression.Lam -> {
-            val newType = this.typeExpr.instantiateLevelParams(subst)
-            val newBody = this.bodyExpr.instantiateLevelParams(subst)
-            if (newType == this.typeExpr && newBody == this.bodyExpr) {
-                this
-            } else {
-                env.addCustomExpr { this.copy(type = newType.ie, body = newBody.ie, ie = it) }
-            }
-        }
-
-        is Expression.LetE -> {
-            val newType = this.typeExpr.instantiateLevelParams(subst)
-            val newValue = this.valueExpr.instantiateLevelParams(subst)
-            val newBody = this.bodyExpr.instantiateLevelParams(subst)
-            if (newType == this.typeExpr && newValue == this.valueExpr && newBody == this.bodyExpr) {
-                this
-            } else {
-                env.addCustomExpr { this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it) }
-            }
-        }
-
-        is Expression.Mdata -> {
-            val newExpr = this.expr.instantiateLevelParams(subst)
-            if (newExpr == this.expr) this else env.addCustomExpr { this.copy(_expr = newExpr.ie, ie = it) }
-        }
-
-        is Expression.Proj -> {
-            val newStruct = this.structExpr.instantiateLevelParams(subst)
-            if (newStruct == this.structExpr) this else env.addCustomExpr { this.copy(struct = newStruct.ie, ie = it) }
-        }
+        levelCache[this.il] = result
+        return result
     }
+
+    val exprCache = mutableMapOf<Int, Expression>()
+    fun Expression.instantiateCached(): Expression {
+        exprCache[this.ie]?.let { return it }
+        val result = when (this) {
+            is Expression.Bvar -> this
+            is Expression.NatVal -> this
+            is Expression.StrVal -> this
+
+            is Expression.Sort -> {
+                val newLevel = this.level.instantiateCached()
+                if (newLevel === this.level) this else env.addCustomExpr { this.copy(sort = newLevel.il, ie = it) }
+            }
+
+            is Expression.Const -> {
+                val oldLevels = this.levels
+                var newUs: MutableList<Int>? = null
+                for (index in oldLevels.indices) {
+                    val oldLevel = oldLevels[index]
+                    val newLevel = oldLevel.instantiateCached()
+                    if (newLevel !== oldLevel) {
+                        if (newUs == null) {
+                            newUs = oldLevels.map { it.il }.toMutableList()
+                        }
+                        newUs[index] = newLevel.il
+                    }
+                }
+                if (newUs == null) {
+                    this
+                } else {
+                    env.addCustomExpr { this.copy(us = newUs, ie = it) } // MEM: 130 MB
+                }
+            }
+
+            is Expression.App -> {
+                val newFn = this.fnExpr.instantiateCached() // MEM: 720 GB
+                val newArg = this.argExpr.instantiateCached() // MEM: 480 MB
+                if (newFn === this.fnExpr && newArg === this.argExpr) {
+                    this
+                } else {
+                    env.addCustomExpr { this.copy(fn = newFn.ie, arg = newArg.ie, ie = it) } // MEM: 240 MB
+                }
+            }
+
+            is Expression.ForallE -> {
+                val newType = this.typeExpr.instantiateCached() // MEM: 90 MB
+                val newBody = this.bodyExpr.instantiateCached() // MEM: 120 MB
+                if (newType === this.typeExpr && newBody === this.bodyExpr) {
+                    this
+                } else {
+                    env.addCustomExpr { this.copy(type = newType.ie, body = newBody.ie, ie = it) }
+                }
+            }
+
+            is Expression.Lam -> {
+                val newType = this.typeExpr.instantiateCached() // MEM: 470 MB
+                val newBody = this.bodyExpr.instantiateCached() // MEM: 960 MB
+                if (newType === this.typeExpr && newBody === this.bodyExpr) {
+                    this
+                } else {
+                    env.addCustomExpr { this.copy(type = newType.ie, body = newBody.ie, ie = it) } // MEM: 100 MB
+                }
+            }
+
+            is Expression.LetE -> {
+                val newType = this.typeExpr.instantiateCached()
+                val newValue = this.valueExpr.instantiateCached()
+                val newBody = this.bodyExpr.instantiateCached()
+                if (newType === this.typeExpr && newValue === this.valueExpr && newBody === this.bodyExpr) {
+                    this
+                } else {
+                    env.addCustomExpr { this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it) }
+                }
+            }
+
+            is Expression.Mdata -> {
+                val newExpr = this.expr.instantiateCached()
+                if (newExpr === this.expr) this else env.addCustomExpr { this.copy(_expr = newExpr.ie, ie = it) }
+            }
+
+            is Expression.Proj -> {
+                val newStruct = this.structExpr.instantiateCached()
+                if (newStruct === this.structExpr) this else env.addCustomExpr {
+                    this.copy(
+                        struct = newStruct.ie,
+                        ie = it
+                    )
+                }
+            }
+        }
+        exprCache[this.ie] = result
+        return result
+    }
+
+    return this.instantiateCached()
 }
 
 context(env: Environment)
 fun Expression.applySubst(subst: List<Expression>): Expression {
     if (subst.isEmpty()) return this
 
-    return this.rewriteBinders { bvarExpr, currentDepth ->
+    val liftedSubstCache = mutableMapOf<Long, Expression>()
+    fun getLiftedSubst(index: Int, depth: Int): Expression {
+        val cacheKey = (depth.toLong() shl 32) xor (index.toLong() and 0xffffffffL)
+        return liftedSubstCache.getOrPut(cacheKey) {
+            subst[index].lift(depth)
+        }
+    }
+
+    return this.rewriteBinders { bvarExpr, currentDepth -> // MEM: 11 GB
         when {
             bvarExpr.bvar < currentDepth -> bvarExpr
             bvarExpr.bvar - currentDepth < subst.size ->
-                subst[bvarExpr.bvar - currentDepth].lift(currentDepth)
+                getLiftedSubst(bvarExpr.bvar - currentDepth, currentDepth) // MEM: 3 GB
 
             else -> {
-                env.addCustomExpr {
-                    bvarExpr.copy(bvar = bvarExpr.bvar - subst.size, ie = it)
+                env.addCustomExpr { // MEM: 2 GB
+                    bvarExpr.copy(bvar = bvarExpr.bvar - subst.size, ie = it) // MEM: 490 MB
                 }
             }
         }
@@ -1051,54 +1172,81 @@ fun Expression.applySubst(subst: List<Expression>): Expression {
 }
 
 context(env: Environment)
-private fun Expression.rewriteBinders(depth: Int = 0, rewriteBvar: (Expression.Bvar, Int) -> Expression): Expression {
+private fun Expression.rewriteBinders(
+    depth: Int = 0,
+    rewriteBvar: (Expression.Bvar, Int) -> Expression
+): Expression { // MEM: 11 GB
     return when (this) {
         is Expression.Bvar -> rewriteBvar(this, depth)
 
         is Expression.App -> {
-            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar)
-            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(fn = newFn.ie, arg = newArg.ie, ie = it)
+            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar) // MEM: 9.7 GB
+            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar) // MEM: 9.5 GB
+            if (newFn === this.fnExpr && newArg === this.argExpr) {
+                this
+            } else {
+                env.addCustomExpr { // MEM: 5.4 GB
+                    this.copy(fn = newFn.ie, arg = newArg.ie, ie = it) // MEM: 1.3 GB
+                }
             }
         }
 
         is Expression.ForallE -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(type = newType.ie, body = newBody.ie, ie = it)
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 1.3 GB
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar) // MEM: 2 GB
+            if (newType === this.typeExpr && newBody === this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr {// MEM: 120 MB
+                    this.copy(type = newType.ie, body = newBody.ie, ie = it)
+                }
             }
         }
 
         is Expression.Lam -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(type = newType.ie, body = newBody.ie, ie = it)
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 5.9 GB
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar) // MEM: 9.6 GB
+            if (newType === this.typeExpr && newBody === this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr { // MEM: 800 MB
+                    this.copy(type = newType.ie, body = newBody.ie, ie = it) // MEM: 180 MB
+                }
             }
         }
 
         is Expression.LetE -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar)
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 110 MB
             val newValue = this.valueExpr.rewriteBinders(depth, rewriteBvar)
             val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it)
+            if (newType === this.typeExpr && newValue === this.valueExpr && newBody === this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr {
+                    this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it)
+                }
             }
         }
 
         is Expression.Mdata -> {
             val newExpr = this.expr.rewriteBinders(depth, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(_expr = newExpr.ie, ie = it)
+            if (newExpr === this.expr) {
+                this
+            } else {
+                env.addCustomExpr {
+                    this.copy(_expr = newExpr.ie, ie = it)
+                }
             }
         }
 
         is Expression.Proj -> {
-            val newStruct = this.structExpr.rewriteBinders(depth, rewriteBvar)
-            env.addCustomExpr {
-                this.copy(struct = newStruct.ie, ie = it)
+            val newStruct = this.structExpr.rewriteBinders(depth, rewriteBvar) // MEM: 190 MB
+            if (newStruct === this.structExpr) {
+                this
+            } else {
+                env.addCustomExpr {
+                    this.copy(struct = newStruct.ie, ie = it)
+                }
             }
         }
 
@@ -1158,19 +1306,25 @@ private fun Environment.findRootInductive(shortName: String): Pair<Int, Inductiv
 
 context(env: Environment)
 private fun Expression.Const.composeLevelSubst(outer: Map<Int, Level>): Map<Int, Level> {
-    fun Expression.Const.levelSubstMap(): Map<Int, Level> {
-        val params = this.decl.levelParams
-        check(params.size == this.levels.size) {
-            "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${this.levels.size}"
+    val params = this.decl.levelParams // MEM: 260 MB
+    val constLevels = this.levels
+    check(params.size == constLevels.size) {
+        "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${constLevels.size}"
+    }
+    if (params.isEmpty()) return outer
+
+    if (outer.isEmpty()) {
+        val inner = HashMap<Int, Level>(params.size)
+        for (index in params.indices) {
+            inner[params[index].il] = constLevels[index]
         }
-        return params.indices.associate { index ->
-            params[index].il to this.levels[index]
-        }
+        return inner // MEM: 400 MB
     }
 
-    val inner = this.levelSubstMap()
-    if (inner.isEmpty()) return outer
-    if (outer.isEmpty()) return inner
-    val normalizedInner = inner.mapValues { entry -> entry.value.instantiateLevelParams(outer) }
-    return outer + normalizedInner
+    val composed = HashMap<Int, Level>(outer.size + params.size)
+    composed.putAll(outer)
+    for (index in params.indices) {
+        composed[params[index].il] = constLevels[index].instantiateLevelParams(outer)
+    }
+    return composed
 }
