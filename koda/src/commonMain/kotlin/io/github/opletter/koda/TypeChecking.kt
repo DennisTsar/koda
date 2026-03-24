@@ -436,7 +436,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
             } else {
                 when (val fnWhnf = this.fnExpr.reduce(levelSubst)) {
                     is Expression.Lam -> {
-                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce(levelSubst)
+                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce()
                     }
 
                     else -> {
@@ -445,9 +445,10 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                         } else {
                             env.addCustomExpr { this.copy(fn = fnWhnf.ie, ie = it) } as Expression.App
                         }
-                        appExpr.tryReduceRecursor(levelSubst)
+                        val reducedApp = appExpr.tryReduceRecursor(levelSubst)
                             ?: appExpr.tryReduceQuot(levelSubst)
                             ?: appExpr.instantiateLevelParams(levelSubst)
+                        if (fnWhnf != this.fnExpr) reducedApp.reduce() else reducedApp
                     }
                 }
             }
@@ -484,7 +485,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                 this.projIndex in 0 until ctorDecl.numFields &&
                 args.size == ctorDecl.numParams + ctorDecl.numFields
             ) {
-                args[ctorDecl.numParams + this.projIndex].reduce(levelSubst)
+                args[ctorDecl.numParams + this.projIndex].reduce()
             } else if (structExpr == this.structExpr.instantiateLevelParams(levelSubst)) {
                 this.instantiateLevelParams(levelSubst)
             } else {
