@@ -11,7 +11,7 @@ fun typeCheck(data: Sequence<ExportType>) {
 context(env: Environment)
 fun _typeCheck(rawData: Sequence<ExportType>) {
     rawData.forEachIndexed { index, data ->
-        if (index % 100000 == 0) {
+        if (index != 0 && index % 100000 == 0) {
             println("i: progress = $index")
         }
         if (env.shouldLog) {
@@ -910,48 +910,36 @@ fun Expression.inferSort(
 
 context(env: Environment)
 private fun Expression.tryEtaReduce(): Expression? {
-    val lam = this as? Expression.Lam ?: return null
-    fun Expression.Lam.tryEtaReduceOne(): Expression? {
-        // Try to reduce the body first to enable eta-reduction opportunities.
+    fun Expression.Lam.tryEtaReduceHead(): Expression? {
+        // Reduce body/arg first so `fun x => f x` shape can emerge after reduction.
         val reducedBody = this.bodyExpr.reduce()
-        val bodyToCheck = if (reducedBody != this.bodyExpr) reducedBody else this.bodyExpr
-        val bodyApp = bodyToCheck as? Expression.App ?: return null
-        // If the arg is not Bvar(0), try reducing it first.
-        val argToCheck = if (bodyApp.argExpr !is Expression.Bvar) {
-            val reducedArg = bodyApp.argExpr.reduce()
-            if (reducedArg != bodyApp.argExpr) {
-                val newApp = env.addCustomExpr { Expression.App(fn = bodyApp.fnExpr.ie, arg = reducedArg.ie, ie = it) }
-                val newLam = env.addCustomExpr { this.copy(body = newApp.ie, ie = it) } as? Expression.Lam
-                    ?: return null
-                return newLam.tryEtaReduceOne()
+        var bodyExprToCheck: Expression = if (reducedBody != this.bodyExpr) reducedBody else this.bodyExpr
+        while (true) {
+            val bodyApp = bodyExprToCheck as? Expression.App ?: return null
+            val bodyArg = bodyApp.argExpr as? Expression.Bvar
+            if (bodyArg != null) {
+                if (bodyArg.bvar != 0) return null
+                val fnExpr = bodyApp.fnExpr
+                if (fnExpr.containsLooseBvarZero()) return null
+                return fnExpr.dropOuterBinder()
             }
-            bodyApp.argExpr
-        } else {
-            bodyApp.argExpr
+            val reducedArg = bodyApp.argExpr.reduce()
+            if (reducedArg == bodyApp.argExpr) return null
+            bodyExprToCheck = env.addCustomExpr {
+                Expression.App(fn = bodyApp.fnExpr.ie, arg = reducedArg.ie, ie = it)
+            }
         }
-        val bodyArg = argToCheck as? Expression.Bvar ?: return null
-        if (bodyArg.bvar != 0) return null
-        val fnExpr = bodyApp.fnExpr
-        if (fnExpr.containsLooseBvarZero()) return null
-        return fnExpr.dropOuterBinder()
     }
 
-    var current: Expression = lam
-    var changed = false
-    while (true) {
-        val currentLam = current as? Expression.Lam ?: break
-        val oneStep = currentLam.tryEtaReduceOne()
-        if (oneStep != null) {
-            current = oneStep
-            changed = true
-            continue
-        }
-        val innerLam = currentLam.bodyExpr as? Expression.Lam ?: break
-        val reducedInner = innerLam.tryEtaReduce() ?: break
-        current = env.addCustomExpr { currentLam.copy(body = reducedInner.ie, ie = it) }
-        changed = true
-    }
-    return if (changed) current else null
+    val lam = this as? Expression.Lam ?: return null
+    lam.tryEtaReduceHead()?.let { return it }
+
+    val innerLam = lam.bodyExpr as? Expression.Lam ?: return null
+    val reducedInner = innerLam.tryEtaReduce() ?: return null
+    val rebuiltLam = env.addCustomExpr { lam.copy(body = reducedInner.ie, ie = it) } as? Expression.Lam
+        ?: return null
+
+    return rebuiltLam.tryEtaReduceHead() ?: rebuiltLam
 }
 
 context(env: Environment)
