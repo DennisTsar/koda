@@ -436,6 +436,8 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
             } else {
                 when (val fnWhnf = this.fnExpr.reduce(levelSubst)) {
                     is Expression.Lam -> {
+//                        val instArg = this.argExpr.instantiateLevelParams(levelSubst)
+//                        fnWhnf.bodyExpr.applySubst(listOf(instArg)).reduce(levelSubst)
                         fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce()
                     }
 
@@ -448,6 +450,8 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                         val reducedApp = appExpr.tryReduceRecursor(levelSubst)
                             ?: appExpr.tryReduceQuot(levelSubst)
                             ?: appExpr.instantiateLevelParams(levelSubst)
+//                        if (fnWhnf != this.fnExpr) reducedApp.reduce(levelSubst) else reducedApp
+//                        if (fnWhnf != this.fnExpr) reducedApp.reduce(levelSubst) else reducedApp
                         if (fnWhnf != this.fnExpr) reducedApp.reduce() else reducedApp
                     }
                 }

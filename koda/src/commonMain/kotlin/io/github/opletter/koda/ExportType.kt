@@ -82,6 +82,20 @@ sealed class Name : ExportType {
     }
 }
 
+context(env: Environment)
+tailrec fun Name.toStringDetailed(suffix: String? = null): String {
+    //    return buildString {
+//    }
+    fun String?.prependIfNotNull(): String? = if (this != null) ".$this" else ""
+    return when (this) {
+        is Name.Num -> env.names[this.pre.takeIf { it != 0 }]?.toStringDetailed("${this.i}${suffix.prependIfNotNull()}")
+            ?: "${this.i}.${suffix.orEmpty()}"
+
+        is Name.Str -> env.names[this.pre.takeIf { it != 0 }]?.toStringDetailed("${this.str}${suffix.prependIfNotNull()}")
+            ?: "${this.str}.${suffix.orEmpty()}"
+    }
+}
+
 sealed class Level : ExportType {
     abstract val il: Int // AKA "level index"
 
