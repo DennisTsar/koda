@@ -1,10 +1,17 @@
 package io.github.opletter.koda
 
+import kotlin.time.TimeSource
+
 data class DefEqCacheKey(
     val leftExprId: Int,
     val rightExprId: Int,
     val leftCtxId: Int,
     val rightCtxId: Int,
+)
+
+data class LocalCtxStepKey(
+    val headExprId: Int,
+    val tailCtxId: Int,
 )
 
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
@@ -73,11 +80,20 @@ class Environment {
     val expressions: IntObjectStore<Expression> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
 
+    val clock = TimeSource.Monotonic.markNow()
+
     val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
     val reduceCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
     val liftCache: MutableMap<Long, Expression> = mutableMapOf()
     val applySubstSingleCache: MutableMap<Long, Expression> = mutableMapOf()
     val structureEtaInProgress: MutableSet<Long> = mutableSetOf()
+    val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
+    val defEqInProgress: MutableSet<DefEqCacheKey> = mutableSetOf()
+    private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
+    private var nextLocalCtxId: Int = 1
+    var defEqCalls: Long = 0
+    var defEqCacheHits: Long = 0
+    var defEqInProgressSkips: Long = 0
     private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
     private var nextLevelIndex: Int = 0
@@ -212,6 +228,16 @@ class Environment {
         return newExpr
     }
 
+    fun localCtxId(localCtx: List<Expression>): Int {
+        if (localCtx.isEmpty()) return 0
+        var ctxId = 0
+        for (index in localCtx.indices.reversed()) {
+            val stepKey = LocalCtxStepKey(localCtx[index].ie, ctxId)
+            ctxId = localCtxIntern.getOrPut(stepKey) { nextLocalCtxId++ }
+        }
+        return ctxId
+    }
+
     fun clearCustom() {
         levels.clearNegative() // MEM: 100 MB
         nextLevelIndex = 0
@@ -223,6 +249,13 @@ class Environment {
         liftCache.clear()
         applySubstSingleCache.clear()
         structureEtaInProgress.clear()
+        defEqCache.clear()
+        defEqInProgress.clear()
+        localCtxIntern.clear()
+        nextLocalCtxId = 1
+        defEqCalls = 0
+        defEqCacheHits = 0
+        defEqInProgressSkips = 0
     }
 
     var shouldLog = false

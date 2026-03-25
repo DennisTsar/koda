@@ -1,7 +1,5 @@
 package io.github.opletter.koda
 
-import kotlin.time.Clock
-
 fun typeCheck(data: Sequence<ExportType>) {
     val env = Environment()
 //    typeCheck(data, env = env)
@@ -13,13 +11,34 @@ fun typeCheck(data: Sequence<ExportType>) {
 context(env: Environment)
 fun _typeCheck(rawData: Sequence<ExportType>) {
     rawData.forEachIndexed { index, data ->
-        if (index != 0 && index % 100000 == 0) {
-            println("i: progress = $index ${Clock.System.now()}")
+        //i: progress = 1000000 13.462160800s
+        //i: progress = 1100000 24.175118s
+        //..
+        //i: progress = 1122250 24.465904400s
+        //i: progress = 1122251 36.557328900s
+        //...
+        //i: progress = 1122611 36.558250900s
+        //i: progress = 1122612 48.691833300s
+        if (index != 0 && index % 10_000 == 0) {
+            println("i: progress = $index ${env.clock.elapsedNow()}")
         }
-        if (index == 2_000_000)
-            env.shouldLog2 = true
+//        if (index == 1384359) {
+//            env.shouldLog = true
+//        }
+//        if (index > 1384359) {
+//            return
+//        }
+//        if (index == 1122250 || index == 1122611) {
+//            env.shouldLog = true
+//        } else {
+//            env.shouldLog = false
+//        }
+        //1011000//1120000//1122000
+//        if (index == 1120000)
+//            env.shouldLog2 = true
         if (env.shouldLog) {
-            println(data)
+            println("started: ${env.clock.elapsedNow()}")
+            println("${(data as NamedDecl).name.toStringDetailed()} $data")
             println("---")
         }
         when (data) {
@@ -83,16 +102,25 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 
             is Meta -> {} // no-op
         }
+        if (env.shouldLog) {
+            println(
+                "stats: defEqCalls=${env.defEqCalls} defEqCacheHits=${env.defEqCacheHits} " +
+                        "defEqInProgressSkips=${env.defEqInProgressSkips} defEqCacheSize=${env.defEqCache.size}"
+            )
+        }
         env.clearCustom()
+        if (env.shouldLog) {
+            println("ended: ${env.clock.elapsedNow()}")
+        }
 //        println("apple: ${env.levels.size} // ${env.expressions.size} // ${env.declarations.size} // ${env.names.size}")
     }
 }
 
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
-    if (env.shouldLog) println("found value: ${value.toStringDetailed()}")
+    if (env.shouldLog) println("found value: ${value/*.toStringDetailed()*/}")
     val inferredValueType = value.inferType() // MEM: 200 MB
-    if (env.shouldLog) println("inferred type of value: ${inferredValueType.toStringDetailed()}")
+    if (env.shouldLog) println("inferred type of value: ${inferredValueType/*.toStringDetailed()*/}")
     val actualType = inferredValueType
     // made it to: Def(_name=2098, _levelParams=[22, 6], type=12166, value=12236, hints=Abbrev, safety=Safe, all=[2098])
     // before Java heap space error, ran for 1 min 21 sec
@@ -110,28 +138,66 @@ fun Expression.isDefEq(
 ): Boolean {
     val leftExpr = this
     val rightExpr = other
-    val result = run {
-        if (leftExpr == rightExpr) return@run true
-        if (leftExpr.sameShape(rightExpr)) return@run true // MEM: 180 MB
-        if (env.shouldLog) {
-            println("comparing:\n${leftExpr.toStringDetailed()}\n${rightExpr.toStringDetailed()}")
-        }
-        if (leftExpr.isWhnfByShape() && rightExpr.isWhnfByShape()) {
-            if (leftExpr.isDefEqWhnf(rightExpr, localCtxLeft, localCtxRight)) return@run true
-        }
-        val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce() // MEM: 6.3 GB
-        val rightWhnfExpr = if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce() // MEM: 6.3 GB
-        if (env.shouldLog) {
-            println("comparing (reduced):\n${leftWhnfExpr.toStringDetailed()}\n${rightWhnfExpr.toStringDetailed()}")
-        }
-        if (leftWhnfExpr == rightWhnfExpr) return@run true
-//    if (leftWhnfExpr.sameShape(rightWhnfExpr)) return true
-        if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) return@run true // MEM: 13 GB
-        val tempLog = env.shouldLog
-        env.shouldLog = false
-        leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
-            .also { env.shouldLog = tempLog }
+    env.defEqCalls += 1
+
+    val leftCtxId = env.localCtxId(localCtxLeft)
+    val rightCtxId = env.localCtxId(localCtxRight)
+    val cacheKey = if (
+        leftExpr.ie < rightExpr.ie ||
+        (leftExpr.ie == rightExpr.ie && leftCtxId <= rightCtxId)
+    ) {
+        DefEqCacheKey(leftExpr.ie, rightExpr.ie, leftCtxId, rightCtxId)
+    } else {
+        DefEqCacheKey(rightExpr.ie, leftExpr.ie, rightCtxId, leftCtxId)
     }
+
+    env.defEqCache[cacheKey]?.let { cachedResult ->
+        env.defEqCacheHits += 1
+        return cachedResult
+    }
+    if (!env.defEqInProgress.add(cacheKey)) {
+        env.defEqInProgressSkips += 1
+        return false
+    }
+
+    val result = try {
+        if (leftExpr == rightExpr) {
+            true
+        } else if (leftExpr.sameShape(rightExpr)) {
+            true // MEM: 180 MB
+        } else {
+//    if (env.shouldLog) {
+//        println("comparing:\n${leftExpr}\n${rightExpr}")
+//    }
+            if (
+                leftExpr.isWhnfByShape() &&
+                rightExpr.isWhnfByShape() &&
+                leftExpr.isDefEqWhnf(rightExpr, localCtxLeft, localCtxRight)
+            ) {
+                true
+            } else {
+                val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce() // MEM: 6.3 GB
+                val rightWhnfExpr = if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce() // MEM: 6.3 GB
+//    if (env.shouldLog) {
+//        println("comparing (reduced):\n${leftWhnfExpr}\n${rightWhnfExpr}")
+//    }
+                if (leftWhnfExpr == rightWhnfExpr) {
+                    true
+                } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
+                    true // MEM: 13 GB
+                } else {
+                    val tempLog = env.shouldLog
+                    env.shouldLog = false
+                    leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
+                        .also { env.shouldLog = tempLog }
+                }
+            }
+        }
+    } finally {
+        env.defEqInProgress.remove(cacheKey)
+    }
+
+    env.defEqCache[cacheKey] = result
     return result
 }
 
@@ -1292,6 +1358,7 @@ private fun Expression.rewriteBinders(
 
 context(env: Environment)
 fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
+    if (env.shouldLog2) println(this.toStringDetailed())
     return when (this) {
         Level.Zero -> this
         is Level.Param -> subst[this.il] ?: this
