@@ -67,8 +67,16 @@ class Environment {
     val liftCache: MutableMap<Long, Expression> = mutableMapOf()
     val applySubstSingleCache: MutableMap<Long, Expression> = mutableMapOf()
     val structureEtaInProgress: MutableSet<Long> = mutableSetOf()
+    private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
     private var nextLevelIndex: Int = 0
+
+    private sealed interface LevelKey {
+        data class Succ(val levelIl: Int) : LevelKey
+        data class Max(val leftIl: Int, val rightIl: Int) : LevelKey
+        data class Imax(val leftIl: Int, val rightIl: Int) : LevelKey
+        data class Param(val name: Name) : LevelKey
+    }
 
     private sealed interface ExprKey {
         data class Bvar(val bvar: Int) : ExprKey
@@ -87,6 +95,16 @@ class Environment {
 
         data class Mdata(val data: Any, val exprIe: Int) : ExprKey
         data class Proj(val typeName: Name, val idx: Int, val structIe: Int) : ExprKey
+    }
+
+    private fun Level.toLevelKey(): LevelKey = with(this@Environment) {
+        when (this@toLevelKey) {
+            Level.Zero -> error("Zero should not be interned as custom level")
+            is Level.Succ -> LevelKey.Succ(this@toLevelKey.level.il)
+            is Level.Max -> LevelKey.Max(this@toLevelKey.left.il, this@toLevelKey.right.il)
+            is Level.Imax -> LevelKey.Imax(this@toLevelKey.left.il, this@toLevelKey.right.il)
+            is Level.Param -> LevelKey.Param(this@toLevelKey.name)
+        }
     }
 
     private fun Expression.toExprKey(): ExprKey? = when (this) {
@@ -110,9 +128,14 @@ class Environment {
     }
 
     fun addCustomLevel(levelConstructor: (Int) -> Level): Level {
-        nextLevelIndex--
-        val newLevel = levelConstructor(nextLevelIndex)
+        val candidateIndex = nextLevelIndex - 1
+        val newLevel = levelConstructor(candidateIndex)
+        val internKey = newLevel.toLevelKey()
+        customLevelIntern[internKey]?.let { return it }
+
+        nextLevelIndex = candidateIndex
         levels[nextLevelIndex] = newLevel
+        customLevelIntern[internKey] = newLevel
         return newLevel
     }
 
@@ -136,6 +159,7 @@ class Environment {
     fun clearCustom() {
         levels.clearNegative() // MEM: 100 MB
         nextLevelIndex = 0
+        customLevelIntern.clear()
         expressions.clearNegative() // MEM: 924 MB
         nextExprIndex = -100
         customExprIntern.clear()
