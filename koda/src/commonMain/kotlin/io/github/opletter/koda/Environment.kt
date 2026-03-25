@@ -1,5 +1,12 @@
 package io.github.opletter.koda
 
+data class DefEqCacheKey(
+    val leftExprId: Int,
+    val rightExprId: Int,
+    val leftCtxId: Int,
+    val rightCtxId: Int,
+)
+
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
     private val negative: MutableMap<Int, T> = mutableMapOf()
@@ -58,7 +65,11 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
 
 class Environment {
     val names: MutableMap<Int, Name> = mutableMapOf(0 to Name.Str(0, "", 0))
+    val nameIndices: MutableMap<Name, Int> = mutableMapOf(Name.Str(0, "", 0) to 0)
     val declarations: MutableMap<Int, NamedDecl> = mutableMapOf()
+    val levelParamByNameIndex: MutableMap<Int, Level.Param> = mutableMapOf()
+    val constructorByName: MutableMap<Name, Inductive.ConstructorVal> = mutableMapOf()
+    val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
     val expressions: IntObjectStore<Expression> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
 
@@ -139,6 +150,51 @@ class Environment {
         return newLevel
     }
 
+    fun addCustomSuccLevel(levelIl: Int): Level {
+        val key = LevelKey.Succ(levelIl)
+        customLevelIntern[key]?.let { return it }
+        val candidateIndex = nextLevelIndex - 1
+        val newLevel = Level.Succ(levelIl, candidateIndex)
+        nextLevelIndex = candidateIndex
+        levels[nextLevelIndex] = newLevel
+        customLevelIntern[key] = newLevel
+        return newLevel
+    }
+
+    fun addCustomMaxLevel(leftIl: Int, rightIl: Int): Level {
+        val key = LevelKey.Max(leftIl, rightIl)
+        customLevelIntern[key]?.let { return it }
+        val candidateIndex = nextLevelIndex - 1
+        val newLevel = Level.Max(listOf(leftIl, rightIl), candidateIndex)
+        nextLevelIndex = candidateIndex
+        levels[nextLevelIndex] = newLevel
+        customLevelIntern[key] = newLevel
+        return newLevel
+    }
+
+    fun addCustomImaxLevel(leftIl: Int, rightIl: Int): Level {
+        val key = LevelKey.Imax(leftIl, rightIl)
+        customLevelIntern[key]?.let { return it }
+        val candidateIndex = nextLevelIndex - 1
+        val newLevel = Level.Imax(listOf(leftIl, rightIl), candidateIndex)
+        nextLevelIndex = candidateIndex
+        levels[nextLevelIndex] = newLevel
+        customLevelIntern[key] = newLevel
+        return newLevel
+    }
+
+    fun addCustomParamLevel(nameIndex: Int): Level {
+        val name = names[nameIndex] ?: error("Name $nameIndex not found")
+        val key = LevelKey.Param(name)
+        customLevelIntern[key]?.let { return it }
+        val candidateIndex = nextLevelIndex - 1
+        val newLevel = Level.Param(nameIndex, candidateIndex)
+        nextLevelIndex = candidateIndex
+        levels[nextLevelIndex] = newLevel
+        customLevelIntern[key] = newLevel
+        return newLevel
+    }
+
     private var nextExprIndex: Int = -100 // Could start with 0, but this helps while debugging vs levels
 
     fun addCustomExpr(exprConstructor: (Int) -> Expression): Expression {
@@ -170,6 +226,7 @@ class Environment {
     }
 
     var shouldLog = false
+    var shouldLog2 = false
 
     override fun toString(): String {
         return "Names:\n${names.toList().joinToString("\n")}\n\n" +

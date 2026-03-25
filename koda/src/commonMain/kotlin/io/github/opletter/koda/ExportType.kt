@@ -79,6 +79,7 @@ sealed class Name : ExportType {
 
     override fun registerInto(env: Environment) {
         env.names[this.`in`] = this
+        env.nameIndices[this] = this.`in`
     }
 }
 
@@ -134,6 +135,8 @@ sealed class Level : ExportType {
     @Serializable
     @SerialName("param")
     data class Param(private val param: Int, override val il: Int) : Level() {
+        val nameIndex get() = param
+
         context(env: Environment)
         val name get() = env.names[param] ?: error("Name $param not found")
     }
@@ -143,6 +146,9 @@ sealed class Level : ExportType {
         check(il != 0) { "Level 0 is assumed" }
         check(il !in env.levels) { "Duplicate level $il" }
         env.levels[this.il] = this
+        if (this is Param) {
+            env.levelParamByNameIndex[this.nameIndex] = this
+        }
     }
 
     context(env: Environment)
@@ -495,6 +501,10 @@ data class Inductive(
             val name = env.names[_name] ?: error("Name not found for $_name")
             check(_name !in env.declarations) { "Duplicate declaration for $name" }
             env.declarations[this._name] = this
+            val strName = name as? Name.Str
+            if (strName != null && strName.pre == 0) {
+                env.rootInductiveByShortName[strName.str] = this._name to this
+            }
         }
     }
 
@@ -516,6 +526,7 @@ data class Inductive(
             val name = env.names[_name] ?: error("Name not found for $_name")
             check(_name !in env.declarations) { "Duplicate declaration for $name" }
             env.declarations[this._name] = this
+            env.constructorByName[name] = this
         }
     }
 
@@ -578,17 +589,20 @@ sealed class NamedDecl {
     protected abstract val _levelParams: List<Int>
     protected abstract val type: Int
 
+    val levelParamIndices get() = this._levelParams
+
     context(env: Environment)
     val name get() = env.names[this._name] ?: error("Name ${this._name} not found")
 
     context(env: Environment)
     val levelParamsNames get() = this._levelParams.map { env.names[it] ?: error("Level $it not found") }
 
-    // this could probably be optimized
+    // O(1) lookup via environment-side mapping populated during level registration.
     context(env: Environment)
     val levelParams
-        get() = levelParamsNames.map { name ->
-            env.levels.values.filterIsInstance<Level.Param>().find { it.name == name } ?: error("Level $name not found")
+        get() = this._levelParams.map { levelParamNameIndex ->
+            env.levelParamByNameIndex[levelParamNameIndex]
+                ?: error("Level param index $levelParamNameIndex not found")
         }
 
     context(env: Environment)

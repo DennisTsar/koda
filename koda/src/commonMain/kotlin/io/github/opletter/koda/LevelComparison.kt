@@ -1,7 +1,10 @@
 package io.github.opletter.koda
 
 context(env: Environment)
-fun Level.isEqual(other: Level): Boolean = this.isLessOrEqual(other) && other.isLessOrEqual(this)
+fun Level.isEqual(other: Level): Boolean {
+    if (this === other || this == other || this.il == other.il) return true
+    return this.isLessOrEqual(other) && other.isLessOrEqual(this)
+}
 
 // Based on the reference implementation in Type Checking in Lean 4, which is from Gabriel Ebner's Lean 3 checker trepplein
 // https://ammkrn.github.io/type_checking_in_lean4/levels.html#partial-order-on-levels
@@ -32,41 +35,29 @@ fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
 
     is Level.Imax if other is Level.Imax && balance >= 0 && this.left.isEqual(other.left) && this.right.isEqual(other.right) -> true
     is Level.Imax if this.right is Level.Imax -> {
-        val customImax = env.addCustomLevel {
-            Level.Imax(listOf(this.left.il, (this.right as Level.Imax).right.il), it)
-        }
-        val customMax = env.addCustomLevel { Level.Max(listOf(customImax.il, this.right.il), it) }
+        val customImax = env.addCustomImaxLevel(this.left.il, (this.right as Level.Imax).right.il)
+        val customMax = env.addCustomMaxLevel(customImax.il, this.right.il)
         customMax.isLessOrEqual(other, balance)
     }
 
     is Level.Imax if this.right is Level.Max -> {
         val rightMax = this.right as Level.Max
-        val leftImax = env.addCustomLevel {
-            Level.Imax(listOf(this.left.il, rightMax.left.il), it)
-        }
-        val rightImax = env.addCustomLevel {
-            Level.Imax(listOf(this.left.il, rightMax.right.il), it)
-        }
-        val customMax = env.addCustomLevel { Level.Max(listOf(leftImax.il, rightImax.il), it) }
+        val leftImax = env.addCustomImaxLevel(this.left.il, rightMax.left.il)
+        val rightImax = env.addCustomImaxLevel(this.left.il, rightMax.right.il)
+        val customMax = env.addCustomMaxLevel(leftImax.il, rightImax.il)
         customMax.isLessOrEqual(other, balance)
     }
     else if other is Level.Imax && other.right is Level.Imax -> {
-        val customImax = env.addCustomLevel {
-            Level.Imax(listOf(other.left.il, (other.right as Level.Imax).right.il), it)
-        }
-        val customMax = env.addCustomLevel { Level.Max(listOf(customImax.il, other.right.il), it) }
+        val customImax = env.addCustomImaxLevel(other.left.il, (other.right as Level.Imax).right.il)
+        val customMax = env.addCustomMaxLevel(customImax.il, other.right.il)
         this.isLessOrEqual(customMax, balance)
     }
 
     else if other is Level.Imax && other.right is Level.Max -> {
         val rightMax = other.right as Level.Max
-        val leftImax = env.addCustomLevel {
-            Level.Imax(listOf(other.left.il, rightMax.left.il), it)
-        }
-        val rightImax = env.addCustomLevel {
-            Level.Imax(listOf(other.left.il, rightMax.right.il), it)
-        }
-        val customMax = env.addCustomLevel { Level.Max(listOf(leftImax.il, rightImax.il), it) }
+        val leftImax = env.addCustomImaxLevel(other.left.il, rightMax.left.il)
+        val rightImax = env.addCustomImaxLevel(other.left.il, rightMax.right.il)
+        val customMax = env.addCustomMaxLevel(leftImax.il, rightImax.il)
         this.isLessOrEqual(customMax, balance)
     }
     else if (this != this.simplify() || other != other.simplify()) ->
@@ -90,7 +81,7 @@ private inline fun <T> withTemporaryLevel(levelIndex: Int, tempLevel: Level, blo
 context(env: Environment)
 private fun compareByCases(paramLevel: Level.Param, compare: () -> Boolean): Boolean {
     val caseZero = withTemporaryLevel(paramLevel.il, Level.Zero) { compare() }
-    val tempParamLevel = env.addCustomLevel { paramLevel.copy(il = it) }
+    val tempParamLevel = env.addCustomParamLevel(paramLevel.nameIndex)
     val succLevel = Level.Succ(tempParamLevel.il, paramLevel.il)
     val caseSucc = withTemporaryLevel(paramLevel.il, succLevel) { compare() }
     return caseZero && caseSucc
@@ -99,11 +90,7 @@ private fun compareByCases(paramLevel: Level.Param, compare: () -> Boolean): Boo
 context(env: Environment)
 private fun Level.simplify(): Level = when (this) {
     is Level.Imax if this.right.isEqual(Level.Zero) -> Level.Zero
-    is Level.Imax if this.right is Level.Succ -> {
-        env.addCustomLevel {
-            Level.Max(listOf(this.left.il, this.right.il), it)
-        }
-    }
+    is Level.Imax if this.right is Level.Succ -> env.addCustomMaxLevel(this.left.il, this.right.il)
     // In case of emergency, uncomment code
 //    is Level.Imax if this.right.isEqual(this.left) -> this.left
 //    is Level.Max if this.right.isEqual(this.left) -> this.left
