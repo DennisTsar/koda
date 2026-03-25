@@ -6,10 +6,20 @@ fun Level.isEqual(other: Level): Boolean {
     return this.isLessOrEqual(other) && other.isLessOrEqual(this)
 }
 
+context(env: Environment)
+private fun Level.isDefinitelyLeZero(): Boolean = when (this) {
+    Level.Zero -> true
+    is Level.Param -> false
+    is Level.Succ -> false
+    is Level.Max -> this.left.isDefinitelyLeZero() && this.right.isDefinitelyLeZero()
+    is Level.Imax -> this.right.isDefinitelyLeZero()
+}
+
 // Based on the reference implementation in Type Checking in Lean 4, which is from Gabriel Ebner's Lean 3 checker trepplein
 // https://ammkrn.github.io/type_checking_in_lean4/levels.html#partial-order-on-levels
 context(env: Environment)
 fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
+    else if balance == 0 && other is Level.Zero -> this.isDefinitelyLeZero()
     is Level.Zero if balance >= 0 -> true
     else if other is Level.Zero && balance < 0 -> false
     is Level.Param if other is Level.Param -> this.name == other.name && balance >= 0
