@@ -240,12 +240,14 @@ private fun Expression.isDefEqWhnf(
     is Expression.LetE if other is Expression.LetE -> TODO()
     is Expression.Mdata if other is Expression.Mdata -> TODO()
     is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
+    is Expression.NatVal if other.isNatZeroCtorConst() -> this.natVal.isZero()
     is Expression.NatVal if other is Expression.App ->
         other.tryUnfoldNatSuccChain()
             ?.let { chain ->
                 this.tryCompareWithNatSuccChain(chain, chainLocalCtx = localCtxRight, natLocalCtx = localCtxLeft)
             } ?: false
 
+    is Expression.Const if this.isNatZeroCtorConst() && other is Expression.NatVal -> other.natVal.isZero()
     is Expression.Proj if other is Expression.Proj ->
         this.typeNameExpr == other.typeNameExpr &&
                 this.projIndex == other.projIndex &&
@@ -745,6 +747,34 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
         }
     }
 
+    // Structure-style constructor-parameter reduction on neutral major premises:
+    // for non-rec, non-indexed single-constructor inductives, recursor applications can
+    // be reduced by substituting projections of the major premise as constructor fields.
+    run {
+        val inductiveDeclIndex = recursorDecl.all.singleOrNull() ?: return@run
+        val inductiveDecl = env.declarations[inductiveDeclIndex] as? Inductive.InductiveVal ?: return@run
+        if (inductiveDecl.isRec || inductiveDecl.numIndices != 0 || inductiveDecl.ctors.size != 1) return@run
+
+        val singleRule = recursorDecl.rules.singleOrNull() ?: return@run
+        val constructorDecl =
+            env.declarations[inductiveDecl.ctors.single()] as? Inductive.ConstructorVal ?: return@run
+        if (constructorDecl.numParams != recursorDecl.numParams) return@run
+        if (constructorDecl.numFields != singleRule.nfields) return@run
+        if (singleRule.ctorName != constructorDecl.name) return@run
+
+        val fieldArgs = List(constructorDecl.numFields) { fieldIndex ->
+            env.addCustomExpr {
+                Expression.Proj(
+                    typeName = inductiveDeclIndex,
+                    idx = fieldIndex,
+                    struct = majorWhnf.ie,
+                    ie = it
+                )
+            }
+        }
+        return applyRule(singleRule, fieldArgs)
+    }
+
     // K-like reduction: for recursors marked `k`, allow reducing neutral major premises
     // when their type forces the same constructor case with no constructor fields.
     if (!recursorDecl.k) return null
@@ -831,6 +861,17 @@ private fun Expression.tryStructureEtaDefEq(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
+    val leftKey = this.ie.toLong() and 0xffffffffL
+    val rightKey = other.ie.toLong() and 0xffffffffL
+    val guardKey = if (leftKey <= rightKey) {
+        (leftKey shl 32) xor rightKey
+    } else {
+        (rightKey shl 32) xor leftKey
+    }
+    if (!env.structureEtaInProgress.add(guardKey)) {
+        return false
+    }
+    try {
     if (!this.hasNoUnboundBvars(localCtxLeft.size) || !other.hasNoUnboundBvars(localCtxRight.size)) {
         return false
     }
@@ -869,6 +910,9 @@ private fun Expression.tryStructureEtaDefEq(
         }
     }
     return true
+    } finally {
+        env.structureEtaInProgress.remove(guardKey)
+    }
 }
 
 context(env: Environment)

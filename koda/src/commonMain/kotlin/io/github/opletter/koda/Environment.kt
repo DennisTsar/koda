@@ -66,6 +66,7 @@ class Environment {
     val reduceCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
     val liftCache: MutableMap<Long, Expression> = mutableMapOf()
     val applySubstSingleCache: MutableMap<Long, Expression> = mutableMapOf()
+    val structureEtaInProgress: MutableSet<Long> = mutableSetOf()
     private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
     private var nextLevelIndex: Int = 0
 
@@ -141,6 +142,7 @@ class Environment {
         reduceCacheNoLevelSubst.clear()
         liftCache.clear()
         applySubstSingleCache.clear()
+        structureEtaInProgress.clear()
     }
 
     var shouldLog = false
