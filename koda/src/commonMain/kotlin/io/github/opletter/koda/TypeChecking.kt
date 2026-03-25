@@ -592,14 +592,14 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         is Expression.Lam -> this.instantiateLevelParams(levelSubst)
         is Expression.Bvar -> this
         is Expression.Const -> {
-            val constLevelSubst = this.composeLevelSubst(levelSubst) // MEM: 300 MB
             when (val d = decl) {
                 is Declaration.Def -> {
+                    val constLevelSubst = this.composeLevelSubst(levelSubst) // MEM: 300 MB
                     val instantiatedValue = d.valueExpr.instantiateLevelParams(constLevelSubst)
                     instantiatedValue.reduce()
                 }
 
-                else -> this.instantiateLevelParams(constLevelSubst)
+                else -> this.instantiateLevelParams(levelSubst)
             }
         }
 
