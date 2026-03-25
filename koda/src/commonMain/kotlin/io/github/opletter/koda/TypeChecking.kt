@@ -462,8 +462,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
             } else {
                 when (val fnWhnf = this.fnExpr.reduce(levelSubst)) { // MEM: 10.1 GB
                     is Expression.Lam -> {
-                        val argExpr = this.argExpr.instantiateLevelParams(levelSubst)
-                        fnWhnf.bodyExpr.applySubst(listOf(argExpr)).reduce() // MEM: 12.2 GB
+                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce() // MEM: 12.2 GB
                     }
 
                     else -> {
@@ -476,8 +475,6 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                         val reducedApp = appExpr.tryReduceRecursor(emptyMap())
                             ?: appExpr.tryReduceQuot(emptyMap()) // MEM: 100 MB
                             ?: appExpr
-//                        if (fnWhnf != this.fnExpr) reducedApp.reduce(levelSubst) else reducedApp
-//                        if (fnWhnf != this.fnExpr) reducedApp.reduce(levelSubst) else reducedApp
                         if (fnWhnf != this.fnExpr) reducedApp.reduce() else reducedApp // MEM: 200 MB
                     }
                 }
@@ -683,17 +680,17 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
         rule: Inductive.RecursorVal.RecursorRule,
         fieldArgs: List<Expression>,
     ): Expression {
-        var reducedExpr: Expression = rule.rhsExpr.instantiateLevelParams(recursorLevelSubst)
+        var reducedExpr: Expression = rule.rhsExpr
         (prefixArgs + fieldArgs).forEach { substArg: Expression ->
             reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, substArg.ie, it) }
         }
         args.drop(majorArgIndex + 1).forEach { extraArg: Expression ->
             reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, extraArg.ie, it) }
         }
-        return reducedExpr.reduce() // MEM: 1 GB
+        return reducedExpr.reduce(recursorLevelSubst) // MEM: 1 GB
     }
 
-    val majorWhnf = args[majorArgIndex].reduce() // MEM: 2.5 GB
+    val majorWhnf = args[majorArgIndex].reduce(levelSubst) // MEM: 2.5 GB
     val [majorHead, majorArgs] = majorWhnf.unfoldApp()
 
     val majorCtor = majorHead as? Expression.Const
@@ -793,7 +790,7 @@ private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Expressio
     if (args.size < arity) return null
 
     val majorArg = args[arity - 1]
-    val majorWhnf = majorArg.reduce() // MEM: 346 GB
+    val majorWhnf = majorArg.reduce(levelSubst) // MEM: 346 GB
     val [majorHead, majorArgs] = majorWhnf.unfoldApp()
     val majorCtorConst = majorHead as? Expression.Const ?: return null
     val majorCtorDecl = majorCtorConst.decl as? Declaration.Quot ?: return null

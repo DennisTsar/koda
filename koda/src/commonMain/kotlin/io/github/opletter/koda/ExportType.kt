@@ -462,8 +462,7 @@ sealed class Declaration : ExportType, NamedDecl() {
 
     override fun registerInto(env: Environment) {
         val name = env.names[_name] ?: error("Name not found for $_name")
-        name as? Name.Str ?: error("Expected Str name, got ${name::class.simpleName}")
-        check(_name !in env.declarations) { "Duplicate declaration for ${name.str}" }
+        check(_name !in env.declarations) { "Duplicate declaration for $name" }
         env.declarations[this._name] = this
     }
 }
@@ -494,8 +493,7 @@ data class Inductive(
     ) : NamedDecl() {
         fun registerInto(env: Environment) {
             val name = env.names[_name] ?: error("Name not found for $_name")
-            name as? Name.Str ?: error("Expected Str name, got ${name::class.simpleName}")
-            check(_name !in env.declarations) { "Duplicate declaration for ${name.str}" }
+            check(_name !in env.declarations) { "Duplicate declaration for $name" }
             env.declarations[this._name] = this
         }
     }
@@ -516,8 +514,7 @@ data class Inductive(
 
         fun registerInto(env: Environment) {
             val name = env.names[_name] ?: error("Name not found for $_name")
-            name as? Name.Str ?: error("Expected Str name, got ${name::class.simpleName}")
-            check(_name !in env.declarations) { "Duplicate declaration for ${name.str}" }
+            check(_name !in env.declarations) { "Duplicate declaration for $name" }
             env.declarations[this._name] = this
         }
     }
@@ -547,8 +544,7 @@ data class Inductive(
 
         fun registerInto(env: Environment) {
             val name = env.names[_name] ?: error("Name not found for $_name")
-            name as? Name.Str ?: error("Expected Str name, got ${name::class.simpleName}")
-            check(_name !in env.declarations) { "Duplicate declaration for ${name.str}" }
+            check(_name !in env.declarations) { "Duplicate declaration for $name" }
             env.declarations[this._name] = this
         }
     }
