@@ -388,8 +388,6 @@ private data class NatSuccChain(
     val base: Expression,
 )
 
-private const val MAX_NAT_LITERAL_RECURSOR_REDUCTION = 1L
-
 context(env: Environment)
 private fun Expression.tryUnfoldNatSuccChain(): NatSuccChain? {
     var current: Expression = this
@@ -822,7 +820,6 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
 
     val majorNatLit = majorWhnf as? Expression.NatVal
     if (majorNatLit != null) {
-        if (majorNatLit.natVal.compareTo(MAX_NAT_LITERAL_RECURSOR_REDUCTION) > 0) return null
         val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
             recursorDecl.rules.mapNotNull { rule ->
                 val ctorDecl = env.constructorByName[rule.ctorName] ?: return@mapNotNull null
