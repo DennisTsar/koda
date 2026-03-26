@@ -583,7 +583,8 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
     val result = when (this) {
         is Expression.App -> {
             if (!this.fnExpr.canReduceAtHead()) {
-                this.tryReduceRecursor(levelSubst) // MEM: 3.6 GB
+                this.tryReduceNatPrimitive(levelSubst)
+                    ?: this.tryReduceRecursor(levelSubst) // MEM: 3.6 GB
                     ?: this.tryReduceQuot(levelSubst)
                     ?: this.instantiateLevelParams(levelSubst)
             } else {
@@ -598,7 +599,8 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                         } else {
                             env.addCustomExpr { this.copy(fn = fnWhnf.ie, ie = it) } as Expression.App
                         }
-                        val reducedApp = appExprPreInst.tryReduceRecursor(levelSubst)
+                        val reducedApp = appExprPreInst.tryReduceNatPrimitive(levelSubst)
+                            ?: appExprPreInst.tryReduceRecursor(levelSubst)
                             ?: appExprPreInst.tryReduceQuot(levelSubst)
                         if (reducedApp != null) {
                             reducedApp
