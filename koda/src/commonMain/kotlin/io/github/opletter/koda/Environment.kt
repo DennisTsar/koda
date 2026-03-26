@@ -14,6 +14,11 @@ data class LocalCtxStepKey(
     val tailCtxId: Int,
 )
 
+data class InferTypeCacheKey(
+    val exprId: Int,
+    val localCtxId: Int,
+)
+
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
     private val negative: MutableMap<Int, T> = mutableMapOf()
@@ -89,11 +94,14 @@ class Environment {
     val structureEtaInProgress: MutableSet<Long> = mutableSetOf()
     val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
     val defEqInProgress: MutableSet<DefEqCacheKey> = mutableSetOf()
+    val inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
+    val inferTypeInProgress: MutableSet<InferTypeCacheKey> = mutableSetOf()
     private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
     var defEqCalls: Long = 0
     var defEqCacheHits: Long = 0
     var defEqInProgressSkips: Long = 0
+    var inferTypeCacheHits: Long = 0
     private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
     private var nextLevelIndex: Int = 0
@@ -251,11 +259,14 @@ class Environment {
         structureEtaInProgress.clear()
         defEqCache.clear()
         defEqInProgress.clear()
+        inferTypeCacheNoLevelSubst.clear()
+        inferTypeInProgress.clear()
         localCtxIntern.clear()
         nextLocalCtxId = 1
         defEqCalls = 0
         defEqCacheHits = 0
         defEqInProgressSkips = 0
+        inferTypeCacheHits = 0
     }
 
     var shouldLog = false

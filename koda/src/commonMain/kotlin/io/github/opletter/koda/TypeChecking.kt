@@ -441,7 +441,21 @@ fun Expression.inferType(
     levelSubst: Map<Int, Level> = emptyMap(),
     localCtx: List<Expression> = emptyList()
 ): Expression {
-    return when (this) {
+    val cacheKey = if (levelSubst.isEmpty()) {
+        InferTypeCacheKey(this.ie, env.localCtxId(localCtx))
+    } else {
+        null
+    }
+    if (cacheKey != null) {
+        env.inferTypeCacheNoLevelSubst[cacheKey]?.let { cachedType ->
+            env.inferTypeCacheHits += 1
+            return cachedType
+        }
+    }
+
+    val ownsInProgressSlot = cacheKey != null && env.inferTypeInProgress.add(cacheKey)
+    val result = try {
+        when (this) {
 //        is Expression.App -> {
 //            val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
 //            val fnTy = fnTy0.reduce(levelSubst)
@@ -548,6 +562,16 @@ fun Expression.inferType(
             }
         }
     }
+    } finally {
+        if (ownsInProgressSlot) {
+            env.inferTypeInProgress.remove(cacheKey)
+        }
+    }
+
+    if (cacheKey != null && ownsInProgressSlot) {
+        env.inferTypeCacheNoLevelSubst[cacheKey] = result
+    }
+    return result
 }
 
 context(env: Environment)
