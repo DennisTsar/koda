@@ -22,6 +22,10 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         if (index != 0 && index % 10_000 == 0) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
         }
+        if (index >= 2132188) {
+            println("i: progress = $index ${env.clock.elapsedNow()}")
+            println("${(data as NamedDecl).name.toStringDetailed()} $data")
+        }
 //        if (index == 1384359) {
 //            env.shouldLog = true
 //        }
@@ -31,6 +35,11 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 //        if (index == 1122250 || index == 1122611) {
 //            env.shouldLog = true
 //        } else {
+//            env.shouldLog = false
+//        }
+//        if (index == 2132188) {
+//            env.shouldLog = true
+//        } else if (env.shouldLog) {
 //            env.shouldLog = false
 //        }
         //1011000//1120000//1122000
@@ -127,7 +136,14 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     //    return Blah.isDefEq(Everything(env, expectedType, actualType, levelSubstRight = inferredValueType.levelSubst))
     // made it to: Def(_name=1944, _levelParams=[6], type=10830, value=10837, hints=Abbrev, safety=Safe, all=[1944])
     // before stack overflow, ran for 30 sec
-    return expectedType.isDefEq(actualType) // MEM: 13 GB
+    val result = expectedType.isDefEq(actualType) // MEM: 13 GB
+    if (env.shouldLog) {
+        println(
+            "defeq result=$result stats: defEqCalls=${env.defEqCalls} defEqCacheHits=${env.defEqCacheHits} " +
+                    "defEqInProgressSkips=${env.defEqInProgressSkips} defEqCacheSize=${env.defEqCache.size}"
+        )
+    }
+    return result
 }
 
 context(env: Environment)
@@ -618,6 +634,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         is Expression.Const -> {
             when (val d = decl) {
                 is Declaration.Def -> {
+//                    if (env.shouldLog) println(d.name.toStringDetailed())
                     val constLevelSubst = this.composeLevelSubst(levelSubst) // MEM: 300 MB
                     val instantiatedValue = d.valueExpr.instantiateLevelParams(constLevelSubst)
                     instantiatedValue.reduce()
