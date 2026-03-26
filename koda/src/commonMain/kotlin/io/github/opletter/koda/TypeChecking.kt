@@ -22,10 +22,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         if (index != 0 && index % 10_000 == 0) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
         }
-        if (index >= 2132188) {
-            println("i: progress = $index ${env.clock.elapsedNow()}")
-            println("${(data as NamedDecl).name.toStringDetailed()} $data")
-        }
 //        if (index == 1384359) {
 //            env.shouldLog = true
 //        }
@@ -35,11 +31,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 //        if (index == 1122250 || index == 1122611) {
 //            env.shouldLog = true
 //        } else {
-//            env.shouldLog = false
-//        }
-//        if (index == 2132188) {
-//            env.shouldLog = true
-//        } else if (env.shouldLog) {
 //            env.shouldLog = false
 //        }
         //1011000//1120000//1122000
@@ -136,14 +127,7 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     //    return Blah.isDefEq(Everything(env, expectedType, actualType, levelSubstRight = inferredValueType.levelSubst))
     // made it to: Def(_name=1944, _levelParams=[6], type=10830, value=10837, hints=Abbrev, safety=Safe, all=[1944])
     // before stack overflow, ran for 30 sec
-    val result = expectedType.isDefEq(actualType) // MEM: 13 GB
-    if (env.shouldLog) {
-        println(
-            "defeq result=$result stats: defEqCalls=${env.defEqCalls} defEqCacheHits=${env.defEqCacheHits} " +
-                    "defEqInProgressSkips=${env.defEqInProgressSkips} defEqCacheSize=${env.defEqCache.size}"
-        )
-    }
-    return result
+    return expectedType.isDefEq(actualType) // MEM: 13 GB
 }
 
 context(env: Environment)
@@ -485,99 +469,99 @@ fun Expression.inferType(
 //                .instantiateLevelParams(levelSubst)
 //                .reduce(levelSubst)
 //        }
-        is Expression.App -> {
-            val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
-            val fnTy = fnTy0.reduce()
-            check(fnTy is Expression.ForallE) {
-                "Expected function type for app ${this.toStringDetailed()}, got ${fnTy.toStringDetailed()}"
-            }
-            val arg = this.argExpr.instantiateLevelParams(levelSubst)
-            // TODO: this breaks in init-prelude
+            is Expression.App -> {
+                val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
+                val fnTy = fnTy0.reduce()
+                check(fnTy is Expression.ForallE) {
+                    "Expected function type for app ${this.toStringDetailed()}, got ${fnTy.toStringDetailed()}"
+                }
+                val arg = this.argExpr.instantiateLevelParams(levelSubst)
+                // TODO: this breaks in init-prelude
 //            check(expectedArgTy.isDefEq(argTy, emptyMap(), argTy0.levelSubst, localCtx, localCtx)) {
 //                "Application argument type mismatch in ${this.toStringDetailed()}: expected ${expectedArgTy.toStringDetailed()}, got ${argTy.toStringDetailed()}"
 //            }
-            fnTy.bodyExpr.applySubst(listOf(arg))
-        }
-
-        is Expression.Bvar -> {
-            if (this.bvar < localCtx.size) {
-                // live binder: its stored type was recorded outside this binder,
-                // so lift it back under the current live-binder depth.
-                localCtx[this.bvar].lift(this.bvar + 1).instantiateLevelParams(levelSubst)
-            } else {
-                error("Unbound bvar ${this.bvar} in ${this.toStringDetailed()}")
+                fnTy.bodyExpr.applySubst(listOf(arg))
             }
-        }
 
-        is Expression.Const -> {
-            val ty = env.declTypeByName[this.name] ?: error("Declaration not found for ${this.name}")
-            ty.instantiateLevelParams(this.composeLevelSubst(levelSubst))
-        }
+            is Expression.Bvar -> {
+                if (this.bvar < localCtx.size) {
+                    // live binder: its stored type was recorded outside this binder,
+                    // so lift it back under the current live-binder depth.
+                    localCtx[this.bvar].lift(this.bvar + 1).instantiateLevelParams(levelSubst)
+                } else {
+                    error("Unbound bvar ${this.bvar} in ${this.toStringDetailed()}")
+                }
+            }
 
-        is Expression.ForallE -> {
-            val left = this.typeExpr.inferSort(levelSubst, localCtx)
+            is Expression.Const -> {
+                val ty = env.declTypeByName[this.name] ?: error("Declaration not found for ${this.name}")
+                ty.instantiateLevelParams(this.composeLevelSubst(levelSubst))
+            }
+
+            is Expression.ForallE -> {
+                val left = this.typeExpr.inferSort(levelSubst, localCtx)
 //            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
 
-            val right = this.bodyExpr.inferSort(levelSubst, listOf(this.typeExpr) + localCtx)
+                val right = this.bodyExpr.inferSort(levelSubst, listOf(this.typeExpr) + localCtx)
 
-            val newLevel = env.addCustomImaxLevel(left.il, right.il)
-            env.addCustomExpr { Expression.Sort(newLevel.il, it) }
-        }
+                val newLevel = env.addCustomImaxLevel(left.il, right.il)
+                env.addCustomExpr { Expression.Sort(newLevel.il, it) }
+            }
 
-        is Expression.Lam -> {
-            val _ = this.typeExpr.inferSort(levelSubst, localCtx)
+            is Expression.Lam -> {
+                val _ = this.typeExpr.inferSort(levelSubst, localCtx)
 //            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
-            val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, listOf(this.typeExpr) + localCtx)
-            env.addCustomExpr {
-                this.copyAsForAllE().copy(body = bodyTyWhnf.ie, ie = it)
-            }
-        }
-
-        is Expression.Sort -> {
-            val normalizedLevel = this.level.instantiateLevelParams(levelSubst)
-            val newLevel = env.addCustomSuccLevel(normalizedLevel.il)
-            env.addCustomExpr { Expression.Sort(newLevel.il, it) }
-        }
-
-        is Expression.LetE -> {
-            // We just need to check that the type is a sort (do we?), we don't need the exact level (potential optimization?)
-            val _ = this.typeExpr.inferSort(levelSubst, localCtx)
-
-            val valueTyWhnf = this.valueExpr.inferType(levelSubst, localCtx)
-            val expectedTypeExpr = this.typeExpr.instantiateLevelParams(levelSubst)
-            check(expectedTypeExpr.isDefEq(valueTyWhnf, localCtx, localCtx)) {
-                "Let value type mismatch in ${this.toStringDetailed()}: expected ${expectedTypeExpr.toStringDetailed()}, got ${
-                    valueTyWhnf.toStringDetailed()
-                }"
+                val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, listOf(this.typeExpr) + localCtx)
+                env.addCustomExpr {
+                    this.copyAsForAllE().copy(body = bodyTyWhnf.ie, ie = it)
+                }
             }
 
-            // Typechecking lets through localCtx alone loses let-definitional equality for nested dependent lets.
-            // Use zeta-style inference directly on the instantiated body.
-            this.bodyExpr
-                .applySubst(listOf(this.valueExpr))
-                .inferType(levelSubst, localCtx)
-        }
+            is Expression.Sort -> {
+                val normalizedLevel = this.level.instantiateLevelParams(levelSubst)
+                val newLevel = env.addCustomSuccLevel(normalizedLevel.il)
+                env.addCustomExpr { Expression.Sort(newLevel.il, it) }
+            }
 
-        is Expression.Mdata -> TODO()
-        is Expression.NatVal -> {
-            val natInfo = env.findRootInductive("Nat")
-                ?: error("Nat literal ${this.natVal} used without Nat inductive in environment")
-            val natTypeIndex = natInfo.first
-            env.addCustomExpr {
-                Expression.Const(_name = natTypeIndex, us = emptyList(), ie = it)
+            is Expression.LetE -> {
+                // We just need to check that the type is a sort (do we?), we don't need the exact level (potential optimization?)
+                val _ = this.typeExpr.inferSort(levelSubst, localCtx)
+
+                val valueTyWhnf = this.valueExpr.inferType(levelSubst, localCtx)
+                val expectedTypeExpr = this.typeExpr.instantiateLevelParams(levelSubst)
+                check(expectedTypeExpr.isDefEq(valueTyWhnf, localCtx, localCtx)) {
+                    "Let value type mismatch in ${this.toStringDetailed()}: expected ${expectedTypeExpr.toStringDetailed()}, got ${
+                        valueTyWhnf.toStringDetailed()
+                    }"
+                }
+
+                // Typechecking lets through localCtx alone loses let-definitional equality for nested dependent lets.
+                // Use zeta-style inference directly on the instantiated body.
+                this.bodyExpr
+                    .applySubst(listOf(this.valueExpr))
+                    .inferType(levelSubst, localCtx)
+            }
+
+            is Expression.Mdata -> TODO()
+            is Expression.NatVal -> {
+                val natInfo = env.findRootInductive("Nat")
+                    ?: error("Nat literal ${this.natVal} used without Nat inductive in environment")
+                val natTypeIndex = natInfo.first
+                env.addCustomExpr {
+                    Expression.Const(_name = natTypeIndex, us = emptyList(), ie = it)
+                }
+            }
+
+            is Expression.Proj -> this.inferProjectionType(levelSubst, localCtx)
+            is Expression.StrVal -> {
+                val stringInfo = env.findRootInductive("String")
+                    ?: error("String literal used without String inductive in environment")
+                val stringTypeIndex = stringInfo.first
+                env.addCustomExpr {
+                    Expression.Const(_name = stringTypeIndex, us = emptyList(), ie = it)
+                }
             }
         }
-
-        is Expression.Proj -> this.inferProjectionType(levelSubst, localCtx)
-        is Expression.StrVal -> {
-            val stringInfo = env.findRootInductive("String")
-                ?: error("String literal used without String inductive in environment")
-            val stringTypeIndex = stringInfo.first
-            env.addCustomExpr {
-                Expression.Const(_name = stringTypeIndex, us = emptyList(), ie = it)
-            }
-        }
-    }
     } finally {
         if (ownsInProgressSlot) {
             env.inferTypeInProgress.remove(cacheKey)
@@ -599,8 +583,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
     val result = when (this) {
         is Expression.App -> {
             if (!this.fnExpr.canReduceAtHead()) {
-                this.tryReduceNatPrimitive(levelSubst)
-                    ?: this.tryReduceRecursor(levelSubst) // MEM: 3.6 GB
+                this.tryReduceRecursor(levelSubst) // MEM: 3.6 GB
                     ?: this.tryReduceQuot(levelSubst)
                     ?: this.instantiateLevelParams(levelSubst)
             } else {
@@ -615,8 +598,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                         } else {
                             env.addCustomExpr { this.copy(fn = fnWhnf.ie, ie = it) } as Expression.App
                         }
-                        val reducedApp = appExprPreInst.tryReduceNatPrimitive(levelSubst)
-                            ?: appExprPreInst.tryReduceRecursor(levelSubst)
+                        val reducedApp = appExprPreInst.tryReduceRecursor(levelSubst)
                             ?: appExprPreInst.tryReduceQuot(levelSubst)
                         if (reducedApp != null) {
                             reducedApp
@@ -634,7 +616,6 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         is Expression.Const -> {
             when (val d = decl) {
                 is Declaration.Def -> {
-//                    if (env.shouldLog) println(d.name.toStringDetailed())
                     val constLevelSubst = this.composeLevelSubst(levelSubst) // MEM: 300 MB
                     val instantiatedValue = d.valueExpr.instantiateLevelParams(constLevelSubst)
                     instantiatedValue.reduce()
