@@ -130,6 +130,8 @@ class Environment {
 
         data class Mdata(val data: Any, val exprIe: Int) : ExprKey
         data class Proj(val typeName: Name, val idx: Int, val structIe: Int) : ExprKey
+        data class NatVal(val natVal: NatValue) : ExprKey
+        data class StrVal(val strVal: String) : ExprKey
     }
 
     private fun Level.toLevelKey(): LevelKey = with(this@Environment) {
@@ -159,7 +161,8 @@ class Environment {
 
         is Expression.Mdata -> ExprKey.Mdata(this.data, this.expr.ie)
         is Expression.Proj -> ExprKey.Proj(this.typeNameExpr, this.projIndex, this.structExpr.ie)
-        is Expression.NatVal, is Expression.StrVal -> null
+        is Expression.NatVal -> ExprKey.NatVal(this.natVal)
+        is Expression.StrVal -> ExprKey.StrVal(this.strVal)
     }
 
     fun addCustomLevel(levelConstructor: (Int) -> Level): Level {
