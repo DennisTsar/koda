@@ -19,6 +19,23 @@ data class InferTypeCacheKey(
     val localCtxId: Int,
 )
 
+data class InstantiateLevelCacheKey(
+    val exprId: Int,
+    val subst: List<Pair<Int, Int>>,
+)
+
+data class NatSuccCompareGuardKey(
+    val baseExprId: Int,
+    val remainingNat: String,
+    val chainCtxId: Int,
+    val natCtxId: Int,
+)
+
+data class RecursorReduceGuardKey(
+    val exprId: Int,
+    val subst: List<Pair<Int, Int>>,
+)
+
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
     private val negative: MutableMap<Int, T> = mutableMapOf()
@@ -96,6 +113,14 @@ class Environment {
     val defEqInProgress: MutableSet<DefEqCacheKey> = mutableSetOf()
     val inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
     val inferTypeInProgress: MutableSet<InferTypeCacheKey> = mutableSetOf()
+    val instantiateLevelParamsCache: MutableMap<InstantiateLevelCacheKey, Expression> = mutableMapOf()
+    val natSuccCompareInProgress: MutableSet<NatSuccCompareGuardKey> = mutableSetOf()
+    val natSuccCompareResultCache: MutableMap<NatSuccCompareGuardKey, Boolean> = mutableMapOf()
+    val recursorReduceInProgress: MutableSet<RecursorReduceGuardKey> = mutableSetOf()
+    val natLiteralExprCache: MutableMap<String, Expression> = mutableMapOf()
+    val natLiteralEvalInProgress: MutableSet<Int> = mutableSetOf()
+    var recursorMajorReduceDepth: Int = 0
+    var natSuccCompareFallbackDepth: Int = 0
     private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
     var defEqCalls: Long = 0
@@ -130,6 +155,8 @@ class Environment {
 
         data class Mdata(val data: Any, val exprIe: Int) : ExprKey
         data class Proj(val typeName: Name, val idx: Int, val structIe: Int) : ExprKey
+        data class NatVal(val natVal: NatValue) : ExprKey
+        data class StrVal(val strVal: String) : ExprKey
     }
 
     private fun Level.toLevelKey(): LevelKey = with(this@Environment) {
@@ -159,7 +186,8 @@ class Environment {
 
         is Expression.Mdata -> ExprKey.Mdata(this.data, this.expr.ie)
         is Expression.Proj -> ExprKey.Proj(this.typeNameExpr, this.projIndex, this.structExpr.ie)
-        is Expression.NatVal, is Expression.StrVal -> null
+        is Expression.NatVal -> ExprKey.NatVal(this.natVal)
+        is Expression.StrVal -> ExprKey.StrVal(this.strVal)
     }
 
     fun addCustomLevel(levelConstructor: (Int) -> Level): Level {
@@ -261,6 +289,12 @@ class Environment {
         defEqInProgress.clear()
         inferTypeCacheNoLevelSubst.clear()
         inferTypeInProgress.clear()
+        instantiateLevelParamsCache.clear()
+        natSuccCompareInProgress.clear()
+        natSuccCompareResultCache.clear()
+        natLiteralExprCache.clear()
+        natLiteralEvalInProgress.clear()
+        natSuccCompareFallbackDepth = 0
         localCtxIntern.clear()
         nextLocalCtxId = 1
         defEqCalls = 0
