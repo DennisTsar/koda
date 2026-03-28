@@ -19,6 +19,21 @@ data class InferTypeCacheKey(
     val localCtxId: Int,
 )
 
+enum class NatPrimitiveKind {
+    OfNat,
+    Add,
+    Mul,
+    Sub,
+    Pow,
+    Div,
+    Mod,
+    ShiftLeft,
+    HDiv,
+    HMod,
+    HPow,
+    HShiftLeft,
+}
+
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
     private val negative: MutableMap<Int, T> = mutableMapOf()

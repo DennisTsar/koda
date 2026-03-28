@@ -19,26 +19,13 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         //...
         //i: progress = 1122611 36.558250900s
         //i: progress = 1122612 48.691833300s
-        if (index != 0 && index % 10_000 == 0) {
+        if (index != 0 && index % 100_000 == 0) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
         }
-//        if (index == 1384359) {
-//            env.shouldLog = true
-//        }
-//        if (index > 1384359) {
-//            return
-//        }
-//        if (index == 1122250 || index == 1122611) {
-//            env.shouldLog = true
-//        } else {
-//            env.shouldLog = false
-//        }
-        //1011000//1120000//1122000
-//        if (index == 1120000)
-//            env.shouldLog2 = true
         if (env.shouldLog) {
             println("started: ${env.clock.elapsedNow()}")
-            println("${(data as NamedDecl).name.toStringDetailed()} $data")
+            val dataName = (data as? NamedDecl)?.name?.toStringDetailed() ?: data::class.simpleName
+            println("$dataName $data")
             println("---")
         }
         when (data) {
@@ -108,7 +95,9 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                         "defEqInProgressSkips=${env.defEqInProgressSkips} defEqCacheSize=${env.defEqCache.size}"
             )
         }
-        env.clearCustom()
+        if (data is Declaration || data is Inductive) {
+            env.clearCustom()
+        }
         if (env.shouldLog) {
             println("ended: ${env.clock.elapsedNow()}")
         }
@@ -166,35 +155,25 @@ fun Expression.isDefEq(
         } else if (leftExpr.sameShape(rightExpr)) {
             true // MEM: 180 MB
         } else {
-            val appCongruenceEq: Boolean = if (leftExpr is Expression.App && rightExpr is Expression.App) {
-                leftExpr.fnExpr.isDefEq(rightExpr.fnExpr, localCtxLeft, localCtxRight) &&
-                        leftExpr.argExpr.isDefEq(rightExpr.argExpr, localCtxLeft, localCtxRight)
+            val natEq: Boolean? = if (leftExpr.canTryNatEvalInDefEq() && rightExpr.canTryNatEvalInDefEq()) {
+                val lhsNat = leftExpr.tryAsNatLiteralForDefEq()
+                val rhsNat = rightExpr.tryAsNatLiteralForDefEq()
+                if (lhsNat != null && rhsNat != null) lhsNat == rhsNat else null
             } else {
-                false
+                null
             }
-            if (appCongruenceEq) {
-                true
-            } else {
-                val natEq: Boolean? = if (leftExpr.canTryNatEvalInDefEq() && rightExpr.canTryNatEvalInDefEq()) {
-                    val lhsNat = leftExpr.tryAsNatLiteralForDefEq()
-                    val rhsNat = rightExpr.tryAsNatLiteralForDefEq()
-                    if (lhsNat != null && rhsNat != null) lhsNat == rhsNat else null
+            natEq ?: run {
+                val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce()
+                val rightWhnfExpr = if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce()
+                if (leftWhnfExpr == rightWhnfExpr) {
+                    true
+                } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
+                    true
                 } else {
-                    null
-                }
-                natEq ?: run {
-                    val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce()
-                    val rightWhnfExpr = if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce()
-                    if (leftWhnfExpr == rightWhnfExpr) {
-                        true
-                    } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
-                        true // MEM: 13 GB
-                    } else {
-                        val tempLog = env.shouldLog
-                        env.shouldLog = false
-                        leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
-                            .also { env.shouldLog = tempLog }
-                    }
+                    val tempLog = env.shouldLog
+                    env.shouldLog = false
+                    leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
+                        .also { env.shouldLog = tempLog }
                 }
             }
         }
@@ -213,10 +192,37 @@ private fun Expression.canTryNatEvalInDefEq(): Boolean = when (this) {
 }
 
 context(env: Environment)
+private fun Expression.Const.natPrimitiveKind(): NatPrimitiveKind? {
+    return when (this.name.toStringDetailed()) {
+        "OfNat.ofNat" -> NatPrimitiveKind.OfNat
+        "Nat.add" -> NatPrimitiveKind.Add
+        "Nat.mul" -> NatPrimitiveKind.Mul
+        "Nat.sub" -> NatPrimitiveKind.Sub
+        "Nat.pow" -> NatPrimitiveKind.Pow
+        "Nat.div" -> NatPrimitiveKind.Div
+        "Nat.mod" -> NatPrimitiveKind.Mod
+        "Nat.shiftLeft" -> NatPrimitiveKind.ShiftLeft
+        // TODO: idk if this is safe for non-Nat speific funs
+        "HDiv.hDiv" -> NatPrimitiveKind.HDiv
+        "HMod.hMod" -> NatPrimitiveKind.HMod
+        "HPow.hPow" -> NatPrimitiveKind.HPow
+        "HShiftLeft.hShiftLeft" -> NatPrimitiveKind.HShiftLeft
+        else -> null
+    }
+}
+
+context(env: Environment)
+private fun Expression.Const.isNatRecursorName(): Boolean {
+    val constName = this.name
+    val isNatRecursor = constName.toStringDetailed() == "Nat.rec"
+    return isNatRecursor
+}
+
+context(env: Environment)
 private fun Expression.tryAsNatLiteralForDefEq(): NatValue? = when (this) {
     is Expression.NatVal -> this.natVal
     is Expression.Const -> if (this.isNatZeroCtorConst()) NatValue.ZERO else null
-    is Expression.App -> this.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 128)
+    is Expression.App -> this.tryAsNatLiteralByShape()
     else -> null
 }
 
@@ -281,8 +287,9 @@ private fun Expression.isDefEqWhnf(
     localCtxRight: List<Expression>,
 ): Boolean = when (this) {
     is Expression.App if other is Expression.App -> {
-        val lhsNatByEval = this.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 96)
-        val rhsNatByEval = other.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 96)
+        val evalState = NatEvalState()
+        val lhsNatByEval = this.tryAsNatLiteralByShape(evalState)
+        val rhsNatByEval = other.tryAsNatLiteralByShape(evalState)
         if (lhsNatByEval != null && rhsNatByEval != null) {
             lhsNatByEval == rhsNatByEval
         } else {
@@ -298,7 +305,7 @@ private fun Expression.isDefEqWhnf(
     }
 
     is Expression.App if other is Expression.NatVal ->
-        this.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 64)
+        this.tryAsNatLiteralByShape()
             ?.let { lhsNat -> lhsNat == other.natVal }
             ?: this.tryUnfoldNatSuccChain()
                 ?.let { chain ->
@@ -325,9 +332,8 @@ private fun Expression.isDefEqWhnf(
                         this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) })
 
     is Expression.ForallE if other is Expression.ForallE -> {
-        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) && // MEM: 3 GB
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
                 this.bodyExpr.isDefEq(
-                    // MEM: 12.9 GB
                     other.bodyExpr,
                     listOf(this.typeExpr) + localCtxLeft,
                     listOf(other.typeExpr) + localCtxRight,
@@ -335,26 +341,22 @@ private fun Expression.isDefEqWhnf(
     }
 
     is Expression.Lam if other is Expression.Lam -> {
-        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) && // MEM: 5.2 GB
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
                 this.bodyExpr.isDefEq(
-                    // MEM: 12.2 GB
                     other.bodyExpr,
                     listOf(this.typeExpr) + localCtxLeft,
                     listOf(other.typeExpr) + localCtxRight,
                 )
     }
 
-    is Expression.Lam ->
-        this.tryEtaReduce()
-            ?.isDefEq(other, localCtxLeft, localCtxRight)
-            ?: false
+    is Expression.Lam -> this.tryEtaReduce()?.isDefEq(other, localCtxLeft, localCtxRight) ?: false
 
     is Expression.LetE if other is Expression.LetE -> TODO()
     is Expression.Mdata if other is Expression.Mdata -> TODO()
     is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
     is Expression.NatVal if other.isNatZeroCtorConst() -> this.natVal.isZero()
     is Expression.NatVal if other is Expression.App ->
-        other.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 64)
+        other.tryAsNatLiteralByShape()
             ?.let { rhsNat -> this.natVal == rhsNat }
             ?: other.tryUnfoldNatSuccChain()
                 ?.let { chain ->
@@ -365,7 +367,7 @@ private fun Expression.isDefEqWhnf(
     is Expression.Proj if other is Expression.Proj ->
         this.typeNameExpr == other.typeNameExpr &&
                 this.projIndex == other.projIndex &&
-                this.structExpr.isDefEq(other.structExpr, localCtxLeft, localCtxRight) // MEM: 10.5 GB
+                this.structExpr.isDefEq(other.structExpr, localCtxLeft, localCtxRight)
 
     is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
 
@@ -436,35 +438,15 @@ private fun Expression.NatVal.tryCompareWithNatSuccChain(
     natLocalCtx: List<Expression>,
 ): Boolean {
     if (this.natVal.compareTo(chain.count) < 0) return false
-    var remaining = this.natVal.minus(chain.count)
-    var baseExpr: Expression = chain.base
-    val seen = mutableSetOf<Pair<Int, String>>()
-    val evalState = NatEvalState()
-    repeat(512) {
-        when (baseExpr) {
-            is Expression.NatVal -> return baseExpr.natVal == remaining
-            else -> if (baseExpr.isNatZeroCtorConst()) return remaining.isZero()
-        }
-        baseExpr.tryAsNatLiteralBounded(
-            maxHeadUnfoldSteps = 32,
-            evalState = evalState,
-        )?.let { baseNat ->
-            return baseNat == remaining
-        }
-        baseExpr.tryUnfoldNatSuccChain()?.let { extraChain ->
-            if (remaining.compareTo(extraChain.count) < 0) return false
-            remaining = remaining.minus(extraChain.count)
-            baseExpr = extraChain.base
-            return@repeat
-        }
-        val stateKey = baseExpr.ie to remaining.toString()
-        if (!seen.add(stateKey)) return@repeat
-        val nextBase = baseExpr.tryUnfoldNatHeadStep() ?: return@repeat
-        if (nextBase == baseExpr) return@repeat
-        baseExpr = nextBase
+    val remaining = this.natVal.minus(chain.count)
+    val baseExpr = chain.base
+    when (baseExpr) {
+        is Expression.NatVal -> return baseExpr.natVal == remaining
+        else -> if (baseExpr.isNatZeroCtorConst()) return remaining.isZero()
     }
-
-    if (remaining.compareTo(1_000_000L) > 0) return false
+    baseExpr.tryAsNatLiteralByShape()?.let { baseNat ->
+        return baseNat == remaining
+    }
     val remainingExpr = env.addCustomExpr { Expression.NatVal(remaining, it) }
     return baseExpr.isDefEq(remainingExpr, chainLocalCtx, natLocalCtx)
 }
@@ -632,14 +614,19 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
     if (env.shouldLog) println("trying to reduce ${this}")
     val result = when (this) {
         is Expression.App -> {
-            if (!this.fnExpr.canReduceAtHead()) {
-                this.tryReduceRecursor(levelSubst) // MEM: 3.6 GB
+            val natReducedExpr = this.tryEvalNatPrimitiveByShape()?.let { natValue ->
+                env.addCustomExpr { Expression.NatVal(natValue, it) }
+            }
+            if (natReducedExpr != null) {
+                natReducedExpr
+            } else if (!this.fnExpr.canReduceAtHead()) {
+                this.tryReduceRecursor(levelSubst)
                     ?: this.tryReduceQuot(levelSubst)
                     ?: this.instantiateLevelParams(levelSubst)
             } else {
-                when (val fnWhnf = this.fnExpr.reduce(levelSubst)) { // MEM: 10.1 GB
+                when (val fnWhnf = this.fnExpr.reduce(levelSubst)) {
                     is Expression.Lam -> {
-                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce() // MEM: 12.2 GB
+                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce()
                     }
 
                     else -> {
@@ -739,69 +726,99 @@ private fun Expression.App.tryEvalNatPrimitiveByShape(
 ): NatValue? {
     val [headExpr, args] = this.unfoldApp()
     val headConst = headExpr as? Expression.Const ?: return null
-    val headName = headConst.name.toStringDetailed()
+    val primitiveKind = headConst.natPrimitiveKind() ?: return null
     fun natArg(index: Int): NatValue? {
         val arg = args.getOrNull(index) ?: return null
-        return arg.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 32, evalState = evalState)
+        return arg.tryAsNatLiteralByShape(evalState)
     }
 
     fun natTypeArgsPrefixOK(count: Int): Boolean {
         if (args.size < count) return false
         return args.take(count).all { it.isNatTypeConst() }
     }
-    return when (headName) {
-        "OfNat.ofNat" -> {
+
+    fun natBinaryArgsFromTail(): Pair<NatValue, NatValue>? {
+        if (args.size < 2) return null
+        val lhs = args[args.lastIndex - 1].tryAsNatLiteralByShape(evalState) ?: return null
+        val rhs = args[args.lastIndex].tryAsNatLiteralByShape(evalState) ?: return null
+        return lhs to rhs
+    }
+
+    fun NatValue.shiftLeftBy(rhs: NatValue): NatValue? {
+        val rhsInt = rhs.toIntOrNull() ?: return null
+        val two = NatValue.ONE + NatValue.ONE
+        return this * two.pow(rhsInt)
+    }
+
+    return when (primitiveKind) {
+        NatPrimitiveKind.OfNat -> {
             if (!natTypeArgsPrefixOK(1)) return null
             natArg(1)
         }
 
-        "Nat.add" -> {
+        NatPrimitiveKind.Add -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             lhs + rhs
         }
 
-        "Nat.mul" -> {
+        NatPrimitiveKind.Mul -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             lhs * rhs
         }
 
-        "Nat.sub" -> {
+        NatPrimitiveKind.Sub -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             if (lhs >= rhs) lhs - rhs else NatValue.ZERO
         }
 
-        "Nat.pow" -> {
+        NatPrimitiveKind.Pow -> {
             val base = natArg(0) ?: return null
             val exp = natArg(1) ?: return null
             val expInt = exp.toIntOrNull() ?: return null
-            if (expInt > 4_096) return null
             base.pow(expInt)
         }
 
-        "Nat.div" -> {
+        NatPrimitiveKind.Div -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             lhs.divLean(rhs)
         }
 
-        "Nat.mod" -> {
+        NatPrimitiveKind.Mod -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             lhs.modLean(rhs)
         }
-//
-//        "Nat.shiftLeft" -> {
-//            val lhs = natArg(0) ?: return null
-//            val rhs = natArg(1) ?: return null
-//            val rhsInt = rhs.toIntOrNull() ?: return null
-//            if (rhsInt > 4_096) return null
-//            lhs * NatValue.fromLong(2L).pow(rhsInt)
-//        }
 
-        else -> null
+        NatPrimitiveKind.ShiftLeft -> {
+            val lhs = natArg(0) ?: return null
+            val rhs = natArg(1) ?: return null
+            lhs.shiftLeftBy(rhs)
+        }
+
+        NatPrimitiveKind.HDiv -> {
+            val [lhs, rhs] = natBinaryArgsFromTail() ?: return null
+            lhs.divLean(rhs)
+        }
+
+        NatPrimitiveKind.HMod -> {
+            val [lhs, rhs] = natBinaryArgsFromTail() ?: return null
+            lhs.modLean(rhs)
+        }
+
+        NatPrimitiveKind.HPow -> {
+            val [base, exp] = natBinaryArgsFromTail() ?: return null
+            val expInt = exp.toIntOrNull() ?: return null
+            base.pow(expInt)
+        }
+
+        NatPrimitiveKind.HShiftLeft -> {
+            val [lhs, rhs] = natBinaryArgsFromTail() ?: return null
+            lhs.shiftLeftBy(rhs)
+        }
     }
 }
 
@@ -819,44 +836,6 @@ private fun Expression.tryAsNatLiteralByShape(
     }
 
     else -> null
-}
-
-// TODO: idk about inProgressExprIds and maxHeadUnfoldSteps
-context(env: Environment)
-private fun Expression.tryAsNatLiteralBounded(
-    levelSubst: Map<Int, Level> = emptyMap(),
-    maxHeadUnfoldSteps: Int = 64,
-    evalState: NatEvalState = NatEvalState(),
-): NatValue? {
-    var current = if (levelSubst.isEmpty()) this else this.instantiateLevelParams(levelSubst)
-    val enteredIds = mutableListOf<Int>()
-    fun enterExpr(exprId: Int): Boolean {
-        if (!evalState.inProgressExprIds.add(exprId)) return false
-        enteredIds += exprId
-        return true
-    }
-
-    if (!enterExpr(current.ie)) return null
-    try {
-        evalState.resultCache[current.ie]?.let { return it }
-        repeat(maxHeadUnfoldSteps + 1) {
-            current.tryAsNatLiteralByShape(evalState)?.let { found ->
-                enteredIds.forEach { exprId -> evalState.resultCache[exprId] = found }
-                return found
-            }
-            val next = current.tryUnfoldNatHeadStep() ?: return null
-            if (next == current) return null
-            current = next
-            evalState.resultCache[current.ie]?.let { found ->
-                enteredIds.forEach { exprId -> evalState.resultCache[exprId] = found }
-                return found
-            }
-            if (!enterExpr(current.ie)) return null
-        }
-        return null
-    } finally {
-        enteredIds.forEach { exprId -> evalState.inProgressExprIds.remove(exprId) }
-    }
 }
 
 context(env: Environment)
@@ -1139,9 +1118,7 @@ private fun Expression.containsProjectionOf(typeName: Name, projIndices: Set<Int
 
 context(env: Environment)
 private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expression? {
-    val unfolded = this.unfoldApp() // MEM: 100 MB
-    val headExpr = unfolded.first
-    val args = unfolded.second
+    val [headExpr, args] = this.unfoldApp()
     val recConst = headExpr as? Expression.Const ?: return null
     val recursorDecl = recConst.decl as? Inductive.RecursorVal ?: return null
     val recursorLevelSubst = recConst.composeLevelSubst(levelSubst)
@@ -1191,6 +1168,9 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
 
     val majorNatLit = majorWhnf as? Expression.NatVal
     if (majorNatLit != null) {
+        if (recConst.isNatRecursorName() && majorNatLit.natVal.toIntOrNull() == null) {
+            return this.instantiateLevelParams(levelSubst)
+        }
         val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
             recursorDecl.rules.mapNotNull { rule ->
                 val ctorDecl = env.constructorByName[rule.ctorName] ?: return@mapNotNull null
@@ -1762,6 +1742,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
     }
 }
 
+// TODO: second item in pair is currently never used
 private fun Environment.findRootInductive(shortName: String): Pair<Int, Inductive.InductiveVal>? {
     return this.rootInductiveByShortName[shortName]
 }
