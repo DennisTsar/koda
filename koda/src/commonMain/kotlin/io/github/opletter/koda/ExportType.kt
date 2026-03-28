@@ -336,7 +336,7 @@ sealed class Expression : ExportType {
     }
 
     override fun registerInto(env: Environment) {
-        env.registerExpression(this)
+        env.expressions[this.ie] = this
     }
 
     context(env: Environment)

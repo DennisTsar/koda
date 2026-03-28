@@ -2,21 +2,6 @@ package io.github.opletter.koda
 
 import kotlin.time.TimeSource
 
-class LocalCtxCons(
-    val headExpr: Expression,
-    val tailCtx: List<Expression>,
-) : AbstractList<Expression>() {
-    var cachedCtxId: Int? = null
-
-    override val size: Int
-        get() = tailCtx.size + 1
-
-    override fun get(index: Int): Expression {
-        if (index == 0) return headExpr
-        return tailCtx[index - 1]
-    }
-}
-
 data class DefEqCacheKey(
     val leftExprId: Int,
     val rightExprId: Int,
@@ -33,21 +18,6 @@ data class InferTypeCacheKey(
     val exprId: Int,
     val localCtxId: Int,
 )
-
-enum class NatPrimitiveKind {
-    OfNat,
-    Add,
-    Mul,
-    Sub,
-    Pow,
-    Div,
-    Mod,
-    ShiftLeft,
-    HDiv,
-    HMod,
-    HPow,
-    HShiftLeft,
-}
 
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
@@ -113,7 +83,6 @@ class Environment {
     val constructorByName: MutableMap<Name, Inductive.ConstructorVal> = mutableMapOf()
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
     val expressions: IntObjectStore<Expression> = IntObjectStore()
-    val maxLooseBvarByExpr: IntObjectStore<Int> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
 
     val clock = TimeSource.Monotonic.markNow()
@@ -129,8 +98,6 @@ class Environment {
     val inferTypeInProgress: MutableSet<InferTypeCacheKey> = mutableSetOf()
     private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
-    val natPrimitiveKindByName: MutableMap<Name, NatPrimitiveKind?> = mutableMapOf()
-    val isNatRecursorByName: MutableMap<Name, Boolean> = mutableMapOf()
     var defEqCalls: Long = 0
     var defEqCacheHits: Long = 0
     var defEqInProgressSkips: Long = 0
@@ -257,60 +224,6 @@ class Environment {
 
     private var nextExprIndex: Int = -100 // Could start with 0, but this helps while debugging vs levels
 
-    private fun computeMaxLooseBvarIndex(expr: Expression): Int = with(this) {
-        fun childMax(child: Expression): Int {
-            maxLooseBvarByExpr[child.ie]?.let { return it }
-            val computed = computeMaxLooseBvarIndex(child)
-            maxLooseBvarByExpr[child.ie] = computed
-            return computed
-        }
-        when (expr) {
-            is Expression.Bvar -> expr.bvar
-            is Expression.App -> {
-                val fnMax = childMax(expr.fnExpr)
-                val argMax = childMax(expr.argExpr)
-                maxOf(fnMax, argMax)
-            }
-
-            is Expression.ForallE -> {
-                val typeMax = childMax(expr.typeExpr)
-                val bodyMax = childMax(expr.bodyExpr)
-                maxOf(typeMax, bodyMax - 1)
-            }
-
-            is Expression.Lam -> {
-                val typeMax = childMax(expr.typeExpr)
-                val bodyMax = childMax(expr.bodyExpr)
-                maxOf(typeMax, bodyMax - 1)
-            }
-
-            is Expression.LetE -> {
-                val typeMax = childMax(expr.typeExpr)
-                val valueMax = childMax(expr.valueExpr)
-                val bodyMax = childMax(expr.bodyExpr)
-                maxOf(typeMax, valueMax, bodyMax - 1)
-            }
-
-            is Expression.Mdata -> childMax(expr.expr)
-
-            is Expression.Proj -> childMax(expr.structExpr)
-
-            is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> -1
-        }
-    }
-
-    fun registerExpression(expr: Expression) {
-        expressions[expr.ie] = expr
-        if (expr.ie >= 0) return
-        when (expr) {
-            is Expression.Bvar -> maxLooseBvarByExpr[expr.ie] = expr.bvar
-            is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal ->
-                maxLooseBvarByExpr[expr.ie] = -1
-
-            else -> {}
-        }
-    }
-
     fun addCustomExpr(exprConstructor: (Int) -> Expression): Expression {
         val candidateIndex = nextExprIndex - 1
         val newExpr = exprConstructor(candidateIndex) // MEM: 3.71 GB
@@ -319,7 +232,7 @@ class Environment {
             customExprIntern[internKey]?.let { return it }
         }
         nextExprIndex = candidateIndex
-        registerExpression(newExpr) // MEM: 5.68 GB
+        expressions[nextExprIndex] = newExpr // MEM: 5.68 GB
         if (internKey != null) {
             customExprIntern[internKey] = newExpr
         }
@@ -328,14 +241,6 @@ class Environment {
 
     fun localCtxId(localCtx: List<Expression>): Int {
         if (localCtx.isEmpty()) return 0
-        if (localCtx is LocalCtxCons) {
-            localCtx.cachedCtxId?.let { return it }
-            val tailId = localCtxId(localCtx.tailCtx)
-            val stepKey = LocalCtxStepKey(localCtx.headExpr.ie, tailId)
-            val ctxId = localCtxIntern.getOrPut(stepKey) { nextLocalCtxId++ }
-            localCtx.cachedCtxId = ctxId
-            return ctxId
-        }
         var ctxId = 0
         for (index in localCtx.indices.reversed()) {
             val stepKey = LocalCtxStepKey(localCtx[index].ie, ctxId)
@@ -349,7 +254,6 @@ class Environment {
         nextLevelIndex = 0
         customLevelIntern.clear()
         expressions.clearNegative() // MEM: 924 MB
-        maxLooseBvarByExpr.clearNegative()
         nextExprIndex = -100
         customExprIntern.clear()
         reduceCacheNoLevelSubst.clear()

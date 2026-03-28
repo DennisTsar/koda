@@ -19,13 +19,26 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         //...
         //i: progress = 1122611 36.558250900s
         //i: progress = 1122612 48.691833300s
-        if (index != 0 && index % 100_000 == 0) {
+        if (index != 0 && index % 10_000 == 0) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
         }
+//        if (index == 1384359) {
+//            env.shouldLog = true
+//        }
+//        if (index > 1384359) {
+//            return
+//        }
+//        if (index == 1122250 || index == 1122611) {
+//            env.shouldLog = true
+//        } else {
+//            env.shouldLog = false
+//        }
+        //1011000//1120000//1122000
+//        if (index == 1120000)
+//            env.shouldLog2 = true
         if (env.shouldLog) {
             println("started: ${env.clock.elapsedNow()}")
-            val dataName = (data as? NamedDecl)?.name?.toStringDetailed() ?: data::class.simpleName
-            println("$dataName $data")
+            println("${(data as NamedDecl).name.toStringDetailed()} $data")
             println("---")
         }
         when (data) {
@@ -95,9 +108,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                         "defEqInProgressSkips=${env.defEqInProgressSkips} defEqCacheSize=${env.defEqCache.size}"
             )
         }
-        if (data is Declaration || data is Inductive) {
-            env.clearCustom()
-        }
+        env.clearCustom()
         if (env.shouldLog) {
             println("ended: ${env.clock.elapsedNow()}")
         }
@@ -125,23 +136,12 @@ fun Expression.isDefEq(
     localCtxLeft: List<Expression> = emptyList(),
     localCtxRight: List<Expression> = emptyList(),
 ): Boolean {
-    val leftCtxId = env.localCtxId(localCtxLeft)
-    val rightCtxId = env.localCtxId(localCtxRight)
-    return this.isDefEqWithCtxIds(other, localCtxLeft, localCtxRight, leftCtxId, rightCtxId)
-}
-
-context(env: Environment)
-private fun Expression.isDefEqWithCtxIds(
-    other: Expression,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
-    leftCtxId: Int,
-    rightCtxId: Int,
-): Boolean {
     val leftExpr = this
     val rightExpr = other
     env.defEqCalls += 1
 
+    val leftCtxId = env.localCtxId(localCtxLeft)
+    val rightCtxId = env.localCtxId(localCtxRight)
     val cacheKey = if (
         leftExpr.ie < rightExpr.ie ||
         (leftExpr.ie == rightExpr.ie && leftCtxId <= rightCtxId)
@@ -166,32 +166,35 @@ private fun Expression.isDefEqWithCtxIds(
         } else if (leftExpr.sameShape(rightExpr)) {
             true // MEM: 180 MB
         } else {
-            val natEq: Boolean? = if (leftExpr.canTryNatEvalInDefEq() && rightExpr.canTryNatEvalInDefEq()) {
-                val lhsNat = leftExpr.tryAsNatLiteralForDefEq()
-                val rhsNat = rightExpr.tryAsNatLiteralForDefEq()
-                if (lhsNat != null && rhsNat != null) lhsNat == rhsNat else null
+            val appCongruenceEq: Boolean = if (leftExpr is Expression.App && rightExpr is Expression.App) {
+                leftExpr.fnExpr.isDefEq(rightExpr.fnExpr, localCtxLeft, localCtxRight) &&
+                        leftExpr.argExpr.isDefEq(rightExpr.argExpr, localCtxLeft, localCtxRight)
             } else {
-                null
+                false
             }
-            natEq ?: run {
-                val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce()
-                val rightWhnfExpr = if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce()
-                if (leftWhnfExpr == rightWhnfExpr) {
-                    true
-                } else if (leftWhnfExpr.isDefEqWhnf(
-                        rightWhnfExpr,
-                        localCtxLeft,
-                        localCtxRight,
-                        leftCtxId,
-                        rightCtxId
-                    )
-                ) {
-                    true // MEM: 13 GB
+            if (appCongruenceEq) {
+                true
+            } else {
+                val natEq: Boolean? = if (leftExpr.canTryNatEvalInDefEq() && rightExpr.canTryNatEvalInDefEq()) {
+                    val lhsNat = leftExpr.tryAsNatLiteralForDefEq()
+                    val rhsNat = rightExpr.tryAsNatLiteralForDefEq()
+                    if (lhsNat != null && rhsNat != null) lhsNat == rhsNat else null
                 } else {
-                    val tempLog = env.shouldLog
-                    env.shouldLog = false
-                    leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
-                        .also { env.shouldLog = tempLog }
+                    null
+                }
+                natEq ?: run {
+                    val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce()
+                    val rightWhnfExpr = if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce()
+                    if (leftWhnfExpr == rightWhnfExpr) {
+                        true
+                    } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
+                        true // MEM: 13 GB
+                    } else {
+                        val tempLog = env.shouldLog
+                        env.shouldLog = false
+                        leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
+                            .also { env.shouldLog = tempLog }
+                    }
                 }
             }
         }
@@ -203,75 +206,17 @@ private fun Expression.isDefEqWithCtxIds(
     return result
 }
 
-context(env: Environment)
 private fun Expression.canTryNatEvalInDefEq(): Boolean = when (this) {
-    is Expression.NatVal -> true
-    is Expression.Const -> this.isNatZeroCtorConst()
-    is Expression.App -> this.isNatLikeAppByShape()
-
+    is Expression.App, is Expression.NatVal -> true
+    is Expression.Const -> true
     else -> false
-}
-
-context(env: Environment)
-private fun Expression.App.isNatLikeAppByShape(): Boolean {
-    val fnConst = this.fnExpr as? Expression.Const
-    if (fnConst != null) {
-        val ctorDecl = fnConst.decl as? Inductive.ConstructorVal
-        if (ctorDecl != null) {
-            val inductiveName = ctorDecl.inductName as? Name.Str
-            if (
-                inductiveName != null &&
-                inductiveName.pre == 0 &&
-                inductiveName.str == "Nat" &&
-                ctorDecl.numParams == 0 &&
-                ctorDecl.numFields == 1
-            ) {
-                return true
-            }
-        }
-    }
-    val [headExpr, _] = this.unfoldApp()
-    val headConst = headExpr as? Expression.Const ?: return false
-    return headConst.natPrimitiveKind() != null
-}
-
-context(env: Environment)
-private fun Expression.Const.natPrimitiveKind(): NatPrimitiveKind? {
-    val constName = this.name
-    env.natPrimitiveKindByName[constName]?.let { return it }
-    val kind = when (constName.toStringDetailed()) {
-        "OfNat.ofNat" -> NatPrimitiveKind.OfNat
-        "Nat.add" -> NatPrimitiveKind.Add
-        "Nat.mul" -> NatPrimitiveKind.Mul
-        "Nat.sub" -> NatPrimitiveKind.Sub
-        "Nat.pow" -> NatPrimitiveKind.Pow
-        "Nat.div" -> NatPrimitiveKind.Div
-        "Nat.mod" -> NatPrimitiveKind.Mod
-        "Nat.shiftLeft" -> NatPrimitiveKind.ShiftLeft
-        "HDiv.hDiv" -> NatPrimitiveKind.HDiv
-        "HMod.hMod" -> NatPrimitiveKind.HMod
-        "HPow.hPow" -> NatPrimitiveKind.HPow
-        "HShiftLeft.hShiftLeft" -> NatPrimitiveKind.HShiftLeft
-        else -> null
-    }
-    env.natPrimitiveKindByName[constName] = kind
-    return kind
-}
-
-context(env: Environment)
-private fun Expression.Const.isNatRecursorName(): Boolean {
-    val constName = this.name
-    env.isNatRecursorByName[constName]?.let { return it }
-    val isNatRecursor = constName.toStringDetailed() == "Nat.rec"
-    env.isNatRecursorByName[constName] = isNatRecursor
-    return isNatRecursor
 }
 
 context(env: Environment)
 private fun Expression.tryAsNatLiteralForDefEq(): NatValue? = when (this) {
     is Expression.NatVal -> this.natVal
     is Expression.Const -> if (this.isNatZeroCtorConst()) NatValue.ZERO else null
-    is Expression.App -> this.tryAsNatLiteralByShape()
+    is Expression.App -> this.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 128)
     else -> null
 }
 
@@ -334,52 +279,26 @@ private fun Expression.isDefEqWhnf(
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
-    leftCtxId: Int,
-    rightCtxId: Int,
 ): Boolean = when (this) {
     is Expression.App if other is Expression.App -> {
-        if (this.canTryNatEvalInDefEq() && other.canTryNatEvalInDefEq()) {
-            val evalState = NatEvalState()
-            val lhsNatByEval = this.tryAsNatLiteralByShape(evalState)
-            val rhsNatByEval = other.tryAsNatLiteralByShape(evalState)
-            if (lhsNatByEval != null && rhsNatByEval != null) {
-                return lhsNatByEval == rhsNatByEval
-            }
-        }
-        val lhsNat = this.tryUnfoldNatSuccChain()
-        val rhsNat = other.tryUnfoldNatSuccChain()
-        if (lhsNat != null && rhsNat != null && lhsNat.count == rhsNat.count) {
-            lhsNat.base.isDefEqWithCtxIds(rhsNat.base, localCtxLeft, localCtxRight, leftCtxId, rightCtxId)
+        val lhsNatByEval = this.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 96)
+        val rhsNatByEval = other.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 96)
+        if (lhsNatByEval != null && rhsNatByEval != null) {
+            lhsNatByEval == rhsNatByEval
         } else {
-            val [leftHeadExpr, leftArgsExpr] = this.unfoldApp()
-            val [rightHeadExpr, rightArgsExpr] = other.unfoldApp()
-            if (leftArgsExpr.size != rightArgsExpr.size) {
-                false
+            val lhsNat = this.tryUnfoldNatSuccChain()
+            val rhsNat = other.tryUnfoldNatSuccChain()
+            if (lhsNat != null && rhsNat != null && lhsNat.count == rhsNat.count) {
+                lhsNat.base.isDefEq(rhsNat.base, localCtxLeft, localCtxRight)
             } else {
-                (leftArgsExpr.lastIndex downTo 0).all { index: Int ->
-                    val lhsArg = leftArgsExpr[index]
-                    val rhsArg = rightArgsExpr[index]
-                    lhsArg.sameShape(rhsArg) || lhsArg.isDefEqWithCtxIds(
-                        rhsArg,
-                        localCtxLeft,
-                        localCtxRight,
-                        leftCtxId,
-                        rightCtxId,
-                    )
-                } &&
-                        (leftHeadExpr.sameShape(rightHeadExpr) || leftHeadExpr.isDefEqWithCtxIds(
-                            rightHeadExpr,
-                            localCtxLeft,
-                            localCtxRight,
-                            leftCtxId,
-                            rightCtxId,
-                        ))
+                this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
+                        this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
             }
         }
     }
 
     is Expression.App if other is Expression.NatVal ->
-        this.tryAsNatLiteralByShape()
+        this.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 64)
             ?.let { lhsNat -> lhsNat == other.natVal }
             ?: this.tryUnfoldNatSuccChain()
                 ?.let { chain ->
@@ -392,7 +311,7 @@ private fun Expression.isDefEqWhnf(
         } else if (this.bvar < localCtxLeft.size && other.bvar < localCtxRight.size) {
             val thisType = localCtxLeft[this.bvar].lift(this.bvar + 1)
             val otherType = localCtxRight[other.bvar].lift(other.bvar + 1)
-            thisType.isDefEqWithCtxIds(otherType, localCtxLeft, localCtxRight, leftCtxId, rightCtxId) ||
+            thisType.isDefEq(otherType, localCtxLeft, localCtxRight) ||
                     this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
         } else {
             false
@@ -406,56 +325,28 @@ private fun Expression.isDefEqWhnf(
                         this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) })
 
     is Expression.ForallE if other is Expression.ForallE -> {
-        this.typeExpr.isDefEqWithCtxIds(
-            other.typeExpr,
-            localCtxLeft,
-            localCtxRight,
-            leftCtxId,
-            rightCtxId
-        ) && // MEM: 3 GB
-                run {
-                    val newLeftCtx = LocalCtxCons(this.typeExpr, localCtxLeft)
-                    val newRightCtx = LocalCtxCons(other.typeExpr, localCtxRight)
-                    val newLeftCtxId = env.localCtxId(newLeftCtx)
-                    val newRightCtxId = env.localCtxId(newRightCtx)
-                    this.bodyExpr.isDefEqWithCtxIds(
-                        // MEM: 12.9 GB
-                        other.bodyExpr,
-                        newLeftCtx,
-                        newRightCtx,
-                        newLeftCtxId,
-                        newRightCtxId,
-                    )
-                }
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) && // MEM: 3 GB
+                this.bodyExpr.isDefEq(
+                    // MEM: 12.9 GB
+                    other.bodyExpr,
+                    listOf(this.typeExpr) + localCtxLeft,
+                    listOf(other.typeExpr) + localCtxRight,
+                )
     }
 
     is Expression.Lam if other is Expression.Lam -> {
-        this.typeExpr.isDefEqWithCtxIds(
-            other.typeExpr,
-            localCtxLeft,
-            localCtxRight,
-            leftCtxId,
-            rightCtxId
-        ) && // MEM: 5.2 GB
-                run {
-                    val newLeftCtx = LocalCtxCons(this.typeExpr, localCtxLeft)
-                    val newRightCtx = LocalCtxCons(other.typeExpr, localCtxRight)
-                    val newLeftCtxId = env.localCtxId(newLeftCtx)
-                    val newRightCtxId = env.localCtxId(newRightCtx)
-                    this.bodyExpr.isDefEqWithCtxIds(
-                        // MEM: 12.2 GB
-                        other.bodyExpr,
-                        newLeftCtx,
-                        newRightCtx,
-                        newLeftCtxId,
-                        newRightCtxId,
-                    )
-                }
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) && // MEM: 5.2 GB
+                this.bodyExpr.isDefEq(
+                    // MEM: 12.2 GB
+                    other.bodyExpr,
+                    listOf(this.typeExpr) + localCtxLeft,
+                    listOf(other.typeExpr) + localCtxRight,
+                )
     }
 
     is Expression.Lam ->
         this.tryEtaReduce()
-            ?.isDefEqWithCtxIds(other, localCtxLeft, localCtxRight, leftCtxId, rightCtxId)
+            ?.isDefEq(other, localCtxLeft, localCtxRight)
             ?: false
 
     is Expression.LetE if other is Expression.LetE -> TODO()
@@ -463,7 +354,7 @@ private fun Expression.isDefEqWhnf(
     is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
     is Expression.NatVal if other.isNatZeroCtorConst() -> this.natVal.isZero()
     is Expression.NatVal if other is Expression.App ->
-        other.tryAsNatLiteralByShape()
+        other.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 64)
             ?.let { rhsNat -> this.natVal == rhsNat }
             ?: other.tryUnfoldNatSuccChain()
                 ?.let { chain ->
@@ -474,13 +365,7 @@ private fun Expression.isDefEqWhnf(
     is Expression.Proj if other is Expression.Proj ->
         this.typeNameExpr == other.typeNameExpr &&
                 this.projIndex == other.projIndex &&
-                this.structExpr.isDefEqWithCtxIds(
-                    other.structExpr,
-                    localCtxLeft,
-                    localCtxRight,
-                    leftCtxId,
-                    rightCtxId
-                ) // MEM: 10.5 GB
+                this.structExpr.isDefEq(other.structExpr, localCtxLeft, localCtxRight) // MEM: 10.5 GB
 
     is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
 
@@ -488,7 +373,7 @@ private fun Expression.isDefEqWhnf(
     else -> {
         if (other is Expression.Lam) {
             other.tryEtaReduce()?.let {
-                return this.isDefEqWithCtxIds(it, localCtxLeft, localCtxRight, leftCtxId, rightCtxId)
+                return this.isDefEq(it, localCtxLeft, localCtxRight)
             }
         }
         if (
@@ -503,7 +388,7 @@ private fun Expression.isDefEqWhnf(
         if (reducedThis == this && reducedOther == other) {
             false
         } else {
-            reducedThis.isDefEqWithCtxIds(reducedOther, localCtxLeft, localCtxRight, leftCtxId, rightCtxId)
+            reducedThis.isDefEq(reducedOther, localCtxLeft, localCtxRight)
         }
     }
 }
@@ -551,15 +436,35 @@ private fun Expression.NatVal.tryCompareWithNatSuccChain(
     natLocalCtx: List<Expression>,
 ): Boolean {
     if (this.natVal.compareTo(chain.count) < 0) return false
-    val remaining = this.natVal.minus(chain.count)
-    val baseExpr = chain.base
-    when (baseExpr) {
-        is Expression.NatVal -> return baseExpr.natVal == remaining
-        else -> if (baseExpr.isNatZeroCtorConst()) return remaining.isZero()
+    var remaining = this.natVal.minus(chain.count)
+    var baseExpr: Expression = chain.base
+    val seen = mutableSetOf<Pair<Int, String>>()
+    val evalState = NatEvalState()
+    repeat(512) {
+        when (baseExpr) {
+            is Expression.NatVal -> return baseExpr.natVal == remaining
+            else -> if (baseExpr.isNatZeroCtorConst()) return remaining.isZero()
+        }
+        baseExpr.tryAsNatLiteralBounded(
+            maxHeadUnfoldSteps = 32,
+            evalState = evalState,
+        )?.let { baseNat ->
+            return baseNat == remaining
+        }
+        baseExpr.tryUnfoldNatSuccChain()?.let { extraChain ->
+            if (remaining.compareTo(extraChain.count) < 0) return false
+            remaining = remaining.minus(extraChain.count)
+            baseExpr = extraChain.base
+            return@repeat
+        }
+        val stateKey = baseExpr.ie to remaining.toString()
+        if (!seen.add(stateKey)) return@repeat
+        val nextBase = baseExpr.tryUnfoldNatHeadStep() ?: return@repeat
+        if (nextBase == baseExpr) return@repeat
+        baseExpr = nextBase
     }
-    baseExpr.tryAsNatLiteralByShape()?.let { baseNat ->
-        return baseNat == remaining
-    }
+
+    if (remaining.compareTo(1_000_000L) > 0) return false
     val remainingExpr = env.addCustomExpr { Expression.NatVal(remaining, it) }
     return baseExpr.isDefEq(remainingExpr, chainLocalCtx, natLocalCtx)
 }
@@ -647,7 +552,7 @@ fun Expression.inferType(
                 val left = this.typeExpr.inferSort(levelSubst, localCtx)
 //            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
 
-                val right = this.bodyExpr.inferSort(levelSubst, LocalCtxCons(this.typeExpr, localCtx))
+                val right = this.bodyExpr.inferSort(levelSubst, listOf(this.typeExpr) + localCtx)
 
                 val newLevel = env.addCustomImaxLevel(left.il, right.il)
                 env.addCustomExpr { Expression.Sort(newLevel.il, it) }
@@ -656,7 +561,7 @@ fun Expression.inferType(
             is Expression.Lam -> {
                 val _ = this.typeExpr.inferSort(levelSubst, localCtx)
 //            println("calculated left level for ${this.toStringDetailed()}: ${left.toStringDetailed()}")
-                val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, LocalCtxCons(this.typeExpr, localCtx))
+                val bodyTyWhnf = this.bodyExpr.inferType(levelSubst, listOf(this.typeExpr) + localCtx)
                 env.addCustomExpr {
                     this.copyAsForAllE().copy(body = bodyTyWhnf.ie, ie = it)
                 }
@@ -727,12 +632,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
     if (env.shouldLog) println("trying to reduce ${this}")
     val result = when (this) {
         is Expression.App -> {
-            val natReducedExpr = this.tryEvalNatPrimitiveByShape()?.let { natValue ->
-                env.addCustomExpr { Expression.NatVal(natValue, it) }
-            }
-            if (natReducedExpr != null) {
-                natReducedExpr
-            } else if (!this.fnExpr.canReduceAtHead()) {
+            if (!this.fnExpr.canReduceAtHead()) {
                 this.tryReduceRecursor(levelSubst) // MEM: 3.6 GB
                     ?: this.tryReduceQuot(levelSubst)
                     ?: this.instantiateLevelParams(levelSubst)
@@ -839,107 +739,69 @@ private fun Expression.App.tryEvalNatPrimitiveByShape(
 ): NatValue? {
     val [headExpr, args] = this.unfoldApp()
     val headConst = headExpr as? Expression.Const ?: return null
-    val primitiveKind = headConst.natPrimitiveKind() ?: return null
+    val headName = headConst.name.toStringDetailed()
     fun natArg(index: Int): NatValue? {
         val arg = args.getOrNull(index) ?: return null
-        return arg.tryAsNatLiteralByShape(evalState)
+        return arg.tryAsNatLiteralBounded(maxHeadUnfoldSteps = 32, evalState = evalState)
     }
 
     fun natTypeArgsPrefixOK(count: Int): Boolean {
         if (args.size < count) return false
         return args.take(count).all { it.isNatTypeConst() }
     }
-
-    fun natBinaryArgsFromTail(): Pair<NatValue, NatValue>? {
-        if (args.size < 2) return null
-        val lhs = args[args.lastIndex - 1].tryAsNatLiteralByShape(evalState) ?: return null
-        val rhs = args[args.lastIndex].tryAsNatLiteralByShape(evalState) ?: return null
-        return lhs to rhs
-    }
-
-    fun NatValue.shiftLeftBy(rhs: NatValue): NatValue? {
-        val rhsInt = rhs.toIntOrNull() ?: return null
-        val two = NatValue.ONE + NatValue.ONE
-        return this * two.pow(rhsInt)
-    }
-
-    return when (primitiveKind) {
-        NatPrimitiveKind.OfNat -> {
+    return when (headName) {
+        "OfNat.ofNat" -> {
             if (!natTypeArgsPrefixOK(1)) return null
             natArg(1)
         }
 
-        NatPrimitiveKind.Add -> {
+        "Nat.add" -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             lhs + rhs
         }
 
-        NatPrimitiveKind.Mul -> {
+        "Nat.mul" -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             lhs * rhs
         }
 
-        NatPrimitiveKind.Sub -> {
+        "Nat.sub" -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             if (lhs >= rhs) lhs - rhs else NatValue.ZERO
         }
 
-        NatPrimitiveKind.Pow -> {
+        "Nat.pow" -> {
             val base = natArg(0) ?: return null
             val exp = natArg(1) ?: return null
             val expInt = exp.toIntOrNull() ?: return null
+            if (expInt > 4_096) return null
             base.pow(expInt)
         }
 
-        NatPrimitiveKind.Div -> {
+        "Nat.div" -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             lhs.divLean(rhs)
         }
 
-        NatPrimitiveKind.Mod -> {
+        "Nat.mod" -> {
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             lhs.modLean(rhs)
         }
+//
+//        "Nat.shiftLeft" -> {
+//            val lhs = natArg(0) ?: return null
+//            val rhs = natArg(1) ?: return null
+//            val rhsInt = rhs.toIntOrNull() ?: return null
+//            if (rhsInt > 4_096) return null
+//            lhs * NatValue.fromLong(2L).pow(rhsInt)
+//        }
 
-        NatPrimitiveKind.ShiftLeft -> {
-            val lhs = natArg(0) ?: return null
-            val rhs = natArg(1) ?: return null
-            lhs.shiftLeftBy(rhs)
-        }
-
-        NatPrimitiveKind.HDiv -> {
-            val pair = natBinaryArgsFromTail() ?: return null
-            val lhs = pair.first
-            val rhs = pair.second
-            lhs.divLean(rhs)
-        }
-
-        NatPrimitiveKind.HMod -> {
-            val pair = natBinaryArgsFromTail() ?: return null
-            val lhs = pair.first
-            val rhs = pair.second
-            lhs.modLean(rhs)
-        }
-
-        NatPrimitiveKind.HPow -> {
-            val pair = natBinaryArgsFromTail() ?: return null
-            val base = pair.first
-            val exp = pair.second
-            val expInt = exp.toIntOrNull() ?: return null
-            base.pow(expInt)
-        }
-
-        NatPrimitiveKind.HShiftLeft -> {
-            val pair = natBinaryArgsFromTail() ?: return null
-            val lhs = pair.first
-            val rhs = pair.second
-            lhs.shiftLeftBy(rhs)
-        }
+        else -> null
     }
 }
 
@@ -959,9 +821,11 @@ private fun Expression.tryAsNatLiteralByShape(
     else -> null
 }
 
+// TODO: idk about inProgressExprIds and maxHeadUnfoldSteps
 context(env: Environment)
-private fun Expression.tryAsNatLiteral(
+private fun Expression.tryAsNatLiteralBounded(
     levelSubst: Map<Int, Level> = emptyMap(),
+    maxHeadUnfoldSteps: Int = 64,
     evalState: NatEvalState = NatEvalState(),
 ): NatValue? {
     var current = if (levelSubst.isEmpty()) this else this.instantiateLevelParams(levelSubst)
@@ -974,11 +838,8 @@ private fun Expression.tryAsNatLiteral(
 
     if (!enterExpr(current.ie)) return null
     try {
-        while (true) {
-            evalState.resultCache[current.ie]?.let { found ->
-                enteredIds.forEach { exprId -> evalState.resultCache[exprId] = found }
-                return found
-            }
+        evalState.resultCache[current.ie]?.let { return it }
+        repeat(maxHeadUnfoldSteps + 1) {
             current.tryAsNatLiteralByShape(evalState)?.let { found ->
                 enteredIds.forEach { exprId -> evalState.resultCache[exprId] = found }
                 return found
@@ -986,8 +847,13 @@ private fun Expression.tryAsNatLiteral(
             val next = current.tryUnfoldNatHeadStep() ?: return null
             if (next == current) return null
             current = next
+            evalState.resultCache[current.ie]?.let { found ->
+                enteredIds.forEach { exprId -> evalState.resultCache[exprId] = found }
+                return found
+            }
             if (!enterExpr(current.ie)) return null
         }
+        return null
     } finally {
         enteredIds.forEach { exprId -> evalState.inProgressExprIds.remove(exprId) }
     }
@@ -1325,9 +1191,6 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
 
     val majorNatLit = majorWhnf as? Expression.NatVal
     if (majorNatLit != null) {
-        if (recConst.isNatRecursorName() && majorNatLit.natVal.toIntOrNull() == null) {
-            return this.instantiateLevelParams(levelSubst)
-        }
         val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
             recursorDecl.rules.mapNotNull { rule ->
                 val ctorDecl = env.constructorByName[rule.ctorName] ?: return@mapNotNull null
@@ -1651,7 +1514,6 @@ private fun Expression.dropOuterBinder(): Expression {
 context(env: Environment)
 private fun Expression.lift(amount: Int): Expression {
     if (amount == 0) return this
-    if (this.maxLooseBvarIndex() < 0) return this
     val cacheKey = (amount.toLong() shl 32) xor (this.ie.toLong() and 0xffffffffL)
     env.liftCache[cacheKey]?.let { return it }
 
@@ -1743,7 +1605,6 @@ fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
 context(env: Environment)
 fun Expression.applySubst(subst: List<Expression>): Expression {
     if (subst.isEmpty()) return this
-    if (this.maxLooseBvarIndex() < 0) return this
     val singleSubstKey: Long? = if (subst.size == 1) {
         (this.ie.toLong() shl 32) xor (subst[0].ie.toLong() and 0xffffffffL)
     } else {
@@ -1785,178 +1646,82 @@ private fun Expression.rewriteBinders(
     depth: Int = 0,
     rewriteBvar: (Expression.Bvar, Int) -> Expression
 ): Expression { // MEM: 11 GB
-    val rewriteCache = mutableMapOf<Long, Expression>()
-    fun key(exprId: Int, d: Int): Long = (d.toLong() shl 32) xor (exprId.toLong() and 0xffffffffL)
-    fun hasLooseBvar(expr: Expression, d: Int): Boolean = expr.maxLooseBvarIndex() >= d
+    return when (this) {
+        is Expression.Bvar -> rewriteBvar(this, depth)
 
-    fun go(expr: Expression, d: Int): Expression {
-        if (!hasLooseBvar(expr, d)) return expr
-        val cacheKey = key(expr.ie, d)
-        rewriteCache[cacheKey]?.let { return it }
-
-        val result = when (expr) {
-            is Expression.Bvar -> rewriteBvar(expr, d)
-
-            is Expression.App -> {
-                // Avoid deep recursion on large left-associated application spines.
-                val spineArgsReversed = mutableListOf<Expression>()
-                var spineHead: Expression = expr
-                while (spineHead is Expression.App) {
-                    spineArgsReversed += spineHead.argExpr
-                    spineHead = spineHead.fnExpr
-                }
-
-                val rewrittenHead = go(spineHead, d)
-                var changed = rewrittenHead !== spineHead
-                val rewrittenArgsReversed = MutableList(spineArgsReversed.size) { index ->
-                    val originalArg = spineArgsReversed[index]
-                    val rewrittenArg = go(originalArg, d)
-                    if (rewrittenArg !== originalArg) changed = true
-                    rewrittenArg
-                }
-
-                if (!changed) {
-                    expr
-                } else {
-                    var rebuilt: Expression = rewrittenHead
-                    for (index in rewrittenArgsReversed.indices.reversed()) {
-                        val argExpr = rewrittenArgsReversed[index]
-                        rebuilt = env.addCustomExpr {
-                            Expression.App(fn = rebuilt.ie, arg = argExpr.ie, ie = it)
-                        }
-                    }
-                    rebuilt
+        is Expression.App -> {
+            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar) // MEM: 9.7 GB
+            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar) // MEM: 9.5 GB
+            if (newFn === this.fnExpr && newArg === this.argExpr) {
+                this
+            } else {
+                env.addCustomExpr { // MEM: 5.4 GB
+                    this.copy(fn = newFn.ie, arg = newArg.ie, ie = it) // MEM: 1.3 GB
                 }
             }
-
-            is Expression.ForallE -> {
-                val binders = mutableListOf<Expression.ForallE>()
-                var tailExpr: Expression = expr
-                while (tailExpr is Expression.ForallE) {
-                    binders += tailExpr
-                    tailExpr = tailExpr.bodyExpr
-                }
-
-                var changed = false
-                val rewrittenTypes = MutableList(binders.size) { index ->
-                    val binder = binders[index]
-                    val rewrittenType = go(binder.typeExpr, d + index)
-                    if (rewrittenType !== binder.typeExpr) changed = true
-                    rewrittenType
-                }
-                var rewrittenTail = go(tailExpr, d + binders.size)
-                if (rewrittenTail !== tailExpr) changed = true
-
-                if (!changed) {
-                    expr
-                } else {
-                    for (index in binders.indices.reversed()) {
-                        val binder = binders[index]
-                        val rewrittenType = rewrittenTypes[index]
-                        rewrittenTail = env.addCustomExpr {
-                            binder.copy(type = rewrittenType.ie, body = rewrittenTail.ie, ie = it)
-                        }
-                    }
-                    rewrittenTail
-                }
-            }
-
-            is Expression.Lam -> {
-                val binders = mutableListOf<Expression.Lam>()
-                var tailExpr: Expression = expr
-                while (tailExpr is Expression.Lam) {
-                    binders += tailExpr
-                    tailExpr = tailExpr.bodyExpr
-                }
-
-                var changed = false
-                val rewrittenTypes = MutableList(binders.size) { index ->
-                    val binder = binders[index]
-                    val rewrittenType = go(binder.typeExpr, d + index)
-                    if (rewrittenType !== binder.typeExpr) changed = true
-                    rewrittenType
-                }
-                var rewrittenTail = go(tailExpr, d + binders.size)
-                if (rewrittenTail !== tailExpr) changed = true
-
-                if (!changed) {
-                    expr
-                } else {
-                    for (index in binders.indices.reversed()) {
-                        val binder = binders[index]
-                        val rewrittenType = rewrittenTypes[index]
-                        rewrittenTail = env.addCustomExpr {
-                            binder.copy(type = rewrittenType.ie, body = rewrittenTail.ie, ie = it)
-                        }
-                    }
-                    rewrittenTail
-                }
-            }
-
-            is Expression.LetE -> {
-                val newType = go(expr.typeExpr, d)
-                val newValue = go(expr.valueExpr, d)
-                val newBody = go(expr.bodyExpr, d + 1)
-                if (newType === expr.typeExpr && newValue === expr.valueExpr && newBody === expr.bodyExpr) {
-                    expr
-                } else {
-                    env.addCustomExpr {
-                        expr.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it)
-                    }
-                }
-            }
-
-            is Expression.Mdata -> {
-                val newExpr = go(expr.expr, d)
-                if (newExpr === expr.expr) {
-                    expr
-                } else {
-                    env.addCustomExpr {
-                        expr.copy(_expr = newExpr.ie, ie = it)
-                    }
-                }
-            }
-
-            is Expression.Proj -> {
-                val newStruct = go(expr.structExpr, d)
-                if (newStruct === expr.structExpr) {
-                    expr
-                } else {
-                    env.addCustomExpr {
-                        expr.copy(struct = newStruct.ie, ie = it)
-                    }
-                }
-            }
-
-            else -> expr
         }
 
-        rewriteCache[cacheKey] = result
-        return result
-    }
-    return go(this, depth)
-}
+        is Expression.ForallE -> {
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 1.3 GB
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar) // MEM: 2 GB
+            if (newType === this.typeExpr && newBody === this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr {// MEM: 120 MB
+                    this.copy(type = newType.ie, body = newBody.ie, ie = it)
+                }
+            }
+        }
 
-context(env: Environment)
-private fun Expression.maxLooseBvarIndex(): Int {
-    env.maxLooseBvarByExpr[this.ie]?.let { return it }
-    val result = when (this) {
-        is Expression.Bvar -> this.bvar
-        is Expression.App -> maxOf(this.fnExpr.maxLooseBvarIndex(), this.argExpr.maxLooseBvarIndex())
-        is Expression.ForallE -> maxOf(this.typeExpr.maxLooseBvarIndex(), this.bodyExpr.maxLooseBvarIndex() - 1)
-        is Expression.Lam -> maxOf(this.typeExpr.maxLooseBvarIndex(), this.bodyExpr.maxLooseBvarIndex() - 1)
-        is Expression.LetE -> maxOf(
-            this.typeExpr.maxLooseBvarIndex(),
-            this.valueExpr.maxLooseBvarIndex(),
-            this.bodyExpr.maxLooseBvarIndex() - 1
-        )
+        is Expression.Lam -> {
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 5.9 GB
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar) // MEM: 9.6 GB
+            if (newType === this.typeExpr && newBody === this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr { // MEM: 800 MB
+                    this.copy(type = newType.ie, body = newBody.ie, ie = it) // MEM: 180 MB
+                }
+            }
+        }
 
-        is Expression.Mdata -> this.expr.maxLooseBvarIndex()
-        is Expression.Proj -> this.structExpr.maxLooseBvarIndex()
-        is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> -1
+        is Expression.LetE -> {
+            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 110 MB
+            val newValue = this.valueExpr.rewriteBinders(depth, rewriteBvar)
+            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
+            if (newType === this.typeExpr && newValue === this.valueExpr && newBody === this.bodyExpr) {
+                this
+            } else {
+                env.addCustomExpr {
+                    this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it)
+                }
+            }
+        }
+
+        is Expression.Mdata -> {
+            val newExpr = this.expr.rewriteBinders(depth, rewriteBvar)
+            if (newExpr === this.expr) {
+                this
+            } else {
+                env.addCustomExpr {
+                    this.copy(_expr = newExpr.ie, ie = it)
+                }
+            }
+        }
+
+        is Expression.Proj -> {
+            val newStruct = this.structExpr.rewriteBinders(depth, rewriteBvar) // MEM: 190 MB
+            if (newStruct === this.structExpr) {
+                this
+            } else {
+                env.addCustomExpr {
+                    this.copy(struct = newStruct.ie, ie = it)
+                }
+            }
+        }
+
+        else -> this
     }
-    env.maxLooseBvarByExpr[this.ie] = result
-    return result
 }
 
 context(env: Environment)
