@@ -136,6 +136,9 @@ fun checkInductive(data: Inductive) {
     check(recNamedRecCount == 1) {
         "Inductive ${inductive.name} must declare exactly one recursor named ${inductive.name}.rec, got $recNamedRecCount"
     }
+    data.recs.forEach { recursor ->
+        checkRecursorRules(recursor)
+    }
 }
 
 context(env: Environment)
@@ -160,6 +163,164 @@ private fun walkForalls(
     }
 
     return if (reduceExpr) currentExpr.reduce() else currentExpr
+}
+
+context(env: Environment)
+private fun collectForallBinders(
+    expr: Expression,
+    expectedBinders: Int,
+    owner: String,
+    reduceExpr: Boolean = false,
+): Pair<List<Expression.ForallE>, Expression> {
+    val binders = mutableListOf<Expression.ForallE>()
+    var currentExpr = expr
+    repeat(expectedBinders) { binderIndex ->
+        val current = if (reduceExpr) currentExpr.reduce() else currentExpr
+        val forall = current as? Expression.ForallE
+            ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
+        binders += forall
+        currentExpr = forall.bodyExpr
+    }
+    return binders to if (reduceExpr) currentExpr.reduce() else currentExpr
+}
+
+context(env: Environment)
+fun Inductive.RecursorVal.getMajorBinder(): Expression.ForallE {
+    var tailExpr = this.typeExpr
+    repeat(this.numParams + this.numMotives + this.numMinors + this.numIndices) { binderIndex ->
+        val forall = tailExpr as? Expression.ForallE
+            ?: error("Recursor ${this.name} has too few binders before major premise: expected ${this.numParams + this.numMotives + this.numMinors + this.numIndices}, got $binderIndex")
+        tailExpr = forall.bodyExpr
+    }
+    return tailExpr as? Expression.ForallE
+        ?: error("Recursor ${this.name} is missing a major premise binder")
+}
+
+context(env: Environment)
+fun Inductive.RecursorVal.getMajorInductName(): Name {
+    val majorType = this.getMajorBinder().typeExpr
+    val [majorTypeHead, _] = majorType.unfoldApp()
+    val majorTypeConst = majorTypeHead as? Expression.Const
+        ?: error("Recursor ${this.name} major premise type must be const-headed, got ${majorType.toStringDetailed()}")
+    return majorTypeConst.name
+}
+
+context(env: Environment)
+private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
+    val majorInductName = recursor.getMajorInductName()
+    val majorInductNameIndex = env.nameIndices[majorInductName]
+        ?: error("Major inductive name index for ${majorInductName.toStringDetailed()} not found")
+    val majorInductive = env.declarations[majorInductNameIndex] as? Inductive.InductiveVal
+        ?: error("Recursor ${recursor.name} major premise type ${majorInductName.toStringDetailed()} is not an inductive")
+    check(majorInductive.numIndices == recursor.numIndices) {
+        "Recursor ${recursor.name} has wrong numIndices for major inductive ${majorInductName.toStringDetailed()}: expected ${majorInductive.numIndices}, got ${recursor.numIndices}"
+    }
+
+    val seenCtorNames = mutableSetOf<Name>()
+    recursor.rules.forEach { rule ->
+        check(seenCtorNames.add(rule.ctorName)) {
+            "Recursor ${recursor.name} has duplicate rules"
+        }
+        val constructor = env.constructorByName[rule.ctorName]
+            ?: error("Recursor ${recursor.name} references unknown constructor ${rule.ctorName}")
+        check(constructor.inductName == majorInductName) {
+            "Recursor ${recursor.name} has rule for constructor ${constructor.name} outside major inductive ${majorInductName.toStringDetailed()}"
+        }
+        check(rule.nfields == constructor.numFields) {
+            "Recursor rule for ${constructor.name} has wrong nfields: expected ${constructor.numFields}, got ${rule.nfields}"
+        }
+        checkRecursorRuleType(recursor, constructor, rule, majorInductive)
+    }
+}
+
+context(env: Environment)
+private fun checkRecursorRuleType(
+    recursor: Inductive.RecursorVal,
+    constructor: Inductive.ConstructorVal,
+    rule: Inductive.RecursorVal.RecursorRule,
+    majorInductive: Inductive.InductiveVal,
+) {
+    val prefixBinderCount = recursor.numParams + recursor.numMotives + recursor.numMinors
+    val expectedRuleBinderCount = prefixBinderCount + constructor.numFields
+    val inferredRuleType = rule.rhsExpr.inferType()
+    val ruleTypeInfo = collectForallBinders(
+        expr = inferredRuleType,
+        expectedBinders = expectedRuleBinderCount,
+        owner = "Recursor rule for ${constructor.name}",
+    )
+    val ruleBinders = ruleTypeInfo.first
+    val ruleResultType = ruleTypeInfo.second
+
+    val ruleLocalCtx =
+        ruleBinders.fold(emptyList<Expression>()) { localCtx: List<Expression>, binder: Expression.ForallE ->
+            listOf(binder.typeExpr) + localCtx
+        }
+
+    fun binderExpr(outerIndex: Int): Expression {
+        return env.addCustomExpr {
+            Expression.Bvar(ruleBinders.lastIndex - outerIndex, it)
+        }
+    }
+
+    val prefixArgs = List(prefixBinderCount, ::binderExpr)
+    val fieldArgs = List(constructor.numFields) { fieldIndex ->
+        binderExpr(prefixBinderCount + fieldIndex)
+    }
+
+    val majorBinderType = recursor.getMajorBinder().typeExpr
+    val [majorBinderTypeHead, majorBinderTypeArgs] = majorBinderType.unfoldApp()
+    val majorBinderTypeConst = majorBinderTypeHead as? Expression.Const
+        ?: error("Recursor ${recursor.name} major premise type must be const-headed, got ${majorBinderType.toStringDetailed()}")
+    check(majorBinderTypeConst.name == majorInductive.name) {
+        "Recursor ${recursor.name} major premise type mismatch: expected ${majorInductive.name}, got ${majorBinderTypeConst.name}"
+    }
+    check(majorBinderTypeArgs.size >= constructor.numParams) {
+        "Recursor ${recursor.name} major premise type has too few args for constructor ${constructor.name}: expected at least ${constructor.numParams}, got ${majorBinderTypeArgs.size}"
+    }
+    val paramArgs = majorBinderTypeArgs.take(constructor.numParams).map { paramArg ->
+        paramArg.dropOuterBinders(recursor.numIndices).lift(constructor.numFields)
+    }
+
+    val constructorNameIndex = env.nameIndices[constructor.name]
+        ?: error("Constructor name index for ${constructor.name} not found")
+    val constructorExpr = env.addCustomExpr {
+        Expression.Const(_name = constructorNameIndex, us = majorBinderTypeConst.levels.map { it.il }, ie = it)
+    }
+    val majorExpr = constructorExpr.applyArgs(paramArgs + fieldArgs)
+    val majorType = majorExpr.inferType(localCtx = ruleLocalCtx).reduce()
+    val [majorTypeHead, majorTypeArgs] = majorType.unfoldApp()
+    val majorTypeConst = majorTypeHead as? Expression.Const
+        ?: error("Expected constructor result type for ${constructor.name}, got ${majorType.toStringDetailed()}")
+    check(majorTypeConst.name == majorInductive.name) {
+        "Constructor ${constructor.name} result type mismatch while checking ${recursor.name}: expected ${majorInductive.name}, got ${majorTypeConst.name}"
+    }
+    check(majorTypeArgs.size == constructor.numParams + majorInductive.numIndices) {
+        "Constructor ${constructor.name} result has wrong arg count while checking ${recursor.name}: expected ${constructor.numParams + majorInductive.numIndices}, got ${majorTypeArgs.size}"
+    }
+
+    val recursorNameIndex = env.nameIndices[recursor.name]
+        ?: error("Recursor name index for ${recursor.name} not found")
+    val recursorExpr = env.addCustomExpr {
+        Expression.Const(_name = recursorNameIndex, us = recursor.levelParams.map { it.il }, ie = it)
+    }
+    val expectedResultType = recursorExpr
+        .applyArgs(prefixArgs + majorTypeArgs.drop(constructor.numParams) + listOf(majorExpr))
+        .inferType(localCtx = ruleLocalCtx)
+        .reduce()
+
+    check(ruleResultType.isDefEq(expectedResultType, ruleLocalCtx, ruleLocalCtx)) {
+        "Recursor rule for ${constructor.name} has wrong result type: expected ${expectedResultType.toStringDetailed()}, got ${ruleResultType.toStringDetailed()}"
+    }
+}
+
+context(env: Environment)
+private fun Expression.applyArgs(args: List<Expression>): Expression {
+    if (args.isEmpty()) return this
+    var result = this
+    args.forEach { argExpr ->
+        result = env.addCustomExpr { Expression.App(fn = result.ie, arg = argExpr.ie, ie = it) }
+    }
+    return result
 }
 
 context(env: Environment)
