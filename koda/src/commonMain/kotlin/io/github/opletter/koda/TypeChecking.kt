@@ -152,8 +152,6 @@ fun Expression.isDefEq(
     val result = try {
         if (leftExpr == rightExpr) {
             true
-        } else if (leftExpr.sameShape(rightExpr)) {
-            true // MEM: 180 MB
         } else {
             val natEq: Boolean? = if (leftExpr.canTryNatEvalInDefEq() && rightExpr.canTryNatEvalInDefEq()) {
                 val lhsNat = leftExpr.tryAsNatLiteralForDefEq()
@@ -163,17 +161,24 @@ fun Expression.isDefEq(
                 null
             }
             natEq ?: run {
-                val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce()
-                val rightWhnfExpr = if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce()
-                if (leftWhnfExpr == rightWhnfExpr) {
-                    true
-                } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
+                val lazyDeltaEq = leftExpr.tryLazyDeltaDefEq(rightExpr, localCtxLeft, localCtxRight)
+                if (lazyDeltaEq != null) {
+                    lazyDeltaEq
+                } else if (leftExpr.sameShape(rightExpr)) {
                     true
                 } else {
-                    val tempLog = env.shouldLog
-                    env.shouldLog = false
-                    leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
-                        .also { env.shouldLog = tempLog }
+                    val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce()
+                    val rightWhnfExpr = if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce()
+                    if (leftWhnfExpr == rightWhnfExpr) {
+                        true
+                    } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
+                        true
+                    } else {
+                        val tempLog = env.shouldLog
+                        env.shouldLog = false
+                        leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
+                            .also { env.shouldLog = tempLog }
+                    }
                 }
             }
         }
@@ -183,6 +188,191 @@ fun Expression.isDefEq(
 
     env.defEqCache[cacheKey] = result
     return result
+}
+
+private enum class LazyDeltaStepKind(val priority: Int) {
+    Regular(1),
+    Abbrev(2),
+    Forced(3),
+}
+
+private data class LazyDeltaStep(
+    val unfoldedExpr: Expression,
+    val kind: LazyDeltaStepKind,
+    val regularHeight: Int = 0,
+)
+
+private enum class LazyDeltaChoice {
+    Left,
+    Right,
+    Both,
+}
+
+context(env: Environment)
+private fun Expression.tryLazyDeltaDefEq(
+    other: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean? {
+    if (!this.shouldTryLazyDeltaWith(other)) return null
+
+    this.trySameHeadConstCongruence(other, localCtxLeft, localCtxRight)?.let { return it }
+
+    val leftStep = this.tryLazyDeltaStep()
+    val rightStep = other.tryLazyDeltaStep()
+    return when (chooseLazyDeltaSide(leftStep, rightStep)) {
+        LazyDeltaChoice.Left ->
+            true.takeIf { leftStep!!.unfoldedExpr.isDefEq(other, localCtxLeft, localCtxRight) }
+
+        LazyDeltaChoice.Right ->
+            true.takeIf { this.isDefEq(rightStep!!.unfoldedExpr, localCtxLeft, localCtxRight) }
+
+        LazyDeltaChoice.Both ->
+            true.takeIf { leftStep!!.unfoldedExpr.isDefEq(rightStep!!.unfoldedExpr, localCtxLeft, localCtxRight) }
+
+        null -> null
+    }
+}
+
+context(env: Environment)
+private fun Expression.shouldTryLazyDeltaWith(other: Expression): Boolean {
+    val leftSpine = this.asAppSpine()
+    val rightSpine = other.asAppSpine()
+    val leftHead = leftSpine.first
+    val rightHead = rightSpine.first
+    val maxArity = maxOf(leftSpine.second.size, rightSpine.second.size)
+
+    val sameHeadConst = leftHead is Expression.Const &&
+            rightHead is Expression.Const &&
+            leftHead.name == rightHead.name
+    if (sameHeadConst && maxArity >= 4) {
+        return true
+    }
+
+    val hasReducibleHead = leftHead.lazyDeltaStepInfo() != null || rightHead.lazyDeltaStepInfo() != null
+    return hasReducibleHead && maxArity >= 3
+}
+
+context(env: Environment)
+private fun Expression.trySameHeadConstCongruence(
+    other: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean? {
+    val leftSpine = this.asAppSpine()
+    val rightSpine = other.asAppSpine()
+    val leftConst = leftSpine.first as? Expression.Const ?: return null
+    val rightConst = rightSpine.first as? Expression.Const ?: return null
+    val leftArgs = leftSpine.second
+    val rightArgs = rightSpine.second
+    if (leftConst.name != rightConst.name) return null
+
+    if (leftConst.levels.size != rightConst.levels.size) {
+        return null
+    }
+    if (leftArgs.size != rightArgs.size) {
+        return null
+    }
+    val levelsMatch = leftConst.levels == rightConst.levels ||
+            leftConst.levels.zip(rightConst.levels).all { levelPair ->
+                levelPair.first.isEqual(levelPair.second)
+            }
+    if (!levelsMatch) {
+        return null
+    }
+
+    for (index in leftArgs.lastIndex downTo 0) {
+        if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
+            return null
+        }
+    }
+    return true
+}
+
+private fun chooseLazyDeltaSide(left: LazyDeltaStep?, right: LazyDeltaStep?): LazyDeltaChoice? {
+    if (left == null && right == null) return null
+    if (left != null && right == null) return LazyDeltaChoice.Left
+    if (left == null && right != null) return LazyDeltaChoice.Right
+
+    val kindCmp = left!!.kind.priority.compareTo(right!!.kind.priority)
+    if (kindCmp > 0) return LazyDeltaChoice.Left
+    if (kindCmp < 0) return LazyDeltaChoice.Right
+
+    val heightCmp = left.regularHeight.compareTo(right.regularHeight)
+    if (heightCmp > 0) return LazyDeltaChoice.Left
+    if (heightCmp < 0) return LazyDeltaChoice.Right
+    return LazyDeltaChoice.Both
+}
+
+context(env: Environment)
+private fun Expression.tryLazyDeltaStep(): LazyDeltaStep? {
+    val headExpr = this.asAppSpine().first
+    val headStep = headExpr.lazyDeltaStepInfo() ?: return null
+    val unfoldedExpr = this.tryUnfoldSpineHeadOnce() ?: return null
+    if (unfoldedExpr == this) return null
+    return LazyDeltaStep(
+        unfoldedExpr = unfoldedExpr,
+        kind = headStep.kind,
+        regularHeight = headStep.regularHeight,
+    )
+}
+
+context(env: Environment)
+private fun Expression.tryUnfoldSpineHeadOnce(): Expression? = when (this) {
+    is Expression.App -> {
+        val spine = this.unfoldApp()
+        val headExpr = spine.first
+        val args = spine.second
+        when (headExpr) {
+            is Expression.Lam -> headExpr.bodyExpr.applySubst(listOf(args.first())).applyArgs(args.drop(1))
+            is Expression.Const -> {
+                val unfoldedHead = headExpr.tryUnfoldReducibleHeadOnce() ?: return null
+                unfoldedHead.applyArgs(args)
+            }
+
+            is Expression.LetE -> headExpr.bodyExpr.applySubst(listOf(headExpr.valueExpr)).applyArgs(args)
+            is Expression.Mdata -> headExpr.expr.applyArgs(args)
+            else -> null
+        }
+    }
+
+    else -> this.tryUnfoldReducibleHeadOnce()
+}
+
+context(env: Environment)
+private fun Expression.applyArgs(args: List<Expression>): Expression {
+    if (args.isEmpty()) return this
+    var result = this
+    args.forEach { argExpr ->
+        result = env.addCustomExpr { Expression.App(fn = result.ie, arg = argExpr.ie, ie = it) }
+    }
+    return result
+}
+
+private data class LazyDeltaHeadInfo(
+    val kind: LazyDeltaStepKind,
+    val regularHeight: Int = 0,
+)
+
+context(env: Environment)
+private fun Expression.lazyDeltaStepInfo(): LazyDeltaHeadInfo? = when (this) {
+    is Expression.Const -> {
+        val defDecl = this.decl as? Declaration.Def ?: return null
+        when (val hints = defDecl.hints) {
+            Declaration.Def.Hints.Opaque -> null
+            Declaration.Def.Hints.Abbrev -> LazyDeltaHeadInfo(LazyDeltaStepKind.Abbrev)
+            is Declaration.Def.Hints.Regular -> LazyDeltaHeadInfo(LazyDeltaStepKind.Regular, hints.value)
+        }
+    }
+
+    is Expression.Lam, is Expression.LetE, is Expression.Mdata -> LazyDeltaHeadInfo(LazyDeltaStepKind.Forced)
+    else -> null
+}
+
+context(env: Environment)
+private fun Expression.asAppSpine(): Pair<Expression, List<Expression>> = when (this) {
+    is Expression.App -> this.unfoldApp()
+    else -> this to emptyList()
 }
 
 private fun Expression.canTryNatEvalInDefEq(): Boolean = when (this) {
