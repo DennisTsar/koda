@@ -205,9 +205,8 @@ private fun Expression.tryLazyDeltaDefEq(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    if (!this.shouldTryLazyDeltaWith(other)) return null
-
     this.trySameHeadConstCongruence(other, localCtxLeft, localCtxRight)?.let { return it }
+    if (!this.shouldTryLazyDeltaWith(other)) return null
 
     val leftStep = this.tryLazyDeltaStep()
     val rightStep = other.tryLazyDeltaStep()
@@ -257,6 +256,9 @@ private fun Expression.trySameHeadConstCongruence(
     val leftArgs = leftSpine.second
     val rightArgs = rightSpine.second
     if (leftConst.name != rightConst.name) return null
+    if (leftConst.decl is Inductive.RecursorVal || rightConst.decl is Inductive.RecursorVal) {
+        return null
+    }
 
     if (leftConst.levels.size != rightConst.levels.size) {
         return null
@@ -275,6 +277,31 @@ private fun Expression.trySameHeadConstCongruence(
     for (index in leftArgs.lastIndex downTo 0) {
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
             return null
+        }
+    }
+    return true
+}
+
+context(env: Environment)
+private fun Expression.App.isDefEqWhnfSpine(
+    other: Expression.App,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean {
+    val leftSpine = this.unfoldApp()
+    val rightSpine = other.unfoldApp()
+    val leftArgs = leftSpine.second
+    val rightArgs = rightSpine.second
+    if (leftArgs.size != rightArgs.size) {
+        return this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
+                this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
+    }
+    if (!leftSpine.first.isDefEq(rightSpine.first, localCtxLeft, localCtxRight)) {
+        return false
+    }
+    for (index in leftArgs.lastIndex downTo 0) {
+        if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
+            return false
         }
     }
     return true
@@ -447,8 +474,7 @@ private fun Expression.isDefEqWhnf(
     localCtxRight: List<Expression>,
 ): Boolean = when (this) {
     is Expression.App if other is Expression.App ->
-        this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
-                this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
+        this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight)
 
     is Expression.Bvar if other is Expression.Bvar -> {
         if (this.bvar == other.bvar) {
@@ -603,21 +629,23 @@ private fun Expression.StrVal.toListCharExpr(): Expression {
     return listExpr
 }
 
+// Kotlin strings are UTF-16; Lean Char.ofNat expects Unicode scalar values.
 private fun String.toUnicodeScalarValues(): List<Int> {
     val result = mutableListOf<Int>()
     var index = 0
     while (index < this.length) {
-        val current = this[index].code
-        if (current in 0xD800..0xDBFF && index + 1 < this.length) {
-            val next = this[index + 1].code
-            if (next in 0xDC00..0xDFFF) {
-                result += 0x10000 + ((current - 0xD800) shl 10) + (next - 0xDC00)
+        val current = this[index]
+        if (current in Char.MIN_HIGH_SURROGATE..Char.MAX_HIGH_SURROGATE && index + 1 < this.length) {
+            val next = this[index + 1]
+            if (next in Char.MIN_LOW_SURROGATE..Char.MAX_LOW_SURROGATE) {
+                result += (Char.MAX_VALUE.code + 1) +
+                        ((current - Char.MIN_HIGH_SURROGATE) shl 10) + (next - Char.MIN_LOW_SURROGATE)
                 index += 2
                 continue
             }
         }
-        result += current
-        index += 1
+        result += current.code
+        index++
     }
     return result
 }
@@ -830,7 +858,8 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         is Expression.NatVal -> this
 
         is Expression.Proj -> {
-            val structExpr = this.structExpr.reduce(levelSubst) // MEM: 2 GB
+            val reducedStructExpr = this.structExpr.reduce(levelSubst)
+            val structExpr = reducedStructExpr.tryStringLitCtor() ?: reducedStructExpr
             val [head, args] = structExpr.unfoldApp()
             val ctorConst = head as? Expression.Const
             val ctorDecl = ctorConst?.decl as? Inductive.ConstructorVal
@@ -855,7 +884,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
             }
         }
 
-        is Expression.StrVal -> this.tryStringLitCtor() ?: this
+        is Expression.StrVal -> this
     }
     if (levelSubst.isEmpty()) {
         env.reduceCacheNoLevelSubst[this.ie] = result
@@ -898,7 +927,8 @@ private fun Expression.tryWhnfStep(): Expression? = when (this) {
     is Expression.Mdata -> this.expr
 
     is Expression.Proj -> {
-        val structExpr = this.structExpr.whnf()
+        val reducedStructExpr = this.structExpr.whnf()
+        val structExpr = reducedStructExpr.tryStringLitCtor() ?: reducedStructExpr
         val [head, args] = structExpr.unfoldApp()
         val ctorConst = head as? Expression.Const
         val ctorDecl = ctorConst?.decl as? Inductive.ConstructorVal
@@ -1198,7 +1228,8 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
     }
 
     fun tryReduceCtorOrNatMajor(majorExpr: Expression): Expression? {
-        val [majorHead, majorArgs] = majorExpr.unfoldApp()
+        val iotaMajorExpr = majorExpr.tryStringLitCtor() ?: majorExpr
+        val [majorHead, majorArgs] = iotaMajorExpr.unfoldApp()
 
         val majorCtor = majorHead as? Expression.Const
         val constructorDecl = majorCtor?.decl as? Inductive.ConstructorVal
@@ -1219,7 +1250,7 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
             return applyRule(matchingRule, fieldArgs)
         }
 
-        val majorNatLit = majorExpr as? Expression.NatVal
+        val majorNatLit = iotaMajorExpr as? Expression.NatVal
         if (majorNatLit != null) {
             val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
                 recursorDecl.rules.mapNotNull { rule ->
@@ -1346,7 +1377,8 @@ private fun Expression.App.tryReduceRecursorHead(levelSubst: Map<Int, Level>): E
     }
 
     val majorWhnf = args[majorArgIndex].whnf(levelSubst)
-    val [majorHead, majorArgs] = majorWhnf.unfoldApp()
+    val iotaMajorWhnf = majorWhnf.tryStringLitCtor() ?: majorWhnf
+    val [majorHead, majorArgs] = iotaMajorWhnf.unfoldApp()
 
     val majorCtor = majorHead as? Expression.Const
     val constructorDecl = majorCtor?.decl as? Inductive.ConstructorVal
@@ -1367,7 +1399,7 @@ private fun Expression.App.tryReduceRecursorHead(levelSubst: Map<Int, Level>): E
         return applyRule(matchingRule, fieldArgs)
     }
 
-    val majorNatLit = majorWhnf as? Expression.NatVal
+    val majorNatLit = iotaMajorWhnf as? Expression.NatVal
     if (majorNatLit != null) {
         val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
             recursorDecl.rules.mapNotNull { rule ->
