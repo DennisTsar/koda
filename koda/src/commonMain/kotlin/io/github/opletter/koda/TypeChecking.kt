@@ -830,8 +830,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         is Expression.NatVal -> this
 
         is Expression.Proj -> {
-            val structExpr0 = this.structExpr.reduce(levelSubst) // MEM: 2 GB
-            val structExpr = structExpr0.tryStringLitCtor() ?: structExpr0
+            val structExpr = this.structExpr.reduce(levelSubst) // MEM: 2 GB
             val [head, args] = structExpr.unfoldApp()
             val ctorConst = head as? Expression.Const
             val ctorDecl = ctorConst?.decl as? Inductive.ConstructorVal
@@ -856,7 +855,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
             }
         }
 
-        is Expression.StrVal -> this
+        is Expression.StrVal -> this.tryStringLitCtor() ?: this
     }
     if (levelSubst.isEmpty()) {
         env.reduceCacheNoLevelSubst[this.ie] = result
@@ -879,8 +878,7 @@ private fun Expression.tryWhnfStep(): Expression? = when (this) {
     is Expression.App -> {
         this.tryReduceNatLiteral(emptyMap())?.let { return it }
 
-        val fnWhnf = this.fnExpr.whnf()
-        when (fnWhnf) {
+        when (val fnWhnf = this.fnExpr.whnf()) {
             is Expression.Lam -> fnWhnf.bodyExpr.applySubst(listOf(this.argExpr))
             else -> {
                 val appExpr = if (fnWhnf == this.fnExpr) {
@@ -900,8 +898,7 @@ private fun Expression.tryWhnfStep(): Expression? = when (this) {
     is Expression.Mdata -> this.expr
 
     is Expression.Proj -> {
-        val structWhnf = this.structExpr.whnf()
-        val structExpr = structWhnf.tryStringLitCtor() ?: structWhnf
+        val structExpr = this.structExpr.whnf()
         val [head, args] = structExpr.unfoldApp()
         val ctorConst = head as? Expression.Const
         val ctorDecl = ctorConst?.decl as? Inductive.ConstructorVal
@@ -925,6 +922,8 @@ private fun Expression.tryWhnfStep(): Expression? = when (this) {
             }
         }
     }
+
+//    is Expression.StrVal -> this.tryStringLitCtor() ?: this
 
     else -> null
 }
@@ -1198,8 +1197,7 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
         return reducedExpr.reduce(recursorLevelSubst)
     }
 
-    fun tryReduceCtorOrNatMajor(majorExpr0: Expression): Expression? {
-        val majorExpr = majorExpr0.tryStringLitCtor() ?: majorExpr0
+    fun tryReduceCtorOrNatMajor(majorExpr: Expression): Expression? {
         val [majorHead, majorArgs] = majorExpr.unfoldApp()
 
         val majorCtor = majorHead as? Expression.Const
@@ -1347,8 +1345,7 @@ private fun Expression.App.tryReduceRecursorHead(levelSubst: Map<Int, Level>): E
         return reducedExpr
     }
 
-    val majorWhnf0 = args[majorArgIndex].whnf(levelSubst)
-    val majorWhnf = majorWhnf0.tryStringLitCtor() ?: majorWhnf0
+    val majorWhnf = args[majorArgIndex].whnf(levelSubst)
     val [majorHead, majorArgs] = majorWhnf.unfoldApp()
 
     val majorCtor = majorHead as? Expression.Const
