@@ -275,6 +275,8 @@ class Environment {
     var shouldLog = false
     var shouldLog2 = false
 
+    var counter = 0
+
     override fun toString(): String {
         return "Names:\n${names.toList().joinToString("\n")}\n\n" +
                 "Declarations:\n${declarations.toList().joinToString("\n")}\n\n" +

@@ -1,5 +1,7 @@
 package io.github.opletter.koda
 
+private var debugEqvInstantiateStackPrinted = false
+
 fun typeCheck(data: Sequence<ExportType>) {
     val env = Environment()
 //    typeCheck(data, env = env)
@@ -21,8 +23,9 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         //i: progress = 1122612 48.691833300s
         if (index != 0 && index % 100_000 == 0) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
+            println(" (checked ${env.counter} declarations)")
         }
-        if (env.shouldLog || index > 2471000) {
+        if (env.shouldLog) {
             println("started: ${env.clock.elapsedNow()}")
             val dataName = (data as? NamedDecl)?.name?.toStringDetailed() ?: data::class.simpleName
             println("$dataName $data")
@@ -68,7 +71,114 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 
                     is Declaration.Quot -> {} // no extra checks needed
                     is Declaration.Thm -> {
-                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                        val typeChecks = typeCheckDeclaration(data.valueExpr, data.typeExpr)
+                        if (!typeChecks && data.name.toStringDetailed() == "TensorProduct.SMul.aux_of") {
+                            val inferredValueType = data.valueExpr.inferType()
+                            var expectedBody = data.typeExpr
+                            var actualBody = inferredValueType
+                            var peeledForalls = 0
+                            while (
+                                expectedBody is Expression.ForallE &&
+                                actualBody is Expression.ForallE &&
+                                expectedBody.binderInfo == actualBody.binderInfo &&
+                                expectedBody.typeExpr.sameShape(actualBody.typeExpr)
+                            ) {
+                                expectedBody = expectedBody.bodyExpr
+                                actualBody = actualBody.bodyExpr
+                                peeledForalls += 1
+                            }
+                            println("debug theorem: ${data.name.toStringDetailed()} peeledForalls=$peeledForalls")
+                            println("expected body:")
+                            println(expectedBody.toStringDetailed())
+                            println("actual body:")
+                            println(actualBody.toStringDetailed())
+                            println("expected body reduce:")
+                            println(expectedBody.reduce().toStringDetailed())
+                            println("actual body reduce:")
+                            println(actualBody.reduce().toStringDetailed())
+                            println("expected body whnf:")
+                            println(expectedBody.whnf().toStringDetailed())
+                            println("actual body whnf:")
+                            println(actualBody.whnf().toStringDetailed())
+                            fun debugEqSides(label: String, expr: Expression) {
+                                val [headExpr, args] = expr.unfoldApp()
+                                val headConst = headExpr as? Expression.Const ?: return
+                                if (headConst.name.toStringDetailed() != "Eq." || args.size != 3) return
+                                println("$label eq lhs:")
+                                println(args[1].toStringDetailed())
+                                println("$label eq rhs:")
+                                println(args[2].toStringDetailed())
+                                println("$label eq lhs reduce:")
+                                println(args[1].reduce().toStringDetailed())
+                                println("$label eq rhs reduce:")
+                                println(args[2].reduce().toStringDetailed())
+                            }
+                            debugEqSides("expected", expectedBody)
+                            debugEqSides("actual", actualBody)
+                            run {
+                                val [expectedHead, expectedArgs] = expectedBody.unfoldApp()
+                                val [actualHead, actualArgs] = actualBody.unfoldApp()
+                                if (
+                                    expectedHead is Expression.Const &&
+                                    actualHead is Expression.Const &&
+                                    expectedHead.name.toStringDetailed() == "Eq." &&
+                                    actualHead.name.toStringDetailed() == "Eq." &&
+                                    expectedArgs.size == 3 &&
+                                    actualArgs.size == 3
+                                ) {
+                                    println("eq type defeq: ${expectedArgs[0].isDefEq(actualArgs[0])}")
+                                    println("eq lhs defeq: ${expectedArgs[1].isDefEq(actualArgs[1])}")
+                                    println("eq rhs defeq: ${expectedArgs[2].isDefEq(actualArgs[2])}")
+                                    println(
+                                        "eq lhs reduce defeq: ${
+                                            expectedArgs[1].reduce().isDefEq(actualArgs[1].reduce())
+                                        }"
+                                    )
+                                    println(
+                                        "eq rhs reduce defeq: ${
+                                            expectedArgs[2].reduce().isDefEq(actualArgs[2].reduce())
+                                        }"
+                                    )
+                                    fun Expression.findConst(targetName: String): Expression.Const? = when (this) {
+                                        is Expression.Const ->
+                                            this.takeIf { it.name.toStringDetailed() == targetName }
+
+                                        is Expression.App -> this.fnExpr.findConst(targetName)
+                                            ?: this.argExpr.findConst(targetName)
+
+                                        is Expression.ForallE -> this.typeExpr.findConst(targetName)
+                                            ?: this.bodyExpr.findConst(targetName)
+
+                                        is Expression.Lam -> this.typeExpr.findConst(targetName)
+                                            ?: this.bodyExpr.findConst(targetName)
+
+                                        is Expression.LetE ->
+                                            this.typeExpr.findConst(targetName)
+                                                ?: this.valueExpr.findConst(targetName)
+                                                ?: this.bodyExpr.findConst(targetName)
+
+                                        is Expression.Mdata -> this.expr.findConst(targetName)
+                                        is Expression.Proj -> this.structExpr.findConst(targetName)
+                                        else -> null
+                                    }
+
+                                    val expectedEqv = expectedArgs[2].findConst("TensorProduct.Eqv")
+                                    val actualEqv = actualArgs[2].findConst("TensorProduct.Eqv")
+                                    if (expectedEqv != null && actualEqv != null) {
+                                        println("expected Eqv levels:")
+                                        println(expectedEqv.levels.joinToString("\n") { it.toStringDetailed() })
+                                        println("actual Eqv levels:")
+                                        println(actualEqv.levels.joinToString("\n") { it.toStringDetailed() })
+                                        println(
+                                            "Eqv first level equal: ${
+                                                expectedEqv.levels[0].isEqual(actualEqv.levels[0])
+                                            }"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        check(typeChecks) {
                             "value not defeq to type for ${data.name.toStringDetailed()} $data"
                         }
                         check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
@@ -78,6 +188,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 }
 
                 env.declTypeByName[data.name] = data.typeExpr
+                env.counter++
 
                 // (4): "the declaration's type has no free variables"
                 // TODO
@@ -255,6 +366,7 @@ private fun Expression.trySameHeadConstCongruence(
     val rightConst = rightSpine.first as? Expression.Const ?: return null
     val leftArgs = leftSpine.second
     val rightArgs = rightSpine.second
+    val headName = leftConst.name.toStringDetailed()
     if (leftConst.name != rightConst.name) return null
     if (leftConst.decl is Inductive.RecursorVal || rightConst.decl is Inductive.RecursorVal) {
         return null
@@ -271,11 +383,33 @@ private fun Expression.trySameHeadConstCongruence(
                 levelPair.first.isEqual(levelPair.second)
             }
     if (!levelsMatch) {
+        if (headName == "TensorProduct.Eqv") {
+            println("debug Eqv level mismatch:")
+            println("left levels:")
+            println(leftConst.levels.joinToString("\n") { it.toStringDetailed() })
+            println("right levels:")
+            println(rightConst.levels.joinToString("\n") { it.toStringDetailed() })
+        }
         return null
     }
 
     for (index in leftArgs.lastIndex downTo 0) {
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
+            if (headName in setOf("Quot.mk", "Prod.mk", "HSMul.hSMul", "Prod.fst", "Prod.snd")) {
+                println("debug congruence fail: $headName arg=$index")
+                println("left arg:")
+                println(leftArgs[index].toStringDetailed())
+                println("right arg:")
+                println(rightArgs[index].toStringDetailed())
+                println("left arg reduce:")
+                println(leftArgs[index].reduce().toStringDetailed())
+                println("right arg reduce:")
+                println(rightArgs[index].reduce().toStringDetailed())
+                println("left arg whnf:")
+                println(leftArgs[index].whnf().toStringDetailed())
+                println("right arg whnf:")
+                println(rightArgs[index].whnf().toStringDetailed())
+            }
             return null
         }
     }
@@ -824,7 +958,8 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
             } else {
                 when (val fnWhnf = this.fnExpr.reduce(levelSubst)) {
                     is Expression.Lam -> {
-                        fnWhnf.bodyExpr.applySubst(listOf(this.argExpr)).reduce()
+                        val argExpr = this.argExpr.instantiateLevelParams(levelSubst)
+                        fnWhnf.bodyExpr.applySubst(listOf(argExpr)).reduce()
                     }
 
                     else -> {
@@ -838,8 +973,11 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                         if (reducedApp != null) {
                             reducedApp
                         } else {
-                            val appExpr = appExprPreInst.instantiateLevelParams(levelSubst)
-                            if (fnWhnf != this.fnExpr) appExpr.reduce() else appExpr // MEM: 200 MB
+                            if (fnWhnf != this.fnExpr) {
+                                appExprPreInst.reduce()
+                            } else {
+                                appExprPreInst.instantiateLevelParams(levelSubst)
+                            } // MEM: 200 MB
                         }
                     }
                 }
@@ -855,6 +993,13 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                         this.instantiateLevelParams(levelSubst)
                     } else {
                         val constLevelSubst = this.composeLevelSubst(levelSubst)
+                        if (constLevelSubst[3]?.il == -30) {
+                            println("debug reducing def with u_1 -> -30: ${this.name.toStringDetailed()}")
+                            println("const levels:")
+                            println(this.levels.joinToString("\n") { it.toStringDetailed() })
+                            println("const level subst:")
+                            println(constLevelSubst.entries.joinToString("\n") { "${it.key} -> ${it.value.toStringDetailed()}" })
+                        }
                         val instantiatedValue = d.valueExpr.instantiateLevelParams(constLevelSubst)
                         instantiatedValue.reduce()
                     }
@@ -882,7 +1027,7 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                 this.projIndex in 0 until ctorDecl.numFields &&
                 args.size == ctorDecl.numParams + ctorDecl.numFields
             ) {
-                val fieldExpr = args[ctorDecl.numParams + this.projIndex].instantiateLevelParams(levelSubst)
+                val fieldExpr = args[ctorDecl.numParams + this.projIndex]
                 if (fieldExpr.isNatLiteralPrimitive()) fieldExpr else fieldExpr.reduce()
             } else if (structExpr == this.structExpr.instantiateLevelParams(levelSubst)) {
                 this.instantiateLevelParams(levelSubst)
@@ -1262,14 +1407,14 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
         rule: Inductive.RecursorVal.RecursorRule,
         fieldArgs: List<Expression>,
     ): Expression {
-        var reducedExpr: Expression = rule.rhsExpr
-        (prefixArgs + fieldArgs).forEach { substArg: Expression ->
+        var reducedExpr: Expression = rule.rhsExpr.instantiateLevelParams(recursorLevelSubst)
+        (prefixArgs + fieldArgs).map { it.instantiateLevelParams(levelSubst) }.forEach { substArg: Expression ->
             reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, substArg.ie, it) }
         }
-        args.drop(majorArgIndex + 1).forEach { extraArg: Expression ->
+        args.drop(majorArgIndex + 1).map { it.instantiateLevelParams(levelSubst) }.forEach { extraArg: Expression ->
             reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, extraArg.ie, it) }
         }
-        return reducedExpr.reduce(recursorLevelSubst)
+        return reducedExpr.reduce()
     }
 
     fun tryReduceCtorOrNatMajor(majorExpr: Expression): Expression? {
@@ -1382,7 +1527,7 @@ private fun Expression.App.tryReduceRecursor(levelSubst: Map<Int, Level>): Expre
     val expectedIndexArgs = ctorResultArgs.drop(recursorDecl.numParams)
     repeat(recursorDecl.numIndices) { index ->
         val expectedIndex = expectedIndexArgs[index].instantiateLevelParams(recursorLevelSubst)
-        val actualIndex = indexArgs[index].instantiateLevelParams(recursorLevelSubst)
+        val actualIndex = indexArgs[index].instantiateLevelParams(levelSubst)
         if (!expectedIndex.isDefEq(actualIndex)) {
             return null
         }
@@ -1410,8 +1555,8 @@ private fun Expression.App.tryReduceRecursorHead(levelSubst: Map<Int, Level>): E
         fieldArgs: List<Expression>,
     ): Expression {
         var reducedExpr: Expression = rule.rhsExpr.instantiateLevelParams(recursorLevelSubst)
-        val appliedArgs = (prefixArgs + fieldArgs).map { it.instantiateLevelParams(recursorLevelSubst) }
-        val extraArgs = args.drop(majorArgIndex + 1).map { it.instantiateLevelParams(recursorLevelSubst) }
+        val appliedArgs = (prefixArgs + fieldArgs).map { it.instantiateLevelParams(levelSubst) }
+        val extraArgs = args.drop(majorArgIndex + 1).map { it.instantiateLevelParams(levelSubst) }
         appliedArgs.forEach { substArg: Expression ->
             reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, substArg.ie, it) }
         }
@@ -1522,7 +1667,7 @@ private fun Expression.App.tryReduceRecursorHead(levelSubst: Map<Int, Level>): E
     val expectedIndexArgs = ctorResultArgs.drop(recursorDecl.numParams)
     repeat(recursorDecl.numIndices) { index ->
         val expectedIndex = expectedIndexArgs[index].instantiateLevelParams(recursorLevelSubst)
-        val actualIndex = indexArgs[index].instantiateLevelParams(recursorLevelSubst)
+        val actualIndex = indexArgs[index].instantiateLevelParams(levelSubst)
         if (!expectedIndex.isDefEq(actualIndex)) {
             return null
         }
@@ -1552,14 +1697,14 @@ private fun Expression.App.tryReduceQuot(levelSubst: Map<Int, Level>): Expressio
     val ctorValueArg = majorArgs[ctorArity - 1]
 
     val fnArg = when (quotDecl.kind) {
-        Declaration.Quot.Kind.Lift -> args.getOrNull(arity - 3) ?: return null
-        Declaration.Quot.Kind.Ind -> args.getOrNull(arity - 2) ?: return null
+        Declaration.Quot.Kind.Lift -> args.getOrNull(arity - 3)?.instantiateLevelParams(levelSubst) ?: return null
+        Declaration.Quot.Kind.Ind -> args.getOrNull(arity - 2)?.instantiateLevelParams(levelSubst) ?: return null
     }
 
     var reducedExpr: Expression = env.addCustomExpr {
         Expression.App(fn = fnArg.ie, arg = ctorValueArg.ie, ie = it)
     }
-    args.drop(arity).forEach { extraArg: Expression ->
+    args.drop(arity).map { it.instantiateLevelParams(levelSubst) }.forEach { extraArg: Expression ->
         reducedExpr = env.addCustomExpr { Expression.App(fn = reducedExpr.ie, arg = extraArg.ie, ie = it) }
     }
     return reducedExpr.reduce()
@@ -1845,6 +1990,39 @@ fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
         is Expression.Const -> {
             val newUs = this.levels.map { it.instantiateLevelParams(subst).il }
             val oldUs = this.levels.map { it.il }
+            if (this.name.toStringDetailed() == "TensorProduct.tmul" && newUs != oldUs) {
+                println("debug tmul instantiate:")
+                println("old levels:")
+                println(this.levels.joinToString("\n") { it.toStringDetailed() })
+                println("subst:")
+                println(subst.entries.joinToString("\n") { "${it.key} -> ${it.value.toStringDetailed()}" })
+                println("new levels:")
+                println(newUs.joinToString("\n") { il ->
+                    (env.levels[il] ?: error("Level $il not found")).toStringDetailed()
+                })
+            }
+            if (this.name.toStringDetailed() == "TensorProduct.Eqv" && newUs != oldUs) {
+                println("debug Eqv instantiate:")
+                println("old levels:")
+                println(this.levels.joinToString("\n") { it.toStringDetailed() })
+                println("subst:")
+                println(subst.entries.joinToString("\n") { "${it.key} -> ${it.value.toStringDetailed()}" })
+                println("new levels:")
+                println(newUs.joinToString("\n") { il ->
+                    (env.levels[il] ?: error("Level $il not found")).toStringDetailed()
+                })
+                if (!debugEqvInstantiateStackPrinted && subst[3]?.il == -30) {
+                    debugEqvInstantiateStackPrinted = true
+                    println("debug Eqv instantiate stack:")
+                    val relevantFrames = Throwable().stackTrace
+                        .dropWhile { frame ->
+                            frame.className == "io.github.opletter.koda.TypeCheckingKt" &&
+                                    frame.methodName == "instantiateLevelParams"
+                        }
+                        .take(20)
+                    println(relevantFrames.joinToString("\n"))
+                }
+            }
             if (newUs == oldUs) this else env.addCustomExpr { this.copy(us = newUs, ie = it) }
         }
 
@@ -2092,8 +2270,7 @@ private fun Expression.Const.composeLevelSubst(outer: Map<Int, Level>): Map<Int,
     }
 
     val inner = this.levelSubstMap()
-    if (inner.isEmpty()) return outer
+    if (inner.isEmpty()) return emptyMap()
     if (outer.isEmpty()) return inner
-    val normalizedInner = inner.mapValues { entry -> entry.value.instantiateLevelParams(outer) }
-    return outer + normalizedInner
+    return inner.mapValues { entry -> entry.value.instantiateLevelParams(outer) }
 }
