@@ -806,8 +806,17 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
     val result = when (this) {
         is Expression.App -> {
             val natReducedExpr = this.tryReduceNatLiteral(levelSubst)
+            val natPrimitiveArity = this.natLiteralPrimitiveArity()
             if (natReducedExpr != null) {
                 natReducedExpr
+            } else if (natPrimitiveArity != null) {
+                val appExpr = this.instantiateLevelParams(levelSubst) as Expression.App
+                if (appExpr.unfoldApp().second.size < natPrimitiveArity) {
+                    appExpr
+                } else {
+                    val unfoldedApp = appExpr.tryUnfoldSpineHeadOnce()
+                    if (unfoldedApp != null && unfoldedApp != appExpr) unfoldedApp.reduce() else appExpr
+                }
             } else if (!this.fnExpr.canReduceAtHead()) {
                 this.tryReduceRecursor(levelSubst)
                     ?: this.tryReduceQuot(levelSubst)
@@ -842,9 +851,13 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
         is Expression.Const -> {
             when (val d = decl) {
                 is Declaration.Def -> {
-                    val constLevelSubst = this.composeLevelSubst(levelSubst) // MEM: 300 MB
-                    val instantiatedValue = d.valueExpr.instantiateLevelParams(constLevelSubst)
-                    instantiatedValue.reduce()
+                    if (this.isNatLiteralPrimitiveConst()) {
+                        this.instantiateLevelParams(levelSubst)
+                    } else {
+                        val constLevelSubst = this.composeLevelSubst(levelSubst)
+                        val instantiatedValue = d.valueExpr.instantiateLevelParams(constLevelSubst)
+                        instantiatedValue.reduce()
+                    }
                 }
 
                 else -> this.instantiateLevelParams(levelSubst)
@@ -869,7 +882,8 @@ fun Expression.reduce(levelSubst: Map<Int, Level> = emptyMap()): Expression {
                 this.projIndex in 0 until ctorDecl.numFields &&
                 args.size == ctorDecl.numParams + ctorDecl.numFields
             ) {
-                args[ctorDecl.numParams + this.projIndex].reduce()
+                val fieldExpr = args[ctorDecl.numParams + this.projIndex].instantiateLevelParams(levelSubst)
+                if (fieldExpr.isNatLiteralPrimitive()) fieldExpr else fieldExpr.reduce()
             } else if (structExpr == this.structExpr.instantiateLevelParams(levelSubst)) {
                 this.instantiateLevelParams(levelSubst)
             } else {
@@ -906,6 +920,10 @@ context(env: Environment)
 private fun Expression.tryWhnfStep(): Expression? = when (this) {
     is Expression.App -> {
         this.tryReduceNatLiteral(emptyMap())?.let { return it }
+        if (this.natLiteralPrimitiveArity() != null) {
+            if (this.unfoldApp().second.size < this.natLiteralPrimitiveArity()!!) return null
+            this.tryUnfoldSpineHeadOnce()?.let { return it }
+        }
 
         when (val fnWhnf = this.fnExpr.whnf()) {
             is Expression.Lam -> fnWhnf.bodyExpr.applySubst(listOf(this.argExpr))
@@ -922,7 +940,7 @@ private fun Expression.tryWhnfStep(): Expression? = when (this) {
         }
     }
 
-    is Expression.Const -> this.tryUnfoldReducibleHeadOnce()
+    is Expression.Const -> if (this.isNatLiteralPrimitiveConst()) null else this.tryUnfoldReducibleHeadOnce()
     is Expression.LetE -> this.bodyExpr.applySubst(listOf(this.valueExpr))
     is Expression.Mdata -> this.expr
 
@@ -975,6 +993,33 @@ context(env: Environment)
 private fun Expression.asNatLiteralValue(): NatValue? = when (this) {
     is Expression.NatVal -> this.natVal
     else -> if (this.isNatZeroCtorConst()) NatValue.ZERO else null
+}
+
+context(env: Environment)
+private fun Expression.isNatLiteralPrimitiveConst(): Boolean = when (this) {
+    is Expression.Const -> when (this.name.toStringDetailed()) {
+        "Nat.succ", "Nat.add", "Nat.sub", "Nat.mul", "Nat.pow", "Nat.div", "Nat.mod", "Nat.beq", "Nat.ble" -> true
+        else -> false
+    }
+
+    else -> false
+}
+
+context(env: Environment)
+private fun Expression.isNatLiteralPrimitive(): Boolean = when (this) {
+    is Expression.Const -> this.isNatLiteralPrimitiveConst()
+    is Expression.App -> this.unfoldApp().first.isNatLiteralPrimitiveConst()
+    else -> false
+}
+
+context(env: Environment)
+private fun Expression.App.natLiteralPrimitiveArity(): Int? {
+    val headConst = this.unfoldApp().first as? Expression.Const ?: return null
+    return when (headConst.name.toStringDetailed()) {
+        "Nat.succ" -> 1
+        "Nat.add", "Nat.sub", "Nat.mul", "Nat.pow", "Nat.div", "Nat.mod", "Nat.beq", "Nat.ble" -> 2
+        else -> null
+    }
 }
 
 context(env: Environment)
