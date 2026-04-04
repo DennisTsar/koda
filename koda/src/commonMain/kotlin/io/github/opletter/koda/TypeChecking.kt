@@ -178,6 +178,76 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                                 }
                             }
                         }
+                        if (!typeChecks && data.name.toStringDetailed().contains("DirectLimit.lift")) {
+                            val inferredValueType = data.valueExpr.inferType()
+                            var expectedBody = data.typeExpr
+                            var actualBody = inferredValueType
+                            var peeledForalls = 0
+                            while (
+                                expectedBody is Expression.ForallE &&
+                                actualBody is Expression.ForallE &&
+                                expectedBody.binderInfo == actualBody.binderInfo &&
+                                expectedBody.typeExpr.sameShape(actualBody.typeExpr)
+                            ) {
+                                expectedBody = expectedBody.bodyExpr
+                                actualBody = actualBody.bodyExpr
+                                peeledForalls += 1
+                            }
+                            println("debug theorem: ${data.name.toStringDetailed()} peeledForalls=$peeledForalls")
+                            println("expected body:")
+                            println(expectedBody.toStringDetailed())
+                            println("actual body:")
+                            println(actualBody.toStringDetailed())
+                            println("expected body reduce:")
+                            println(expectedBody.reduce().toStringDetailed())
+                            println("actual body reduce:")
+                            println(actualBody.reduce().toStringDetailed())
+                            println("expected body whnf:")
+                            println(expectedBody.whnf().toStringDetailed())
+                            println("actual body whnf:")
+                            println(actualBody.whnf().toStringDetailed())
+                            fun debugEqSides(label: String, expr: Expression) {
+                                val [headExpr, args] = expr.unfoldApp()
+                                val headConst = headExpr as? Expression.Const ?: return
+                                if (headConst.name.toStringDetailed() != "Eq." || args.size != 3) return
+                                println("$label eq lhs:")
+                                println(args[1].toStringDetailed())
+                                println("$label eq rhs:")
+                                println(args[2].toStringDetailed())
+                                println("$label eq lhs reduce:")
+                                println(args[1].reduce().toStringDetailed())
+                                println("$label eq rhs reduce:")
+                                println(args[2].reduce().toStringDetailed())
+                            }
+                            debugEqSides("expected", expectedBody)
+                            debugEqSides("actual", actualBody)
+                            run {
+                                val [expectedHead, expectedArgs] = expectedBody.unfoldApp()
+                                val [actualHead, actualArgs] = actualBody.unfoldApp()
+                                if (
+                                    expectedHead is Expression.Const &&
+                                    actualHead is Expression.Const &&
+                                    expectedHead.name.toStringDetailed() == "Eq." &&
+                                    actualHead.name.toStringDetailed() == "Eq." &&
+                                    expectedArgs.size == 3 &&
+                                    actualArgs.size == 3
+                                ) {
+                                    println("eq type defeq: ${expectedArgs[0].isDefEq(actualArgs[0])}")
+                                    println("eq lhs defeq: ${expectedArgs[1].isDefEq(actualArgs[1])}")
+                                    println("eq rhs defeq: ${expectedArgs[2].isDefEq(actualArgs[2])}")
+                                    println(
+                                        "eq lhs reduce defeq: ${
+                                            expectedArgs[1].reduce().isDefEq(actualArgs[1].reduce())
+                                        }"
+                                    )
+                                    println(
+                                        "eq rhs reduce defeq: ${
+                                            expectedArgs[2].reduce().isDefEq(actualArgs[2].reduce())
+                                        }"
+                                    )
+                                }
+                            }
+                        }
                         check(typeChecks) {
                             "value not defeq to type for ${data.name.toStringDetailed()} $data"
                         }
