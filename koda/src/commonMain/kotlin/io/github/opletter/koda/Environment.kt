@@ -19,6 +19,11 @@ data class InferTypeCacheKey(
     val localCtxId: Int,
 )
 
+data class ReduceCacheKey(
+    val exprId: Int,
+    val localCtxId: Int,
+)
+
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
     private val negative: MutableMap<Int, T> = mutableMapOf()
@@ -89,6 +94,7 @@ class Environment {
 
     val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
     val reduceCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
+    val reduceCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
     val liftCache: MutableMap<Long, Expression> = mutableMapOf()
     val applySubstSingleCache: MutableMap<Long, Expression> = mutableMapOf()
     val structureEtaInProgress: MutableSet<Long> = mutableSetOf()
@@ -257,6 +263,7 @@ class Environment {
         nextExprIndex = -100
         customExprIntern.clear()
         reduceCacheNoLevelSubst.clear()
+        reduceCacheWithCtxNoLevelSubst.clear()
         liftCache.clear()
         applySubstSingleCache.clear()
         structureEtaInProgress.clear()
