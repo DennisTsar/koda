@@ -1730,11 +1730,17 @@ private fun Expression.tryEtaReduce(): Expression? {
     }
 
     val lam = this as? Expression.Lam ?: return null
-    lam.tryEtaReduceHead()?.let { return it }
+    val reducedBody = lam.bodyExpr.reduce()
+    val lamToCheck = if (reducedBody == lam.bodyExpr) {
+        lam
+    } else {
+        env.addCustomExpr { lam.copy(body = reducedBody.ie, ie = it) } as? Expression.Lam ?: return null
+    }
+    lamToCheck.tryEtaReduceHead()?.let { return it }
 
-    val innerLam = lam.bodyExpr as? Expression.Lam ?: return null
+    val innerLam = lamToCheck.bodyExpr as? Expression.Lam ?: return null
     val reducedInner = innerLam.tryEtaReduce() ?: return null
-    val rebuiltLam = env.addCustomExpr { lam.copy(body = reducedInner.ie, ie = it) } as? Expression.Lam
+    val rebuiltLam = env.addCustomExpr { lamToCheck.copy(body = reducedInner.ie, ie = it) } as? Expression.Lam
         ?: return null
 
     return rebuiltLam.tryEtaReduceHead() ?: rebuiltLam
