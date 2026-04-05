@@ -1,5 +1,8 @@
 package io.github.opletter.koda
 
+private const val DEBUG_DECLARATION_NAME =
+    "TopCat.Presheaf.app_surjective_of_injective_of_locally_surjective"
+
 fun typeCheck(data: Sequence<ExportType>) {
     val env = Environment()
 //    typeCheck(data, env = env)
@@ -19,16 +22,18 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         //...
         //i: progress = 1122611 36.558250900s
         //i: progress = 1122612 48.691833300s
-        if (index != 0 && index % 100_000 == 0) {
+        if (index != 0 && index > 6_395_100 && index % 100_100 == 0) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
             println(" (checked ${env.counter} declarations)")
         }
-        if (env.shouldLog) {
-            println("started: ${env.clock.elapsedNow()}")
+        if (index > 6_395_100) {
+            println("started ($index): ${env.clock.elapsedNow()}")
             val dataName = (data as? NamedDecl)?.name?.toStringDetailed() ?: data::class.simpleName
             println("$dataName $data")
             println("---")
         }
+        val dataName = (data as? NamedDecl)?.name?.toStringDetailed()
+        env.shouldLog = dataName == DEBUG_DECLARATION_NAME
         when (data) {
             is Name -> {
                 data.registerInto(env)
@@ -52,29 +57,35 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 //                println("found type: ${data.typeExpr.toStringDetailed()}")
                 val declaredTypeSortLevel = data.typeExpr.inferSort()
 
-                when (data) {
-                    is Declaration.Axiom -> {} // no extra checks needed
-                    is Declaration.Def -> {
-                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                        }
-                    }
+                if (env.shouldLog) {
+                    println("debug: checking $dataName at index=$index elapsed=${env.clock.elapsedNow()}")
+                }
 
-                    is Declaration.Opaque -> {
-                        // TODO: treat opqaue differently
-                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                if (index > 0) {
+                    when (data) {
+                        is Declaration.Axiom -> {} // no extra checks needed
+                        is Declaration.Def -> {
+                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                            }
                         }
-                    }
 
-                    is Declaration.Quot -> {} // no extra checks needed
-                    is Declaration.Thm -> {
-                        val typeChecks = typeCheckDeclaration(data.valueExpr, data.typeExpr)
-                        check(typeChecks) {
-                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                        is Declaration.Opaque -> {
+                            // TODO: treat opqaue differently
+                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                            }
                         }
-                        check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
-                            "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
+
+                        is Declaration.Quot -> {} // no extra checks needed
+                        is Declaration.Thm -> {
+                            val typeChecks = typeCheckDeclaration(data.valueExpr, data.typeExpr)
+                            check(typeChecks) {
+                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                            }
+                            check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
+                                "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
+                            }
                         }
                     }
                 }
@@ -110,16 +121,28 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
-    if (env.shouldLog) println("found value: ${value/*.toStringDetailed()*/}")
+    if (env.shouldLog) {
+        println("debug: typeCheckDeclaration start expected=${expectedType.debugSummary()} value=${value.debugSummary()}")
+    }
     val inferredValueType = value.inferType() // MEM: 200 MB
-    if (env.shouldLog) println("inferred type of value: ${inferredValueType/*.toStringDetailed()*/}")
+    if (env.shouldLog) {
+        println("debug: inferType done actual=${inferredValueType.debugSummary()} defEqCalls=${env.defEqCalls} inferTypeCacheHits=${env.inferTypeCacheHits}")
+        println("debug: defEq start expected=${expectedType.debugSummary()} actual=${inferredValueType.debugSummary()}")
+    }
     val actualType = inferredValueType
     // made it to: Def(_name=2098, _levelParams=[22, 6], type=12166, value=12236, hints=Abbrev, safety=Safe, all=[2098])
     // before Java heap space error, ran for 1 min 21 sec
     //    return Blah.isDefEq(Everything(env, expectedType, actualType, levelSubstRight = inferredValueType.levelSubst))
     // made it to: Def(_name=1944, _levelParams=[6], type=10830, value=10837, hints=Abbrev, safety=Safe, all=[1944])
     // before stack overflow, ran for 30 sec
-    return expectedType.isDefEq(actualType) // MEM: 13 GB
+    return expectedType.isDefEq(actualType).also { result ->
+        if (env.shouldLog) {
+            println(
+                "debug: defEq done result=$result defEqCalls=${env.defEqCalls} " +
+                        "defEqCacheHits=${env.defEqCacheHits} defEqInProgressSkips=${env.defEqInProgressSkips}"
+            )
+        }
+    } // MEM: 13 GB
 }
 
 context(env: Environment)
@@ -153,6 +176,12 @@ fun Expression.isDefEq(
     }
 
     val result = try {
+        if (env.shouldLog && env.defEqCalls % 1_000L == 0L) {
+            println(
+                "debug: defEq progress calls=${env.defEqCalls} left=${leftExpr.debugSummary()} " +
+                        "right=${rightExpr.debugSummary()}"
+            )
+        }
         if (leftExpr == rightExpr) {
             true
         } else {
@@ -160,9 +189,24 @@ fun Expression.isDefEq(
             if (lazyDeltaEq != null) {
                 lazyDeltaEq
             } else {
+                if (env.shouldLog && env.defEqCalls <= 200L) {
+                    println("debug: defEq reducing? leftWhnf=${leftExpr.isWhnfByShape()} rightWhnf=${rightExpr.isWhnfByShape()} left=${leftExpr.debugSummary()} right=${rightExpr.debugSummary()}")
+                }
+                if (env.shouldLog && env.defEqCalls <= 200L && !leftExpr.isWhnfByShape()) {
+                    println("debug: defEq reducing left start ${leftExpr.debugSummary()}")
+                }
                 val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.whnf(localCtx = localCtxLeft)
+                if (env.shouldLog && env.defEqCalls <= 200L && !leftExpr.isWhnfByShape()) {
+                    println("debug: defEq reducing left done ${leftWhnfExpr.debugSummary()}")
+                }
+                if (env.shouldLog && env.defEqCalls <= 200L && !rightExpr.isWhnfByShape()) {
+                    println("debug: defEq reducing right start ${rightExpr.debugSummary()}")
+                }
                 val rightWhnfExpr =
                     if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.whnf(localCtx = localCtxRight)
+                if (env.shouldLog && env.defEqCalls <= 200L && !rightExpr.isWhnfByShape()) {
+                    println("debug: defEq reducing right done ${rightWhnfExpr.debugSummary()}")
+                }
                 if (leftWhnfExpr == rightWhnfExpr) {
                     true
                 } else if (leftWhnfExpr.sameShape(rightWhnfExpr)) {
@@ -938,7 +982,7 @@ fun Expression.reduce(
     } else if (cacheKey != null) {
         env.reduceCacheWithCtxNoLevelSubst[cacheKey]?.let { return it }
     }
-    if (env.shouldLog) println("trying to reduce ${this}")
+    if (env.shouldLog && env.shouldLog2) println("trying to reduce ${this}")
     val result = when (this) {
         is Expression.App -> {
             val natReducedExpr = this.tryReduceNatLiteral(levelSubst)
@@ -1857,14 +1901,27 @@ private fun Expression.tryProofIrrelevanceDefEq(
         return false
     }
     try {
+        if (env.shouldLog) {
+            println("debug: proofIrrel start left=${this.debugSummary()} right=${other.debugSummary()}")
+        }
     val thisTy = this.inferType(localCtx = localCtxLeft)
     val otherTy = other.inferType(localCtx = localCtxRight)
+        if (env.shouldLog) {
+            println("debug: proofIrrel inferred types left=${thisTy.debugSummary()} right=${otherTy.debugSummary()}")
+        }
     val thisSort = thisTy.inferSort(localCtx = localCtxLeft)
     val otherSort = otherTy.inferSort(localCtx = localCtxRight)
+        if (env.shouldLog) {
+            println("debug: proofIrrel inferred sorts left=${thisSort.toStringDetailed()} right=${otherSort.toStringDetailed()}")
+        }
     if (!thisSort.isLessOrEqual(Level.Zero) || !otherSort.isLessOrEqual(Level.Zero)) {
         return false
     }
-    return thisTy.isDefEq(otherTy, localCtxLeft, localCtxRight)
+        return thisTy.isDefEq(otherTy, localCtxLeft, localCtxRight).also { result ->
+            if (env.shouldLog) {
+                println("debug: proofIrrel typeEq=$result leftType=${thisTy.debugSummary()} rightType=${otherTy.debugSummary()}")
+            }
+        }
     } finally {
         env.proofIrrelInProgress.remove(cacheKey)
     }
