@@ -159,13 +159,13 @@ fun Expression.isDefEq(
             val lazyDeltaEq = leftExpr.tryLazyDeltaDefEq(rightExpr, localCtxLeft, localCtxRight)
             if (lazyDeltaEq != null) {
                 lazyDeltaEq
-            } else if (leftExpr.sameShape(rightExpr)) {
-                true
             } else {
-                val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce(localCtx = localCtxLeft)
+                val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.whnf(localCtx = localCtxLeft)
                 val rightWhnfExpr =
-                    if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce(localCtx = localCtxRight)
+                    if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.whnf(localCtx = localCtxRight)
                 if (leftWhnfExpr == rightWhnfExpr) {
+                    true
+                } else if (leftWhnfExpr.sameShape(rightWhnfExpr)) {
                     true
                 } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
                     true
@@ -183,6 +183,25 @@ fun Expression.isDefEq(
 
     env.defEqCache[cacheKey] = result
     return result
+}
+
+context(env: Environment)
+private fun Expression.debugSummary(): String = when (this) {
+    is Expression.App -> {
+        val unfoldedApp = this.unfoldApp()
+        "App(head=${unfoldedApp.first.debugSummary()}, args=${unfoldedApp.second.size}, ie=$ie)"
+    }
+
+    is Expression.Const -> "Const(${this.name.toStringDetailed()}, levels=${this.levels.size}, ie=$ie)"
+    is Expression.ForallE -> "Forall(type=${this.typeExpr.debugSummary()}, bodyIe=${this.bodyExpr.ie}, ie=$ie)"
+    is Expression.Lam -> "Lam(type=${this.typeExpr.debugSummary()}, bodyIe=${this.bodyExpr.ie}, ie=$ie)"
+    is Expression.Bvar -> "Bvar(${this.bvar}, ie=$ie)"
+    is Expression.LetE -> "Let(typeIe=${this.typeExpr.ie}, valueIe=${this.valueExpr.ie}, bodyIe=${this.bodyExpr.ie}, ie=$ie)"
+    is Expression.Mdata -> "Mdata(exprIe=${this.expr.ie}, ie=$ie)"
+    is Expression.NatVal -> "NatVal(${this.natVal}, ie=$ie)"
+    is Expression.Proj -> "Proj(${this.typeNameExpr.toStringDetailed()}#${this.projIndex}, structIe=${this.structExpr.ie}, ie=$ie)"
+    is Expression.Sort -> "Sort(${this.level.toStringDetailed()}, ie=$ie)"
+    is Expression.StrVal -> "StrVal(len=${this.strVal.length}, ie=$ie)"
 }
 
 private enum class LazyDeltaStepKind(val priority: Int) {
@@ -263,24 +282,55 @@ private fun Expression.trySameHeadConstCongruence(
     if (leftConst.decl is Inductive.RecursorVal || rightConst.decl is Inductive.RecursorVal) {
         return null
     }
+    return true.takeIf {
+        sameHeadConstArgsDefEq(leftConst, rightConst, leftArgs, rightArgs, localCtxLeft, localCtxRight)
+    }
+}
 
-    if (leftConst.levels.size != rightConst.levels.size) {
-        return null
-    }
-    if (leftArgs.size != rightArgs.size) {
-        return null
-    }
+context(env: Environment)
+private fun sameHeadConstArgsDefEq(
+    leftConst: Expression.Const,
+    rightConst: Expression.Const,
+    leftArgs: List<Expression>,
+    rightArgs: List<Expression>,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean {
+    if (leftConst.levels.size != rightConst.levels.size) return false
+    if (leftArgs.size != rightArgs.size) return false
     val levelsMatch = leftConst.levels == rightConst.levels ||
             leftConst.levels.zip(rightConst.levels).all { levelPair ->
                 levelPair.first.isEqual(levelPair.second)
             }
-    if (!levelsMatch) return null
+    if (!levelsMatch) return false
 
-    for (index in leftArgs.lastIndex downTo 0) {
-        if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
-            return null
+    var leftType: Expression = leftConst.decl.typeExpr.instantiateLevelParams(leftConst.composeLevelSubst(emptyMap()))
+    var rightType: Expression =
+        rightConst.decl.typeExpr.instantiateLevelParams(rightConst.composeLevelSubst(emptyMap()))
+
+    for (index in leftArgs.indices) {
+        val leftForall = leftType.whnf(localCtx = localCtxLeft) as? Expression.ForallE ?: return false
+        val rightForall = rightType.whnf(localCtx = localCtxRight) as? Expression.ForallE ?: return false
+        val leftArg = leftArgs[index]
+        val rightArg = rightArgs[index]
+        val leftBinderSort = leftForall.typeExpr.inferSort(localCtx = localCtxLeft)
+        val rightBinderSort = rightForall.typeExpr.inferSort(localCtx = localCtxRight)
+        val argsMatch = if (
+            leftBinderSort.isLessOrEqual(Level.Zero) &&
+            rightBinderSort.isLessOrEqual(Level.Zero)
+        ) {
+            leftArg == rightArg ||
+                    leftArg.sameShape(rightArg) ||
+                    leftArg.tryProofIrrelevanceDefEq(rightArg, localCtxLeft, localCtxRight) ||
+                    leftArg.isDefEq(rightArg, localCtxLeft, localCtxRight)
+        } else {
+            leftArg.isDefEq(rightArg, localCtxLeft, localCtxRight)
         }
+        if (!argsMatch) return false
+        leftType = leftForall.bodyExpr.applySubst(listOf(leftArg))
+        rightType = rightForall.bodyExpr.applySubst(listOf(rightArg))
     }
+
     return true
 }
 
@@ -292,13 +342,32 @@ private fun Expression.App.isDefEqWhnfSpine(
 ): Boolean {
     val leftSpine = this.unfoldApp()
     val rightSpine = other.unfoldApp()
+    val leftHead = leftSpine.first
+    val rightHead = rightSpine.first
     val leftArgs = leftSpine.second
     val rightArgs = rightSpine.second
     if (leftArgs.size != rightArgs.size) {
         return this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
                 this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
     }
-    if (!leftSpine.first.isDefEq(rightSpine.first, localCtxLeft, localCtxRight)) {
+    if (
+        leftArgs.size >= 2 &&
+        leftHead != rightHead &&
+        leftHead is Expression.Const &&
+        rightHead is Expression.Const &&
+        leftHead.decl is Declaration &&
+        rightHead.decl is Declaration &&
+        this.tryProofIrrelevanceDefEq(other, localCtxLeft, localCtxRight)
+    ) {
+        return true
+    }
+    if (leftHead is Expression.Const && rightHead is Expression.Const) {
+        if (!sameHeadConstArgsDefEq(leftHead, rightHead, leftArgs, rightArgs, localCtxLeft, localCtxRight)) {
+            return false
+        }
+        return true
+    }
+    if (!leftHead.isDefEq(rightHead, localCtxLeft, localCtxRight)) {
         return false
     }
     for (index in leftArgs.lastIndex downTo 0) {
@@ -480,40 +549,39 @@ private fun Expression.isDefEqWhnf(
                 this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
 
     is Expression.Bvar if other is Expression.Bvar -> {
-        if (this.bvar == other.bvar) {
-            true
-        } else if (this.bvar < localCtxLeft.size && other.bvar < localCtxRight.size) {
-            val thisType = localCtxLeft[this.bvar].lift(this.bvar + 1)
-            val otherType = localCtxRight[other.bvar].lift(other.bvar + 1)
-            thisType.isDefEq(otherType, localCtxLeft, localCtxRight) ||
-                    this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
-        } else {
-            false
-        }
+        this.bvar == other.bvar
     }
 
     is Expression.Const if other is Expression.Const ->
-        this.name == other.name &&
+        (this.name == other.name &&
                 this.levels.size == other.levels.size &&
                 (this.levels == other.levels ||
-                        this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) })
+                        this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) }))
 
     is Expression.ForallE if other is Expression.ForallE -> {
-        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
-                this.bodyExpr.isDefEq(
-                    other.bodyExpr,
-                    listOf(this.typeExpr) + localCtxLeft,
-                    listOf(other.typeExpr) + localCtxRight,
-                )
+        if (!this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight)) {
+            false
+        } else {
+            val sharedType = this.typeExpr
+            this.bodyExpr.isDefEq(
+                other.bodyExpr,
+                listOf(sharedType) + localCtxLeft,
+                listOf(sharedType) + localCtxRight,
+            )
+        }
     }
 
     is Expression.Lam if other is Expression.Lam -> {
-        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
-                this.bodyExpr.isDefEq(
-                    other.bodyExpr,
-                    listOf(this.typeExpr) + localCtxLeft,
-                    listOf(other.typeExpr) + localCtxRight,
-                )
+        if (!this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight)) {
+            false
+        } else {
+            val sharedType = this.typeExpr
+            this.bodyExpr.isDefEq(
+                other.bodyExpr,
+                listOf(sharedType) + localCtxLeft,
+                listOf(sharedType) + localCtxRight,
+            )
+        }
     }
 
     is Expression.Lam ->
@@ -574,16 +642,17 @@ private fun Expression.tryCompareWithFunction(
     val leftDomain = if (leftLam != null) {
         leftLam.typeExpr
     } else {
-        (this.inferType(localCtx = localCtxLeft).reduce(localCtx = localCtxLeft) as? Expression.ForallE)?.typeExpr
+        (this.inferType(localCtx = localCtxLeft).whnf(localCtx = localCtxLeft) as? Expression.ForallE)?.typeExpr
             ?: return null
     }
     val rightDomain = if (rightLam != null) {
         rightLam.typeExpr
     } else {
-        (other.inferType(localCtx = localCtxRight).reduce(localCtx = localCtxRight) as? Expression.ForallE)?.typeExpr
+        (other.inferType(localCtx = localCtxRight).whnf(localCtx = localCtxRight) as? Expression.ForallE)?.typeExpr
             ?: return null
     }
     if (!leftDomain.isDefEq(rightDomain, localCtxLeft, localCtxRight)) return null
+    val sharedDomain = leftDomain
 
     val binderExpr = env.addCustomExpr { Expression.Bvar(0, it) }
     val leftUnderBinder = if (leftLam != null) {
@@ -600,8 +669,8 @@ private fun Expression.tryCompareWithFunction(
     }
     return leftUnderBinder.isDefEq(
         rightUnderBinder,
-        listOf(leftDomain) + localCtxLeft,
-        listOf(rightDomain) + localCtxRight,
+        listOf(sharedDomain) + localCtxLeft,
+        listOf(sharedDomain) + localCtxRight,
     )
 }
 
@@ -1774,6 +1843,20 @@ private fun Expression.tryProofIrrelevanceDefEq(
     if (!this.hasNoUnboundBvars(localCtxLeft.size) || !other.hasNoUnboundBvars(localCtxRight.size)) {
         return false
     }
+    val leftCtxId = env.localCtxId(localCtxLeft)
+    val rightCtxId = env.localCtxId(localCtxRight)
+    val cacheKey = if (
+        this.ie < other.ie ||
+        (this.ie == other.ie && leftCtxId <= rightCtxId)
+    ) {
+        DefEqCacheKey(this.ie, other.ie, leftCtxId, rightCtxId)
+    } else {
+        DefEqCacheKey(other.ie, this.ie, rightCtxId, leftCtxId)
+    }
+    if (!env.proofIrrelInProgress.add(cacheKey)) {
+        return false
+    }
+    try {
     val thisTy = this.inferType(localCtx = localCtxLeft)
     val otherTy = other.inferType(localCtx = localCtxRight)
     val thisSort = thisTy.inferSort(localCtx = localCtxLeft)
@@ -1782,6 +1865,9 @@ private fun Expression.tryProofIrrelevanceDefEq(
         return false
     }
     return thisTy.isDefEq(otherTy, localCtxLeft, localCtxRight)
+    } finally {
+        env.proofIrrelInProgress.remove(cacheKey)
+    }
 }
 
 context(env: Environment)
@@ -1790,7 +1876,7 @@ fun Expression.inferSort(
     localCtx: List<Expression> = emptyList(),
 ): Level {
     val tyWhnf = this.inferType(levelSubst, localCtx)
-    val whnfTyExpr = tyWhnf.reduce(localCtx = localCtx)
+    val whnfTyExpr = tyWhnf.whnf(localCtx = localCtx)
     val sort = whnfTyExpr as? Expression.Sort
         ?: error("Expected Sort type for ${this.toStringDetailed()}, got ${whnfTyExpr.toStringDetailed()}")
     return sort.level
