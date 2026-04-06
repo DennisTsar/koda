@@ -69,8 +69,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 
                     is Declaration.Quot -> {} // no extra checks needed
                     is Declaration.Thm -> {
-                        val typeChecks = typeCheckDeclaration(data.valueExpr, data.typeExpr)
-                        check(typeChecks) {
+                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
                             "value not defeq to type for ${data.name.toStringDetailed()} $data"
                         }
                         check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
@@ -154,6 +153,11 @@ fun Expression.isDefEq(
 
     val result = try {
         if (leftExpr == rightExpr) {
+            true
+        } else if (
+            (leftExpr is Expression.Lam || rightExpr is Expression.Lam) &&
+            leftExpr.tryProofIrrelevanceDefEq(rightExpr, localCtxLeft, localCtxRight)
+        ) {
             true
         } else {
             val lazyDeltaEq = leftExpr.tryLazyDeltaDefEq(rightExpr, localCtxLeft, localCtxRight)
