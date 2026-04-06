@@ -10,6 +10,7 @@ fun typeCheck(data: Sequence<ExportType>) {
 
 context(env: Environment)
 fun _typeCheck(rawData: Sequence<ExportType>) {
+    val debugTimingRanges = emptyList<IntRange>()
     rawData.forEachIndexed { index, data ->
         //i: progress = 1000000 13.462160800s
         //i: progress = 1100000 24.175118s
@@ -19,13 +20,15 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         //...
         //i: progress = 1122611 36.558250900s
         //i: progress = 1122612 48.691833300s
-        if (index != 0 && index % 100_000 == 0) {
+        if (index != 0 && index > 22681000 && index % 10_00 == 0) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
             println(" (checked ${env.counter} declarations)")
         }
-        if (env.shouldLog) {
+        val shouldTimeDeclaration = data is Declaration && debugTimingRanges.any { index in it }
+        if (env.shouldLog || shouldTimeDeclaration) {
             println("started: ${env.clock.elapsedNow()}")
             val dataName = (data as? NamedDecl)?.name?.toStringDetailed() ?: data::class.simpleName
+            println("i: index=$index")
             println("$dataName $data")
             println("---")
         }
@@ -52,29 +55,35 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 //                println("found type: ${data.typeExpr.toStringDetailed()}")
                 val declaredTypeSortLevel = data.typeExpr.inferSort()
 
-                when (data) {
-                    is Declaration.Axiom -> {} // no extra checks needed
-                    is Declaration.Def -> {
-                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                if (index > 22681000) {
+                    val debugStart = env.clock.elapsedNow()
+                    when (data) {
+                        is Declaration.Axiom -> {} // no extra checks needed
+                        is Declaration.Def -> {
+                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                            }
+                        }
+
+                        is Declaration.Opaque -> {
+                            // TODO: treat opqaue differently
+                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                            }
+                        }
+
+                        is Declaration.Quot -> {} // no extra checks needed
+                        is Declaration.Thm -> {
+                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                            }
+                            check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
+                                "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
+                            }
                         }
                     }
-
-                    is Declaration.Opaque -> {
-                        // TODO: treat opqaue differently
-                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                        }
-                    }
-
-                    is Declaration.Quot -> {} // no extra checks needed
-                    is Declaration.Thm -> {
-                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                        }
-                        check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
-                            "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
-                        }
+                    if (shouldTimeDeclaration) {
+                        println("i: checked declaration at index=$index start=$debugStart end=${env.clock.elapsedNow()}")
                     }
                 }
 
@@ -108,15 +117,29 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     if (env.shouldLog) println("found value: ${value/*.toStringDetailed()*/}")
-    val inferredValueType = value.inferType() // MEM: 200 MB
+    return value.checkHasType(expectedType)
+}
+
+context(env: Environment)
+private fun Expression.checkHasType(
+    expectedType: Expression,
+    localCtx: List<Expression> = emptyList(),
+): Boolean {
+    val expectedTypeWhnf = expectedType.whnf(localCtx = localCtx)
+    if (this is Expression.Lam && expectedTypeWhnf is Expression.ForallE) {
+        val _ = this.typeExpr.inferSort(localCtx = localCtx)
+        if (!this.typeExpr.isDefEq(expectedTypeWhnf.typeExpr, localCtx, localCtx)) {
+            return false
+        }
+        return this.bodyExpr.checkHasType(
+            expectedTypeWhnf.bodyExpr,
+            listOf(this.typeExpr) + localCtx,
+        )
+    }
+
+    val inferredValueType = this.inferType(localCtx = localCtx)
     if (env.shouldLog) println("inferred type of value: ${inferredValueType/*.toStringDetailed()*/}")
-    val actualType = inferredValueType
-    // made it to: Def(_name=2098, _levelParams=[22, 6], type=12166, value=12236, hints=Abbrev, safety=Safe, all=[2098])
-    // before Java heap space error, ran for 1 min 21 sec
-    //    return Blah.isDefEq(Everything(env, expectedType, actualType, levelSubstRight = inferredValueType.levelSubst))
-    // made it to: Def(_name=1944, _levelParams=[6], type=10830, value=10837, hints=Abbrev, safety=Safe, all=[1944])
-    // before stack overflow, ran for 30 sec
-    return expectedType.isDefEq(actualType) // MEM: 13 GB
+    return expectedType.isDefEq(inferredValueType, localCtx, localCtx)
 }
 
 context(env: Environment)
@@ -161,21 +184,25 @@ fun Expression.isDefEq(
             val lazyDeltaEq = leftExpr.tryLazyDeltaDefEq(rightExpr, localCtxLeft, localCtxRight)
             if (lazyDeltaEq != null) {
                 lazyDeltaEq
-            } else if (leftExpr.sameShape(rightExpr)) {
-                true
             } else {
-                val leftWhnfExpr = if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce(localCtx = localCtxLeft)
-                val rightWhnfExpr =
-                    if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce(localCtx = localCtxRight)
-                if (leftWhnfExpr == rightWhnfExpr) {
-                    true
-                } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
+                val sameShape = leftExpr.sameShape(rightExpr)
+                if (sameShape) {
                     true
                 } else {
-                    val tempLog = env.shouldLog
-                    env.shouldLog = false
-                    leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
-                        .also { env.shouldLog = tempLog }
+                    val leftWhnfExpr =
+                        if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce(localCtx = localCtxLeft)
+                    val rightWhnfExpr =
+                        if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce(localCtx = localCtxRight)
+                    if (leftWhnfExpr == rightWhnfExpr) {
+                        true
+                    } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
+                        true
+                    } else {
+                        val tempLog = env.shouldLog
+                        env.shouldLog = false
+                        leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
+                            .also { env.shouldLog = tempLog }
+                    }
                 }
             }
         }
@@ -216,17 +243,44 @@ private enum class LazyDeltaChoice {
 }
 
 context(env: Environment)
+private fun Expression.matchesLazyDeltaHeadOf(other: Expression): Boolean {
+    val thisHead = this.asAppSpine().first
+    val otherHead = other.asAppSpine().first
+    return when {
+        thisHead == otherHead -> true
+        thisHead is Expression.Const && otherHead is Expression.Const ->
+            thisHead.name == otherHead.name &&
+                    thisHead.levels.size == otherHead.levels.size &&
+                    (thisHead.levels == otherHead.levels ||
+                            thisHead.levels.zip(otherHead.levels).all { [l1, l2] -> l1.isEqual(l2) })
+
+        else -> false
+    }
+}
+
+context(env: Environment)
 private fun Expression.tryLazyDeltaDefEq(
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
+    val leftSpine = this.asAppSpine()
+    val rightSpine = other.asAppSpine()
     this.trySameHeadConstCongruence(other, localCtxLeft, localCtxRight)?.let { return it }
     if (!this.shouldTryLazyDeltaWith(other)) return null
 
     val leftStep = this.tryLazyDeltaStep()
     val rightStep = other.tryLazyDeltaStep()
-    return when (chooseLazyDeltaSide(leftStep, rightStep)) {
+    val choice = when {
+        leftStep?.unfoldedExpr?.matchesLazyDeltaHeadOf(other) == true &&
+                rightStep?.unfoldedExpr?.matchesLazyDeltaHeadOf(this) != true -> LazyDeltaChoice.Left
+
+        rightStep?.unfoldedExpr?.matchesLazyDeltaHeadOf(this) == true &&
+                leftStep?.unfoldedExpr?.matchesLazyDeltaHeadOf(other) != true -> LazyDeltaChoice.Right
+
+        else -> chooseLazyDeltaSide(leftStep, rightStep)
+    }
+    return when (choice) {
         LazyDeltaChoice.Left ->
             true.takeIf { leftStep!!.unfoldedExpr.isDefEq(other, localCtxLeft, localCtxRight) }
 
@@ -293,6 +347,19 @@ private fun Expression.trySameHeadConstCongruence(
                 levelPair.first.isEqual(levelPair.second)
             }
     if (!levelsMatch) return null
+    val shouldTryOptimized = leftArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true ||
+            rightArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true
+    if (shouldTryOptimized) {
+        val optimized = compareAppArgumentsWithKnownFunctionTypes(
+            leftConst,
+            leftArgs,
+            rightConst,
+            rightArgs,
+            localCtxLeft,
+            localCtxRight,
+        )
+        if (optimized == true) return true
+    }
 
     for (index in leftArgs.lastIndex downTo 0) {
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
@@ -300,6 +367,15 @@ private fun Expression.trySameHeadConstCongruence(
         }
     }
     return true
+}
+
+context(env: Environment)
+private fun Expression.hasTheoremOrOpaqueHead(): Boolean {
+    val headConst = this.asAppSpine().first as? Expression.Const ?: return false
+    return when (headConst.decl) {
+        is Declaration.Opaque, is Declaration.Thm -> true
+        else -> false
+    }
 }
 
 context(env: Environment)
@@ -319,10 +395,62 @@ private fun Expression.App.isDefEqWhnfSpine(
     if (!leftSpine.first.isDefEq(rightSpine.first, localCtxLeft, localCtxRight)) {
         return false
     }
+    val shouldTryOptimized = leftSpine.first.sameShape(rightSpine.first) &&
+            (leftArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true ||
+                    rightArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true)
+    if (shouldTryOptimized) {
+        val optimized = compareAppArgumentsWithKnownFunctionTypes(
+            leftSpine.first,
+            leftArgs,
+            rightSpine.first,
+            rightArgs,
+            localCtxLeft,
+            localCtxRight,
+        )
+        if (optimized == true) return true
+    }
     for (index in leftArgs.lastIndex downTo 0) {
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
             return false
         }
+    }
+    return true
+}
+
+context(env: Environment)
+private fun compareAppArgumentsWithKnownFunctionTypes(
+    leftHead: Expression,
+    leftArgs: List<Expression>,
+    rightHead: Expression,
+    rightArgs: List<Expression>,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean? {
+    if (leftArgs.size != rightArgs.size) return null
+
+    var leftFnType = leftHead.inferType(localCtx = localCtxLeft)
+    var rightFnType = rightHead.inferType(localCtx = localCtxRight)
+    for (index in leftArgs.indices) {
+        val leftBinder = leftFnType.whnf(localCtx = localCtxLeft) as? Expression.ForallE ?: return null
+        val rightBinder = rightFnType.whnf(localCtx = localCtxRight) as? Expression.ForallE ?: return null
+        val leftArg = leftArgs[index]
+        val rightArg = rightArgs[index]
+
+        val domainsAreProps =
+            leftBinder.typeExpr.inferSort(localCtx = localCtxLeft).isLessOrEqual(Level.Zero) &&
+                    rightBinder.typeExpr.inferSort(localCtx = localCtxRight).isLessOrEqual(Level.Zero)
+        val argsMatch = when {
+            leftArg == rightArg -> true
+
+            domainsAreProps &&
+                    leftBinder.typeExpr.isDefEq(rightBinder.typeExpr, localCtxLeft, localCtxRight) -> true
+
+            else -> leftArg.isDefEq(rightArg, localCtxLeft, localCtxRight)
+        }
+        if (!argsMatch) return false
+
+        leftFnType = leftBinder.bodyExpr.applySubst(listOf(leftArg))
+        rightFnType = rightBinder.bodyExpr.applySubst(listOf(rightArg))
     }
     return true
 }
@@ -465,39 +593,54 @@ private fun Expression.isWhnfByShape(): Boolean = when (this) {
 
 context(env: Environment)
 private fun Expression.sameShape(other: Expression): Boolean = when (this) {
-    else if this.ie == other.ie -> true
-    is Expression.Bvar if other is Expression.Bvar -> this.bvar == other.bvar
-    is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
-    is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
-    is Expression.Sort if other is Expression.Sort -> this.level == other.level//this.level.sameShape(other.level)
-    is Expression.Const if other is Expression.Const ->
-        this.name == other.name &&
-                this.levels.size == other.levels.size &&
-                this.levels.zip(other.levels).all { it.first == it.second }
+    else -> {
+        val leftId = this.ie
+        val rightId = other.ie
+        val cacheKey = if (leftId <= rightId) {
+            (leftId.toLong() shl 32) xor (rightId.toLong() and 0xffffffffL)
+        } else {
+            (rightId.toLong() shl 32) xor (leftId.toLong() and 0xffffffffL)
+        }
+        env.sameShapeCache[cacheKey]?.let { return it }
 
-    is Expression.App if other is Expression.App ->
-        this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr) // MEM: 160 MB
+        val result = when {
+            leftId == rightId -> true
+            this is Expression.Bvar && other is Expression.Bvar -> this.bvar == other.bvar
+            this is Expression.NatVal && other is Expression.NatVal -> this.natVal == other.natVal
+            this is Expression.StrVal && other is Expression.StrVal -> this.strVal == other.strVal
+            this is Expression.Sort && other is Expression.Sort -> this.level == other.level
+            this is Expression.Const && other is Expression.Const ->
+                this.name == other.name &&
+                        this.levels.size == other.levels.size &&
+                        this.levels.zip(other.levels).all { it.first == it.second }
 
-    is Expression.ForallE if other is Expression.ForallE ->
-        this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
+            this is Expression.App && other is Expression.App ->
+                this.fnExpr.sameShape(other.fnExpr) && this.argExpr.sameShape(other.argExpr)
 
-    is Expression.Lam if other is Expression.Lam ->
-        this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
+            this is Expression.ForallE && other is Expression.ForallE ->
+                this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
 
-    is Expression.LetE if other is Expression.LetE ->
-        this.typeExpr.sameShape(other.typeExpr) &&
-                this.valueExpr.sameShape(other.valueExpr) &&
-                this.bodyExpr.sameShape(other.bodyExpr)
+            this is Expression.Lam && other is Expression.Lam ->
+                this.typeExpr.sameShape(other.typeExpr) && this.bodyExpr.sameShape(other.bodyExpr)
 
-    is Expression.Mdata if other is Expression.Mdata ->
-        this.expr.sameShape(other.expr)
+            this is Expression.LetE && other is Expression.LetE ->
+                this.typeExpr.sameShape(other.typeExpr) &&
+                        this.valueExpr.sameShape(other.valueExpr) &&
+                        this.bodyExpr.sameShape(other.bodyExpr)
 
-    is Expression.Proj if other is Expression.Proj ->
-        this.typeNameExpr == other.typeNameExpr &&
-                this.projIndex == other.projIndex &&
-                this.structExpr.sameShape(other.structExpr)
+            this is Expression.Mdata && other is Expression.Mdata ->
+                this.expr.sameShape(other.expr)
 
-    else -> false
+            this is Expression.Proj && other is Expression.Proj ->
+                this.typeNameExpr == other.typeNameExpr &&
+                        this.projIndex == other.projIndex &&
+                        this.structExpr.sameShape(other.structExpr)
+
+            else -> false
+        }
+        env.sameShapeCache[cacheKey] = result
+        result
+    }
 }
 
 context(env: Environment)
@@ -789,6 +932,42 @@ private fun Expression.isNatZeroCtorConst(): Boolean {
 }
 
 context(env: Environment)
+private fun Expression.inferTypeAfterZetaLets(
+    pendingSubst: List<Expression>,
+    levelSubst: Map<Int, Level>,
+    localCtx: List<Expression>,
+): Expression {
+    var currentExpr: Expression = this
+    var currentSubst = pendingSubst
+    while (currentExpr is Expression.LetE) {
+        val letExpr = currentExpr
+        val letTypeExpr = if (currentSubst.isEmpty()) {
+            letExpr.typeExpr
+        } else {
+            letExpr.typeExpr.applySubst(currentSubst)
+        }
+        val _ = letTypeExpr.inferSort(levelSubst, localCtx)
+
+        val rawValueExpr = letExpr.valueExpr
+        val letValueExpr = if (currentSubst.isEmpty()) {
+            rawValueExpr
+        } else {
+            rawValueExpr.applySubst(currentSubst)
+        }
+        val expectedTypeExpr = letTypeExpr.instantiateLevelParams(levelSubst)
+        check(letValueExpr.checkHasType(expectedTypeExpr, localCtx)) {
+            "Let value type mismatch in ${letExpr.toStringDetailed()}: expected ${expectedTypeExpr.toStringDetailed()}"
+        }
+
+        currentSubst = listOf(letValueExpr) + currentSubst
+        currentExpr = letExpr.bodyExpr
+    }
+
+    val instantiatedExpr = if (currentSubst.isEmpty()) currentExpr else currentExpr.applySubst(currentSubst)
+    return instantiatedExpr.inferType(levelSubst, localCtx)
+}
+
+context(env: Environment)
 fun Expression.inferType(
     levelSubst: Map<Int, Level> = emptyMap(),
     localCtx: List<Expression> = emptyList()
@@ -823,7 +1002,7 @@ fun Expression.inferType(
 //        }
             is Expression.App -> {
                 val fnTy0 = this.fnExpr.inferType(levelSubst, localCtx)
-                val fnTy = fnTy0.reduce(localCtx = localCtx)
+                val fnTy = fnTy0.whnf(localCtx = localCtx)
                 check(fnTy is Expression.ForallE) {
                     "Expected function type for app ${this.toStringDetailed()}, got ${fnTy.toStringDetailed()}"
                 }
@@ -879,19 +1058,12 @@ fun Expression.inferType(
                 // We just need to check that the type is a sort (do we?), we don't need the exact level (potential optimization?)
                 val _ = this.typeExpr.inferSort(levelSubst, localCtx)
 
-                val valueTyWhnf = this.valueExpr.inferType(levelSubst, localCtx)
                 val expectedTypeExpr = this.typeExpr.instantiateLevelParams(levelSubst)
-                check(expectedTypeExpr.isDefEq(valueTyWhnf, localCtx, localCtx)) {
-                    "Let value type mismatch in ${this.toStringDetailed()}: expected ${expectedTypeExpr.toStringDetailed()}, got ${
-                        valueTyWhnf.toStringDetailed()
-                    }"
+                check(this.valueExpr.checkHasType(expectedTypeExpr, localCtx)) {
+                    "Let value type mismatch in ${this.toStringDetailed()}: expected ${expectedTypeExpr.toStringDetailed()}"
                 }
 
-                // Typechecking lets through localCtx alone loses let-definitional equality for nested dependent lets.
-                // Use zeta-style inference directly on the instantiated body.
-                this.bodyExpr
-                    .applySubst(listOf(this.valueExpr))
-                    .inferType(levelSubst, localCtx)
+                this.bodyExpr.inferTypeAfterZetaLets(listOf(this.valueExpr), levelSubst, localCtx)
             }
 
             is Expression.Mdata -> TODO()
@@ -1291,7 +1463,7 @@ private fun Expression.tryUnfoldReducibleHeadOnce(levelSubst: Map<Int, Level> = 
 context(env: Environment)
 private fun Expression.Proj.inferProjectionType(levelSubst: Map<Int, Level>, localCtx: List<Expression>): Expression {
     val structType0 = this.structExpr.inferType(levelSubst, localCtx)
-    val structTypeExpr = structType0.reduce(localCtx = localCtx)
+    val structTypeExpr = structType0.whnf(localCtx = localCtx)
     val [structTypeHead, structTypeArgs] = structTypeExpr.unfoldApp()
     val structTypeConst = structTypeHead as? Expression.Const
         ?: error("Projection ${this.toStringDetailed()} expects structure type, got ${structTypeExpr.toStringDetailed()}")
@@ -1922,7 +2094,7 @@ fun Expression.inferSort(
     localCtx: List<Expression> = emptyList(),
 ): Level {
     val tyWhnf = this.inferType(levelSubst, localCtx)
-    val whnfTyExpr = tyWhnf.reduce(localCtx = localCtx)
+    val whnfTyExpr = tyWhnf.whnf(localCtx = localCtx)
     val sort = whnfTyExpr as? Expression.Sort
         ?: error("Expected Sort type for ${this.toStringDetailed()}, got ${whnfTyExpr.toStringDetailed()}")
     return sort.level
@@ -1987,7 +2159,38 @@ private fun Expression.containsLooseBvarZero(depth: Int = 0): Boolean {
 }
 
 context(env: Environment)
+private fun Expression.maxLooseBVarIndex(): Int {
+    env.maxLooseBVarIndexCache[this.ie]?.let { return it }
+
+    fun Int.descendBinder(): Int = if (this < 0) -1 else this - 1
+
+    val result = when (this) {
+        is Expression.Bvar -> this.bvar
+        is Expression.App -> maxOf(this.fnExpr.maxLooseBVarIndex(), this.argExpr.maxLooseBVarIndex())
+        is Expression.ForallE -> maxOf(
+            this.typeExpr.maxLooseBVarIndex(),
+            this.bodyExpr.maxLooseBVarIndex().descendBinder()
+        )
+
+        is Expression.Lam -> maxOf(this.typeExpr.maxLooseBVarIndex(), this.bodyExpr.maxLooseBVarIndex().descendBinder())
+        is Expression.LetE -> maxOf(
+            this.typeExpr.maxLooseBVarIndex(),
+            this.valueExpr.maxLooseBVarIndex(),
+            this.bodyExpr.maxLooseBVarIndex().descendBinder(),
+        )
+
+        is Expression.Mdata -> this.expr.maxLooseBVarIndex()
+        is Expression.Proj -> this.structExpr.maxLooseBVarIndex()
+        is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> -1
+    }
+
+    env.maxLooseBVarIndexCache[this.ie] = result
+    return result
+}
+
+context(env: Environment)
 private fun Expression.hasNoUnboundBvars(localCtxSize: Int, depth: Int = 0): Boolean {
+    if (this.maxLooseBVarIndex() < depth + localCtxSize) return true
     return when (this) {
         is Expression.Bvar -> this.bvar < depth + localCtxSize
         is Expression.App -> this.fnExpr.hasNoUnboundBvars(localCtxSize, depth) &&
@@ -2167,82 +2370,98 @@ private fun Expression.rewriteBinders(
     depth: Int = 0,
     rewriteBvar: (Expression.Bvar, Int) -> Expression
 ): Expression { // MEM: 11 GB
-    return when (this) {
-        is Expression.Bvar -> rewriteBvar(this, depth)
+    val cache = mutableMapOf<Long, Expression>()
 
-        is Expression.App -> {
-            val newFn = this.fnExpr.rewriteBinders(depth, rewriteBvar) // MEM: 9.7 GB
-            val newArg = this.argExpr.rewriteBinders(depth, rewriteBvar) // MEM: 9.5 GB
-            if (newFn === this.fnExpr && newArg === this.argExpr) {
-                this
-            } else {
-                env.addCustomExpr { // MEM: 5.4 GB
-                    this.copy(fn = newFn.ie, arg = newArg.ie, ie = it) // MEM: 1.3 GB
-                }
-            }
+    fun Expression.rewriteAt(currentDepth: Int): Expression {
+        val cacheKey = (currentDepth.toLong() shl 32) xor (this.ie.toLong() and 0xffffffffL)
+        cache[cacheKey]?.let { return it }
+        if (this.maxLooseBVarIndex() < currentDepth) {
+            cache[cacheKey] = this
+            return this
         }
 
-        is Expression.ForallE -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 1.3 GB
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar) // MEM: 2 GB
-            if (newType === this.typeExpr && newBody === this.bodyExpr) {
-                this
-            } else {
-                env.addCustomExpr {// MEM: 120 MB
-                    this.copy(type = newType.ie, body = newBody.ie, ie = it)
+        val result = when (this) {
+            is Expression.Bvar -> rewriteBvar(this, currentDepth)
+
+            is Expression.App -> {
+                val newFn = this.fnExpr.rewriteAt(currentDepth) // MEM: 9.7 GB
+                val newArg = this.argExpr.rewriteAt(currentDepth) // MEM: 9.5 GB
+                if (newFn === this.fnExpr && newArg === this.argExpr) {
+                    this
+                } else {
+                    env.addCustomExpr { // MEM: 5.4 GB
+                        this.copy(fn = newFn.ie, arg = newArg.ie, ie = it) // MEM: 1.3 GB
+                    }
                 }
             }
-        }
 
-        is Expression.Lam -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 5.9 GB
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar) // MEM: 9.6 GB
-            if (newType === this.typeExpr && newBody === this.bodyExpr) {
-                this
-            } else {
-                env.addCustomExpr { // MEM: 800 MB
-                    this.copy(type = newType.ie, body = newBody.ie, ie = it) // MEM: 180 MB
+            is Expression.ForallE -> {
+                val newType = this.typeExpr.rewriteAt(currentDepth) // MEM: 1.3 GB
+                val newBody = this.bodyExpr.rewriteAt(currentDepth + 1) // MEM: 2 GB
+                if (newType === this.typeExpr && newBody === this.bodyExpr) {
+                    this
+                } else {
+                    env.addCustomExpr {// MEM: 120 MB
+                        this.copy(type = newType.ie, body = newBody.ie, ie = it)
+                    }
                 }
             }
-        }
 
-        is Expression.LetE -> {
-            val newType = this.typeExpr.rewriteBinders(depth, rewriteBvar) // MEM: 110 MB
-            val newValue = this.valueExpr.rewriteBinders(depth, rewriteBvar)
-            val newBody = this.bodyExpr.rewriteBinders(depth + 1, rewriteBvar)
-            if (newType === this.typeExpr && newValue === this.valueExpr && newBody === this.bodyExpr) {
-                this
-            } else {
-                env.addCustomExpr {
-                    this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it)
+            is Expression.Lam -> {
+                val newType = this.typeExpr.rewriteAt(currentDepth) // MEM: 5.9 GB
+                val newBody = this.bodyExpr.rewriteAt(currentDepth + 1) // MEM: 9.6 GB
+                if (newType === this.typeExpr && newBody === this.bodyExpr) {
+                    this
+                } else {
+                    env.addCustomExpr { // MEM: 800 MB
+                        this.copy(type = newType.ie, body = newBody.ie, ie = it) // MEM: 180 MB
+                    }
                 }
             }
-        }
 
-        is Expression.Mdata -> {
-            val newExpr = this.expr.rewriteBinders(depth, rewriteBvar)
-            if (newExpr === this.expr) {
-                this
-            } else {
-                env.addCustomExpr {
-                    this.copy(_expr = newExpr.ie, ie = it)
+            is Expression.LetE -> {
+                val newType = this.typeExpr.rewriteAt(currentDepth) // MEM: 110 MB
+                val newValue = this.valueExpr.rewriteAt(currentDepth)
+                val newBody = this.bodyExpr.rewriteAt(currentDepth + 1)
+                if (newType === this.typeExpr && newValue === this.valueExpr && newBody === this.bodyExpr) {
+                    this
+                } else {
+                    env.addCustomExpr {
+                        this.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it)
+                    }
                 }
             }
-        }
 
-        is Expression.Proj -> {
-            val newStruct = this.structExpr.rewriteBinders(depth, rewriteBvar) // MEM: 190 MB
-            if (newStruct === this.structExpr) {
-                this
-            } else {
-                env.addCustomExpr {
-                    this.copy(struct = newStruct.ie, ie = it)
+            is Expression.Mdata -> {
+                val newExpr = this.expr.rewriteAt(currentDepth)
+                if (newExpr === this.expr) {
+                    this
+                } else {
+                    env.addCustomExpr {
+                        this.copy(_expr = newExpr.ie, ie = it)
+                    }
                 }
             }
+
+            is Expression.Proj -> {
+                val newStruct = this.structExpr.rewriteAt(currentDepth) // MEM: 190 MB
+                if (newStruct === this.structExpr) {
+                    this
+                } else {
+                    env.addCustomExpr {
+                        this.copy(struct = newStruct.ie, ie = it)
+                    }
+                }
+            }
+
+            else -> this
         }
 
-        else -> this
+        cache[cacheKey] = result
+        return result
     }
+
+    return this.rewriteAt(depth)
 }
 
 context(env: Environment)
