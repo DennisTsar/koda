@@ -85,9 +85,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 // TODO
             }
 
-            is Inductive -> {
-                checkInductive(data)
-            }
+            is Inductive -> checkInductive(data)
 
             is Meta -> {} // no-op
         }
@@ -148,7 +146,7 @@ fun Expression.isDefEq(
     }
     if (!env.defEqInProgress.add(cacheKey)) {
         env.defEqInProgressSkips += 1
-        return false
+        return env.defEqCycleAssumptionDepth > 0
     }
 
     val result = try {
@@ -187,6 +185,16 @@ fun Expression.isDefEq(
 
     env.defEqCache[cacheKey] = result
     return result
+}
+
+context(env: Environment)
+private inline fun <T> withDefEqCycleAssumptions(block: () -> T): T {
+    env.defEqCycleAssumptionDepth += 1
+    return try {
+        block()
+    } finally {
+        env.defEqCycleAssumptionDepth -= 1
+    }
 }
 
 private enum class LazyDeltaStepKind(val priority: Int) {
@@ -274,6 +282,12 @@ private fun Expression.trySameHeadConstCongruence(
     if (leftArgs.size != rightArgs.size) {
         return null
     }
+    if (
+        this.isFullyAppliedSingleCtorStructureConstructor(leftSpine, leftConst, leftArgs) &&
+        other.isFullyAppliedSingleCtorStructureConstructor(rightSpine, rightConst, rightArgs)
+    ) {
+        return null
+    }
     val levelsMatch = leftConst.levels == rightConst.levels ||
             leftConst.levels.zip(rightConst.levels).all { levelPair ->
                 levelPair.first.isEqual(levelPair.second)
@@ -311,6 +325,19 @@ private fun Expression.App.isDefEqWhnfSpine(
         }
     }
     return true
+}
+
+context(env: Environment)
+private fun Expression.isFullyAppliedSingleCtorStructureConstructor(
+    spine: Pair<Expression, List<Expression>> = this.asAppSpine(),
+    headConst: Expression.Const? = spine.first as? Expression.Const,
+    args: List<Expression> = spine.second,
+): Boolean {
+    val ctorDecl = headConst?.decl as? Inductive.ConstructorVal ?: return false
+    if (args.size != ctorDecl.numParams + ctorDecl.numFields) return false
+    val inductiveIndex = env.nameIndices[ctorDecl.inductName] ?: return false
+    val inductiveDecl = env.declarations[inductiveIndex] as? Inductive.InductiveVal ?: return false
+    return !inductiveDecl.isRec && inductiveDecl.ctors.size == 1 && inductiveDecl.numIndices == 0
 }
 
 private fun chooseLazyDeltaSide(left: LazyDeltaStep?, right: LazyDeltaStep?): LazyDeltaChoice? {
@@ -480,8 +507,16 @@ private fun Expression.isDefEqWhnf(
     localCtxRight: List<Expression>,
 ): Boolean = when (this) {
     is Expression.App if other is Expression.App ->
-        this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight) ||
-                this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
+        if (
+            this.isFullyAppliedSingleCtorStructureConstructor() &&
+            other.isFullyAppliedSingleCtorStructureConstructor()
+        ) {
+            this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight) ||
+                    this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight)
+        } else {
+            this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight) ||
+                    this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
+        }
 
     is Expression.Bvar if other is Expression.Bvar -> {
         if (this.bvar == other.bvar) {
@@ -600,6 +635,43 @@ private fun Expression.tryCompareWithFunction(
         rightLam.bodyExpr
     } else {
         val liftedRight = other.lift(1)
+        env.addCustomExpr { Expression.App(liftedRight.ie, binderExpr.ie, it) }
+    }
+    return withDefEqCycleAssumptions {
+        leftUnderBinder.isDefEq(
+            rightUnderBinder,
+            listOf(leftDomain) + localCtxLeft,
+            listOf(rightDomain) + localCtxRight,
+        )
+    }
+}
+
+context(env: Environment)
+private fun Expression.tryCompareWithKnownFunctionType(
+    other: Expression,
+    leftDomain: Expression,
+    rightDomain: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean? {
+    val leftReduced = this.reduce(localCtx = localCtxLeft)
+    val rightReduced = other.reduce(localCtx = localCtxRight)
+    val leftLam = leftReduced as? Expression.Lam
+    val rightLam = rightReduced as? Expression.Lam
+    if (leftLam == null && rightLam == null) return null
+    if (!leftDomain.isDefEq(rightDomain, localCtxLeft, localCtxRight)) return null
+
+    val binderExpr = env.addCustomExpr { Expression.Bvar(0, it) }
+    val leftUnderBinder = if (leftLam != null) {
+        leftLam.bodyExpr
+    } else {
+        val liftedLeft = leftReduced.lift(1)
+        env.addCustomExpr { Expression.App(liftedLeft.ie, binderExpr.ie, it) }
+    }
+    val rightUnderBinder = if (rightLam != null) {
+        rightLam.bodyExpr
+    } else {
+        val liftedRight = rightReduced.lift(1)
         env.addCustomExpr { Expression.App(liftedRight.ie, binderExpr.ie, it) }
     }
     return leftUnderBinder.isDefEq(
@@ -1747,9 +1819,37 @@ private fun Expression.tryStructureEtaDefEq(
         val constructorDecl =
             env.declarations[structureDecl.ctors.single()] as? Inductive.ConstructorVal ?: return false
         if (constructorDecl.numParams != structureDecl.numParams) return false
+        fun Expression.constructorFieldArgsOrNull(): List<Expression>? {
+            val [headExpr, args] = this.unfoldApp()
+            val ctorConst = headExpr as? Expression.Const ?: return null
+            val ctorHeadDecl = ctorConst.decl as? Inductive.ConstructorVal ?: return null
+            if (ctorHeadDecl.name != constructorDecl.name) return null
+            if (args.size != ctorHeadDecl.numParams + ctorHeadDecl.numFields) return null
+            return args.drop(ctorHeadDecl.numParams)
+        }
+
+        val leftCtorFieldArgs = this.constructorFieldArgsOrNull()
+        val rightCtorFieldArgs = other.constructorFieldArgsOrNull()
+        val compareDirectCtorFields = leftCtorFieldArgs != null && rightCtorFieldArgs != null
+        val leftProjectionLevelSubst = leftTypeConst.composeLevelSubst(emptyMap())
+        val rightProjectionLevelSubst = rightTypeConst.composeLevelSubst(emptyMap())
+        val leftParamArgs = leftTypeArgs.take(constructorDecl.numParams)
+        val rightParamArgs = rightTypeArgs.take(constructorDecl.numParams)
+        var leftCtorType: Expression = constructorDecl.typeExpr.instantiateLevelParams(leftProjectionLevelSubst)
+        var rightCtorType: Expression = constructorDecl.typeExpr.instantiateLevelParams(rightProjectionLevelSubst)
+        repeat(constructorDecl.numParams) { binderIndex ->
+            val leftCtorForall = leftCtorType as? Expression.ForallE ?: return false
+            val rightCtorForall = rightCtorType as? Expression.ForallE ?: return false
+            leftCtorType = leftCtorForall.bodyExpr.applySubst(listOf(leftParamArgs[binderIndex]))
+            rightCtorType = rightCtorForall.bodyExpr.applySubst(listOf(rightParamArgs[binderIndex]))
+        }
 
         if (constructorDecl.numFields == 0) return true
         repeat(constructorDecl.numFields) { fieldIndex ->
+            val leftFieldBinder = leftCtorType as? Expression.ForallE ?: return false
+            val rightFieldBinder = rightCtorType as? Expression.ForallE ?: return false
+            val leftFieldType = leftFieldBinder.typeExpr
+            val rightFieldType = rightFieldBinder.typeExpr
             val lhsProj = env.addCustomExpr {
                 Expression.Proj(
                     typeName = typeNameIndex,
@@ -1761,7 +1861,35 @@ private fun Expression.tryStructureEtaDefEq(
             val rhsProj = env.addCustomExpr {
                 Expression.Proj(typeName = typeNameIndex, idx = fieldIndex, struct = other.ie, ie = it)
             }
-            if (!lhsProj.isDefEq(rhsProj, localCtxLeft, localCtxRight)) return false
+            val lhsFieldExpr = if (compareDirectCtorFields) leftCtorFieldArgs[fieldIndex] else lhsProj
+            val rhsFieldExpr = if (compareDirectCtorFields) rightCtorFieldArgs[fieldIndex] else rhsProj
+            val fieldEq = withDefEqCycleAssumptions {
+                when {
+                    leftFieldType.inferSort(localCtx = localCtxLeft).isLessOrEqual(Level.Zero) &&
+                            rightFieldType.inferSort(localCtx = localCtxRight).isLessOrEqual(Level.Zero) -> true
+
+                    else -> {
+                        val leftFieldTypeWhnf = leftFieldType.reduce(localCtx = localCtxLeft)
+                        val rightFieldTypeWhnf = rightFieldType.reduce(localCtx = localCtxRight)
+                        val leftFieldFnType = leftFieldTypeWhnf as? Expression.ForallE
+                        val rightFieldFnType = rightFieldTypeWhnf as? Expression.ForallE
+                        if (leftFieldFnType != null && rightFieldFnType != null) {
+                            lhsFieldExpr.tryCompareWithKnownFunctionType(
+                                rhsFieldExpr,
+                                leftFieldFnType.typeExpr,
+                                rightFieldFnType.typeExpr,
+                                localCtxLeft,
+                                localCtxRight,
+                            ) ?: lhsFieldExpr.isDefEq(rhsFieldExpr, localCtxLeft, localCtxRight)
+                        } else {
+                            lhsFieldExpr.isDefEq(rhsFieldExpr, localCtxLeft, localCtxRight)
+                        }
+                    }
+                }
+            }
+            if (!fieldEq) return false
+            leftCtorType = leftFieldBinder.bodyExpr.applySubst(listOf(lhsFieldExpr))
+            rightCtorType = rightFieldBinder.bodyExpr.applySubst(listOf(rhsFieldExpr))
         }
         return true
     } finally {

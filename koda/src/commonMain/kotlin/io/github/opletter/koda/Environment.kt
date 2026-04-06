@@ -107,6 +107,7 @@ class Environment {
     var defEqCalls: Long = 0
     var defEqCacheHits: Long = 0
     var defEqInProgressSkips: Long = 0
+    var defEqCycleAssumptionDepth: Int = 0
     var inferTypeCacheHits: Long = 0
     private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
@@ -276,6 +277,7 @@ class Environment {
         defEqCalls = 0
         defEqCacheHits = 0
         defEqInProgressSkips = 0
+        defEqCycleAssumptionDepth = 0
         inferTypeCacheHits = 0
     }
 

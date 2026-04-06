@@ -1,24 +1,139 @@
 package io.github.opletter.koda
 
+private data class InductiveTypeInfo(
+    val paramTypes: List<Expression>,
+    val paramSortLevels: List<Level>,
+    val sortLevel: Level,
+)
+
 context(env: Environment)
 fun checkInductive(data: Inductive) {
-    // (1): no duplicate universe parameters
-    check(data.type.levelParams.toSet().size == data.type.levelParams.size) {
-        "Duplicate universe parameters in $data"
+    check(data.types.isNotEmpty()) {
+        "Inductive block must contain at least one type"
     }
 
-    val inductive = data.type
+    val inductives = data.types
+    val blockNumParams = inductives.first().numParams
+    val blockLevelParams = inductives.first().levelParams
+    val blockNameIndices = inductives.map { inductive ->
+        env.nameIndices[inductive.name]
+            ?: error("Inductive name index for ${inductive.name.toStringDetailed()} not found")
+    }
+    val blockNames = inductives.map { it.name }
+    val blockNameSet = blockNames.toSet()
+    check(blockNames.size == blockNameSet.size) {
+        "Inductive block has duplicate type names: ${blockNames.map { it.toStringDetailed() }}"
+    }
+
+    inductives.forEach { inductive ->
+        // (1): no duplicate universe parameters
+        check(inductive.levelParams.toSet().size == inductive.levelParams.size) {
+            "Duplicate universe parameters in $inductive"
+        }
+        check(inductive.numParams == blockNumParams) {
+            "Mutual inductive ${inductive.name.toStringDetailed()} has wrong numParams: expected $blockNumParams, got ${inductive.numParams}"
+        }
+        check(inductive.all == blockNameIndices) {
+            "Mutual inductive ${inductive.name.toStringDetailed()} has wrong all list: expected $blockNameIndices, got ${inductive.all}"
+        }
+        check(
+            inductive.levelParams.size == blockLevelParams.size &&
+                    inductive.levelParams.zip(blockLevelParams).all { [actual, expected] -> actual.isEqual(expected) }
+        ) {
+            "Mutual inductive ${inductive.name.toStringDetailed()} has mismatched universe parameters"
+        }
+    }
+
+    val inductiveInfos = inductives.associateWith { analyzeInductiveType(it) }
+    val firstInductive = inductives.first()
+    val firstInfo = inductiveInfos[firstInductive]
+        ?: error("Missing type info for ${firstInductive.name.toStringDetailed()}")
+    inductives.drop(1).forEach { inductive ->
+        val info = inductiveInfos[inductive] ?: error("Missing type info for ${inductive.name.toStringDetailed()}")
+        checkSharedParams(firstInductive, firstInfo, inductive, info)
+    }
+    val fieldSortLevels: List<Level> =
+        inductives.map { inductiveInfos.getValue(it).sortLevel } + firstInfo.paramSortLevels
+    val maxFieldSortLevel = fieldSortLevels.reduce { acc: Level, level: Level ->
+        env.addCustomMaxLevel(acc.il, level.il)
+    }
+
+    data.registerInto(env)
+    inductives.forEach { inductive ->
+        env.declTypeByName[inductive.name] = inductive.typeExpr
+    }
+
+    val ctorsByInductive = data.ctors.groupBy { it.inductName }
+    check(ctorsByInductive.keys.all { it in blockNameSet }) {
+        "Mutual inductive block has constructor for an unrelated type: ${ctorsByInductive.keys.map { it.toStringDetailed() }}"
+    }
+    inductives.forEach { inductive ->
+        val inductiveInfo = inductiveInfos[inductive]
+            ?: error("Missing type info for ${inductive.name.toStringDetailed()}")
+        val constructors = (ctorsByInductive[inductive.name] ?: emptyList()).sortedBy { it.cidx }
+        check(constructors.size == inductive.ctors.size) {
+            "Mutual inductive ${inductive.name.toStringDetailed()} has wrong constructor count: expected ${inductive.ctors.size}, got ${constructors.size}"
+        }
+        constructors.forEachIndexed { ctorIndex, constructor ->
+            check(constructor.cidx == ctorIndex) {
+                "Constructor ${constructor.name.toStringDetailed()} has wrong cidx: expected $ctorIndex, got ${constructor.cidx}"
+            }
+            val constructorNameIndex = env.nameIndices[constructor.name]
+                ?: error("Constructor name index for ${constructor.name.toStringDetailed()} not found")
+            check(inductive.ctors[ctorIndex] == constructorNameIndex) {
+                "Mutual inductive ${inductive.name.toStringDetailed()} constructor list mismatch at #$ctorIndex"
+            }
+            checkConstructor(constructor, inductive, inductiveInfo, blockNameSet, maxFieldSortLevel)
+            env.declTypeByName[constructor.name] = constructor.typeExpr
+        }
+    }
+    check(data.ctors.size == inductives.sumOf { it.ctors.size }) {
+        "Mutual inductive block has mismatched constructor inventory"
+    }
+
+    val recNamedRecCountByInductive = mutableMapOf<Name, Int>()
+    data.recs.forEach { recursor ->
+        check(recursor.all == blockNameIndices) {
+            "Recursor ${recursor.name.toStringDetailed()} has wrong all list: expected $blockNameIndices, got ${recursor.all}"
+        }
+        check(recursor.numParams == blockNumParams) {
+            "Recursor ${recursor.name.toStringDetailed()} has wrong numParams: expected $blockNumParams, got ${recursor.numParams}"
+        }
+
+        val recName = recursor.name as? Name.Str
+            ?: error("Recursor name must be a string name, got ${recursor.name}")
+        val recParent = env.names[recName.pre]
+            ?: error("Recursor ${recursor.name} has missing parent name index ${recName.pre}")
+        check(recParent in blockNameSet) {
+            "Recursor ${recursor.name.toStringDetailed()} must be in one of the mutual inductive namespaces ${blockNames.map { it.toStringDetailed() }}"
+        }
+        if (recName.str == "rec") {
+            recNamedRecCountByInductive[recParent] = recNamedRecCountByInductive.getOrDefault(recParent, 0) + 1
+        }
+        env.declTypeByName[recursor.name] = recursor.typeExpr
+    }
+    inductives.forEach { inductive ->
+        val recNamedRecCount = recNamedRecCountByInductive.getOrDefault(inductive.name, 0)
+        check(recNamedRecCount == 1) {
+            "Inductive ${inductive.name.toStringDetailed()} must declare exactly one recursor named ${inductive.name.toStringDetailed()}.rec, got $recNamedRecCount"
+        }
+    }
+    data.recs.forEach { recursor ->
+        checkRecursorRules(recursor)
+    }
+}
+
+context(env: Environment)
+private fun analyzeInductiveType(inductive: Inductive.InductiveVal): InductiveTypeInfo {
     val typeBinderCount = inductive.numParams + inductive.numIndices
     val inductiveParamTypes = mutableListOf<Expression>()
     val inductiveParamSortLevels = mutableListOf<Level>()
 
-    // One pass over the inductive type telescope.
     val typeTailWhnf = walkForalls(
         expr = inductive.typeExpr,
         expectedBinders = typeBinderCount,
         owner = "Inductive type ${inductive.name}",
     ) { binderIndex, binderType, localCtx ->
-        // Every binder domain in the type constructor must itself be a type.
         val binderSort = binderType.inferSort(localCtx = localCtx)
         if (binderIndex < inductive.numParams) {
             inductiveParamTypes += binderType
@@ -28,116 +143,101 @@ fun checkInductive(data: Inductive) {
 
     val typeSort = typeTailWhnf as? Expression.Sort
         ?: error("Inductive type must reduce to Sort after $typeBinderCount binders, got ${typeTailWhnf.toStringDetailed()}")
-    val inductiveSortLevel = typeSort.level
-    val isInductiveProp = inductiveSortLevel.isLessOrEqual(Level.Zero)
-    val maxFieldSortLevel = (listOf(inductiveSortLevel) + inductiveParamSortLevels).reduce { acc, level ->
-        env.addCustomLevel { Level.Max(listOf(acc.il, level.il), it) }
+    return InductiveTypeInfo(inductiveParamTypes, inductiveParamSortLevels, typeSort.level)
+}
+
+context(env: Environment)
+private fun checkSharedParams(
+    referenceInductive: Inductive.InductiveVal,
+    referenceInfo: InductiveTypeInfo,
+    inductive: Inductive.InductiveVal,
+    inductiveInfo: InductiveTypeInfo,
+) {
+    var referenceLocalCtx: List<Expression> = emptyList()
+    var inductiveLocalCtx: List<Expression> = emptyList()
+    repeat(referenceInductive.numParams) { paramIndex ->
+        val expectedParamType = referenceInfo.paramTypes[paramIndex]
+        val actualParamType = inductiveInfo.paramTypes[paramIndex]
+        check(actualParamType.isDefEq(expectedParamType, inductiveLocalCtx, referenceLocalCtx)) {
+            "Mutual inductive ${inductive.name.toStringDetailed()} parameter #$paramIndex type mismatch with ${referenceInductive.name.toStringDetailed()}: expected ${expectedParamType.toStringDetailed()}, got ${actualParamType.toStringDetailed()}"
+        }
+        referenceLocalCtx = listOf(expectedParamType) + referenceLocalCtx
+        inductiveLocalCtx = listOf(actualParamType) + inductiveLocalCtx
+    }
+}
+
+context(env: Environment)
+private fun checkConstructor(
+    constructor: Inductive.ConstructorVal,
+    inductive: Inductive.InductiveVal,
+    inductiveInfo: InductiveTypeInfo,
+    mutualInductiveNames: Set<Name>,
+    maxFieldSortLevel: Level,
+) {
+    check(constructor.inductName == inductive.name) {
+        "Constructor ${constructor.name.toStringDetailed()} has wrong inductive target: expected ${inductive.name.toStringDetailed()}, got ${constructor.inductName.toStringDetailed()}"
+    }
+    check(constructor.numParams == inductive.numParams) {
+        "Constructor ${constructor.name.toStringDetailed()} has wrong numParams: expected ${inductive.numParams}, got ${constructor.numParams}"
+    }
+    check(constructor.levelParams.toSet().size == constructor.levelParams.size) {
+        "Duplicate universe parameters in constructor $constructor"
+    }
+    check(
+        constructor.levelParams.size == inductive.levelParams.size &&
+                constructor.levelParams.zip(inductive.levelParams)
+                    .all { [actual, expected] -> actual.isEqual(expected) }
+    ) {
+        "Constructor ${constructor.name.toStringDetailed()} has mismatched universe parameters"
     }
 
-    data.registerInto(env)
-    env.declTypeByName[data.type.name] = data.type.typeExpr
-    val inductiveName = inductive.name as? Name.Str
-        ?: error("Inductive name must be a string name, got ${inductive.name}")
-
-    data.ctors.forEach { constructor ->
-        // Basic declaration-level consistency.
-//        check(constructor.inductName == inductive.name) {
-//            "Constructor ${constructor.name} has wrong inductive target: expected ${inductive.name}, got ${constructor.inductName}"
-//        }
-//        check(constructor.numParams == inductive.numParams) {
-//            "Constructor ${constructor.name} has wrong numParams: expected ${inductive.numParams}, got ${constructor.numParams}"
-//        }
-//        check(constructor.levelParams.toSet().size == constructor.levelParams.size) {
-//            "Duplicate universe parameters in constructor $constructor"
-//        }
-
-        val ctorBinderCount = constructor.numParams + constructor.numFields
-        val ctorTailExpr = walkForalls(
-            expr = constructor.typeExpr,
-            expectedBinders = ctorBinderCount,
-            owner = "Constructor ${constructor.name}",
-            reduceExpr = false,
-        ) { binderIndex, binderType, localCtx ->
-            if (binderIndex < constructor.numParams) {
-                // Parameter section must exactly match the inductive parameters.
-                val expectedParamType = inductiveParamTypes.getOrNull(binderIndex)
-                    ?: error("Missing expected parameter type #$binderIndex for constructor ${constructor.name}")
-                check(binderType.isDefEq(expectedParamType, localCtx, localCtx)) {
-                    "Constructor ${constructor.name} parameter #$binderIndex type mismatch: expected ${expectedParamType.toStringDetailed()}, got ${binderType.toStringDetailed()}"
-                }
-            } else {
-                // Field domain must be a type and satisfy universe + positivity checks.
-                val fieldSort = binderType.inferSort(localCtx = localCtx)
-                check(isInductiveProp || fieldSort.isLessOrEqual(maxFieldSortLevel)) {
-                    "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above allowed sort ${maxFieldSortLevel.toStringDetailed()}"
-                }
-                check(!binderType.hasNegativeOccurrenceOf(inductive.name)) {
-                    "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} contains a non-positive occurrence of inductive ${inductive.name}"
-                }
+    val isInductiveProp = inductiveInfo.sortLevel.isLessOrEqual(Level.Zero)
+    val ctorBinderCount = constructor.numParams + constructor.numFields
+    val ctorTailExpr = walkForalls(
+        expr = constructor.typeExpr,
+        expectedBinders = ctorBinderCount,
+        owner = "Constructor ${constructor.name}",
+        reduceExpr = false,
+    ) { binderIndex, binderType, localCtx ->
+        if (binderIndex < constructor.numParams) {
+            val expectedParamType = inductiveInfo.paramTypes.getOrNull(binderIndex)
+                ?: error("Missing expected parameter type #$binderIndex for constructor ${constructor.name}")
+            check(binderType.isDefEq(expectedParamType, localCtx, localCtx)) {
+                "Constructor ${constructor.name} parameter #$binderIndex type mismatch: expected ${expectedParamType.toStringDetailed()}, got ${binderType.toStringDetailed()}"
+            }
+        } else {
+            val fieldSort = binderType.inferSort(localCtx = localCtx)
+            check(isInductiveProp || fieldSort.isLessOrEqual(maxFieldSortLevel)) {
+                "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above allowed sort ${maxFieldSortLevel.toStringDetailed()}"
+            }
+            check(!binderType.hasNegativeOccurrenceOf(mutualInductiveNames)) {
+                "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} contains a non-positive occurrence of a mutual inductive"
             }
         }
-
-//        check(ctorTailExpr !is Expression.ForallE) {
-//            "Constructor ${constructor.name} has too many binders: expected $ctorBinderCount"
-//        }
-
-        // Constructor result must be an application of the inductive with valid args.
-        val [resultHead, resultArgs] = ctorTailExpr.unfoldApp()
-        val resultConst = resultHead as? Expression.Const
-            ?: error("Constructor ${constructor.name} must end in application of inductive ${inductive.name}, got ${ctorTailExpr.toStringDetailed()}")
-
-//        check(resultConst.name == inductive.name) {
-//            "Constructor ${constructor.name} must return inductive ${inductive.name}, got ${resultConst.name}"
-//        }
-//        check(resultConst.levels.size == inductive.levelParams.size) {
-//            "Constructor ${constructor.name} has wrong number of universe args in result: expected ${inductive.levelParams.size}, got ${resultConst.levels.size}"
-//        }
-        inductive.levelParams.indices.forEach { i ->
-            check(resultConst.levels[i].isEqual(inductive.levelParams[i])) {
-                "Constructor ${constructor.name} result has wrong universe arg #$i: expected ${inductive.levelParams[i].toStringDetailed()}, got ${resultConst.levels[i].toStringDetailed()}"
-            }
-        }
-
-        val expectedResultArgs = inductive.numParams + inductive.numIndices
-//        check(resultArgs.size == expectedResultArgs) {
-//            "Constructor ${constructor.name} result has wrong arg count: expected $expectedResultArgs, got ${resultArgs.size}"
-//        }
-
-        // Parameter arguments must be exactly the constructor parameter binders in order.
-        repeat(inductive.numParams) { paramIndex ->
-            val expectedBvar = ctorBinderCount - 1 - paramIndex
-            val actualArg = resultArgs[paramIndex]
-            check(actualArg is Expression.Bvar && actualArg.bvar == expectedBvar) {
-                "Constructor ${constructor.name} result parameter #$paramIndex must be bvar $expectedBvar, got ${actualArg.toStringDetailed()}"
-            }
-        }
-
-        // Index arguments may not recursively mention the inductive being declared.
-        resultArgs.drop(inductive.numParams).forEach { indexArg: Expression ->
-            check(!indexArg.containsConst(inductive.name)) {
-                "Constructor ${constructor.name} index argument contains inductive ${inductive.name}: ${indexArg.toStringDetailed()}"
-            }
-        }
-
-        env.declTypeByName[constructor.name] = constructor.typeExpr
     }
-    // TODO: yikes this is bad code
-    val recNamedRecCount = data.recs.count { rec ->
-        val recName = rec.name as? Name.Str
-            ?: error("Recursor name must be a string name, got ${rec.name}")
-        val recParent = env.names[recName.pre]
-            ?: error("Recursor ${rec.name} has missing parent name index ${recName.pre}")
-        check(recParent == inductiveName) {
-            "Recursor ${rec.name} must be in namespace ${inductive.name}"
+
+    val [resultHead, resultArgs] = ctorTailExpr.unfoldApp()
+    val resultConst = resultHead as? Expression.Const
+        ?: error("Constructor ${constructor.name} must end in application of inductive ${inductive.name}, got ${ctorTailExpr.toStringDetailed()}")
+
+    inductive.levelParams.indices.forEach { i ->
+        check(resultConst.levels[i].isEqual(inductive.levelParams[i])) {
+            "Constructor ${constructor.name} result has wrong universe arg #$i: expected ${inductive.levelParams[i].toStringDetailed()}, got ${resultConst.levels[i].toStringDetailed()}"
         }
-        env.declTypeByName[rec.name] = rec.typeExpr
-        recName.str == "rec"
     }
-    check(recNamedRecCount == 1) {
-        "Inductive ${inductive.name} must declare exactly one recursor named ${inductive.name}.rec, got $recNamedRecCount"
+
+    repeat(inductive.numParams) { paramIndex ->
+        val expectedBvar = ctorBinderCount - 1 - paramIndex
+        val actualArg = resultArgs[paramIndex]
+        check(actualArg is Expression.Bvar && actualArg.bvar == expectedBvar) {
+            "Constructor ${constructor.name} result parameter #$paramIndex must be bvar $expectedBvar, got ${actualArg.toStringDetailed()}"
+        }
     }
-    data.recs.forEach { recursor ->
-        checkRecursorRules(recursor)
+
+    resultArgs.drop(inductive.numParams).forEach { indexArg ->
+        check(!indexArg.containsConst(mutualInductiveNames)) {
+            "Constructor ${constructor.name} index argument contains a mutual inductive: ${indexArg.toStringDetailed()}"
+        }
     }
 }
 
@@ -230,6 +330,12 @@ private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
             "Recursor rule for ${constructor.name} has wrong nfields: expected ${constructor.numFields}, got ${rule.nfields}"
         }
         checkRecursorRuleType(recursor, constructor, rule, majorInductive)
+    }
+    val expectedCtorNames = majorInductive.ctors.map { ctorNameIndex ->
+        env.names[ctorNameIndex] ?: error("Constructor name $ctorNameIndex not found")
+    }.toSet()
+    check(seenCtorNames == expectedCtorNames) {
+        "Recursor ${recursor.name} has wrong rule set: expected ${expectedCtorNames.map { it.toStringDetailed() }}, got ${seenCtorNames.map { it.toStringDetailed() }}"
     }
 }
 
@@ -335,45 +441,54 @@ fun Expression.unfoldApp(): Pair<Expression, List<Expression>> {
 }
 
 context(env: Environment)
-private fun Expression.containsConst(targetName: Name): Boolean {
+private fun Expression.containsConst(targetNames: Set<Name>): Boolean {
     return when (this) {
-        is Expression.App -> this.fnExpr.containsConst(targetName) || this.argExpr.containsConst(targetName)
-        is Expression.Const -> this.name == targetName
-        is Expression.ForallE -> this.typeExpr.containsConst(targetName) || this.bodyExpr.containsConst(targetName)
-        is Expression.Lam -> this.typeExpr.containsConst(targetName) || this.bodyExpr.containsConst(targetName)
+        is Expression.App -> this.fnExpr.containsConst(targetNames) || this.argExpr.containsConst(targetNames)
+        is Expression.Const -> this.name in targetNames
+        is Expression.ForallE -> this.typeExpr.containsConst(targetNames) || this.bodyExpr.containsConst(targetNames)
+        is Expression.Lam -> this.typeExpr.containsConst(targetNames) || this.bodyExpr.containsConst(targetNames)
         is Expression.LetE ->
-            this.typeExpr.containsConst(targetName) ||
-                    this.valueExpr.containsConst(targetName) ||
-                    this.bodyExpr.containsConst(targetName)
+            this.typeExpr.containsConst(targetNames) ||
+                    this.valueExpr.containsConst(targetNames) ||
+                    this.bodyExpr.containsConst(targetNames)
 
-        is Expression.Bvar, is Expression.Mdata, is Expression.NatVal,
-        is Expression.Proj, is Expression.Sort, is Expression.StrVal -> false
+        is Expression.Mdata -> this.expr.containsConst(targetNames)
+        is Expression.Proj -> this.structExpr.containsConst(targetNames)
+        is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
     }
 }
 
 context(env: Environment)
-private fun Expression.hasNegativeOccurrenceOf(targetName: Name, polarity: Int = 1): Boolean {
+private fun Expression.containsConst(targetName: Name): Boolean = this.containsConst(setOf(targetName))
+
+context(env: Environment)
+private fun Expression.hasNegativeOccurrenceOf(targetNames: Set<Name>, polarity: Int = 1): Boolean {
     return when (this) {
         is Expression.App ->
-            this.fnExpr.hasNegativeOccurrenceOf(targetName, polarity) ||
-                    this.argExpr.hasNegativeOccurrenceOf(targetName, polarity)
+            this.fnExpr.hasNegativeOccurrenceOf(targetNames, polarity) ||
+                    this.argExpr.hasNegativeOccurrenceOf(targetNames, polarity)
 
-        is Expression.Const -> this.name == targetName && polarity < 0
+        is Expression.Const -> this.name in targetNames && polarity < 0
 
         is Expression.ForallE ->
-            this.typeExpr.hasNegativeOccurrenceOf(targetName, -polarity) ||
-                    this.bodyExpr.hasNegativeOccurrenceOf(targetName, polarity)
+            this.typeExpr.hasNegativeOccurrenceOf(targetNames, -polarity) ||
+                    this.bodyExpr.hasNegativeOccurrenceOf(targetNames, polarity)
 
         is Expression.Lam ->
-            this.typeExpr.hasNegativeOccurrenceOf(targetName, -polarity) ||
-                    this.bodyExpr.hasNegativeOccurrenceOf(targetName, polarity)
+            this.typeExpr.hasNegativeOccurrenceOf(targetNames, -polarity) ||
+                    this.bodyExpr.hasNegativeOccurrenceOf(targetNames, polarity)
 
         is Expression.LetE ->
-            this.typeExpr.hasNegativeOccurrenceOf(targetName, polarity) ||
-                    this.valueExpr.hasNegativeOccurrenceOf(targetName, polarity) ||
-                    this.bodyExpr.hasNegativeOccurrenceOf(targetName, polarity)
+            this.typeExpr.hasNegativeOccurrenceOf(targetNames, polarity) ||
+                    this.valueExpr.hasNegativeOccurrenceOf(targetNames, polarity) ||
+                    this.bodyExpr.hasNegativeOccurrenceOf(targetNames, polarity)
 
-        is Expression.Bvar, is Expression.Mdata, is Expression.NatVal,
-        is Expression.Proj, is Expression.Sort, is Expression.StrVal -> false
+        is Expression.Mdata -> this.expr.hasNegativeOccurrenceOf(targetNames, polarity)
+        is Expression.Proj -> this.structExpr.hasNegativeOccurrenceOf(targetNames, polarity)
+        is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
     }
 }
+
+context(env: Environment)
+private fun Expression.hasNegativeOccurrenceOf(targetName: Name, polarity: Int = 1): Boolean =
+    this.hasNegativeOccurrenceOf(setOf(targetName), polarity)

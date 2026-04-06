@@ -477,11 +477,11 @@ sealed class Declaration : ExportType, NamedDecl() {
 @Serializable
 @SerialName("inductive")
 data class Inductive(
-    private val types: List<InductiveVal>,
+    val types: List<InductiveVal>,
     val ctors: List<ConstructorVal>,
     val recs: List<RecursorVal>,
 ) : ExportType {
-    val type get() = types.singleOrNull() ?: error("Inductive with more than one type not supported")
+    val type get() = types.singleOrNull() ?: error("Inductive with more than one type not supported. found: $types")
 
     @Serializable
     data class InductiveVal(
@@ -561,7 +561,7 @@ data class Inductive(
     }
 
     override fun registerInto(env: Environment) {
-        type.registerInto(env)
+        types.forEach { it.registerInto(env) }
         ctors.forEach { it.registerInto(env) }
         recs.forEach { it.registerInto(env) }
     }
