@@ -24,6 +24,13 @@ data class ReduceCacheKey(
     val localCtxId: Int,
 )
 
+data class ProjectionReductionInfo(
+    val inductiveNameIndex: Int,
+    val fieldIndex: Int,
+    val arity: Int,
+    val structArgIndex: Int,
+)
+
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
     private val negative: MutableMap<Int, T> = mutableMapOf()
@@ -99,6 +106,7 @@ class Environment {
     val applySubstSingleCache: MutableMap<Long, Expression> = mutableMapOf()
     val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
     val sameShapeCache: MutableMap<Long, Boolean> = mutableMapOf()
+    val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     val structureEtaInProgress: MutableSet<Long> = mutableSetOf()
     val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
     val defEqInProgress: MutableSet<DefEqCacheKey> = mutableSetOf()

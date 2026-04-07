@@ -20,7 +20,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         //...
         //i: progress = 1122611 36.558250900s
         //i: progress = 1122612 48.691833300s
-        if (index != 0 && index > 22681000 && index % 10_00 == 0) {
+        if (index != 0 && index % 1_000_000 == 0) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
             println(" (checked ${env.counter} declarations)")
         }
@@ -55,36 +55,34 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 //                println("found type: ${data.typeExpr.toStringDetailed()}")
                 val declaredTypeSortLevel = data.typeExpr.inferSort()
 
-                if (index > 22681000) {
-                    val debugStart = env.clock.elapsedNow()
-                    when (data) {
-                        is Declaration.Axiom -> {} // no extra checks needed
-                        is Declaration.Def -> {
-                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                            }
-                        }
-
-                        is Declaration.Opaque -> {
-                            // TODO: treat opqaue differently
-                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                            }
-                        }
-
-                        is Declaration.Quot -> {} // no extra checks needed
-                        is Declaration.Thm -> {
-                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                            }
-                            check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
-                                "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
-                            }
+                val debugStart = env.clock.elapsedNow()
+                when (data) {
+                    is Declaration.Axiom -> {} // no extra checks needed
+                    is Declaration.Def -> {
+                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
                         }
                     }
-                    if (shouldTimeDeclaration) {
-                        println("i: checked declaration at index=$index start=$debugStart end=${env.clock.elapsedNow()}")
+
+                    is Declaration.Opaque -> {
+                        // TODO: treat opqaue differently
+                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                        }
                     }
+
+                    is Declaration.Quot -> {} // no extra checks needed
+                    is Declaration.Thm -> {
+                        check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
+                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
+                        }
+                        check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
+                            "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
+                        }
+                    }
+                }
+                if (shouldTimeDeclaration) {
+                    println("i: checked declaration at index=$index start=$debugStart end=${env.clock.elapsedNow()}")
                 }
 
                 env.declTypeByName[data.name] = data.typeExpr
@@ -190,9 +188,9 @@ fun Expression.isDefEq(
                     true
                 } else {
                     val leftWhnfExpr =
-                        if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.reduce(localCtx = localCtxLeft)
+                        if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.whnf(localCtx = localCtxLeft)
                     val rightWhnfExpr =
-                        if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.reduce(localCtx = localCtxRight)
+                        if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.whnf(localCtx = localCtxRight)
                     if (leftWhnfExpr == rightWhnfExpr) {
                         true
                     } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
@@ -259,6 +257,22 @@ private fun Expression.matchesLazyDeltaHeadOf(other: Expression): Boolean {
 }
 
 context(env: Environment)
+private fun Expression.reachesLazyDeltaHeadOf(
+    other: Expression,
+    localCtx: List<Expression>,
+    maxSteps: Int = 12,
+): Boolean {
+    var current = this
+    repeat(maxSteps) {
+        if (current.matchesLazyDeltaHeadOf(other)) return true
+        val next = current.tryLazyDeltaStep(localCtx)?.unfoldedExpr ?: return false
+        if (next == current) return false
+        current = next
+    }
+    return current.matchesLazyDeltaHeadOf(other)
+}
+
+context(env: Environment)
 private fun Expression.tryLazyDeltaDefEq(
     other: Expression,
     localCtxLeft: List<Expression>,
@@ -269,14 +283,14 @@ private fun Expression.tryLazyDeltaDefEq(
     this.trySameHeadConstCongruence(other, localCtxLeft, localCtxRight)?.let { return it }
     if (!this.shouldTryLazyDeltaWith(other)) return null
 
-    val leftStep = this.tryLazyDeltaStep()
-    val rightStep = other.tryLazyDeltaStep()
+    val leftStep = this.tryLazyDeltaStep(localCtxLeft)
+    val rightStep = other.tryLazyDeltaStep(localCtxRight)
     val choice = when {
-        leftStep?.unfoldedExpr?.matchesLazyDeltaHeadOf(other) == true &&
-                rightStep?.unfoldedExpr?.matchesLazyDeltaHeadOf(this) != true -> LazyDeltaChoice.Left
+        leftStep?.unfoldedExpr?.reachesLazyDeltaHeadOf(other, localCtxLeft) == true &&
+                rightStep?.unfoldedExpr?.reachesLazyDeltaHeadOf(this, localCtxRight) != true -> LazyDeltaChoice.Left
 
-        rightStep?.unfoldedExpr?.matchesLazyDeltaHeadOf(this) == true &&
-                leftStep?.unfoldedExpr?.matchesLazyDeltaHeadOf(other) != true -> LazyDeltaChoice.Right
+        rightStep?.unfoldedExpr?.reachesLazyDeltaHeadOf(this, localCtxRight) == true &&
+                leftStep?.unfoldedExpr?.reachesLazyDeltaHeadOf(other, localCtxLeft) != true -> LazyDeltaChoice.Right
 
         else -> chooseLazyDeltaSide(leftStep, rightStep)
     }
@@ -468,6 +482,69 @@ private fun Expression.isFullyAppliedSingleCtorStructureConstructor(
     return !inductiveDecl.isRec && inductiveDecl.ctors.size == 1 && inductiveDecl.numIndices == 0
 }
 
+context(env: Environment)
+private fun Expression.Const.projectionReductionInfo(): ProjectionReductionInfo? {
+    val nameIndex = env.nameIndices[this.name] ?: return null
+    env.projectionReductionInfoByNameIndex[nameIndex]?.let { return it }
+
+    val result = run {
+        val defDecl = this.decl as? Declaration.Def ?: return@run null
+        var binderCount = 0
+        var projectionBody: Expression = defDecl.valueExpr
+        while (true) {
+            projectionBody = when (projectionBody) {
+                is Expression.Mdata -> projectionBody.expr
+                is Expression.LetE -> projectionBody.bodyExpr.applySubst(listOf(projectionBody.valueExpr))
+                else -> break
+            }
+        }
+        while (projectionBody is Expression.Lam) {
+            binderCount += 1
+            projectionBody = projectionBody.bodyExpr
+            while (true) {
+                projectionBody = when (projectionBody) {
+                    is Expression.Mdata -> projectionBody.expr
+                    is Expression.LetE -> projectionBody.bodyExpr.applySubst(listOf(projectionBody.valueExpr))
+                    else -> break
+                }
+            }
+        }
+
+        val projectionExpr = projectionBody as? Expression.Proj ?: return@run null
+        val structBvar = projectionExpr.structExpr as? Expression.Bvar ?: return@run null
+        val structArgIndex = binderCount - 1 - structBvar.bvar
+        if (structArgIndex !in 0 until binderCount) return@run null
+
+        ProjectionReductionInfo(
+            inductiveNameIndex = projectionExpr.typeNameIndex,
+            fieldIndex = projectionExpr.projIndex,
+            arity = binderCount,
+            structArgIndex = structArgIndex,
+        )
+    }
+
+    env.projectionReductionInfoByNameIndex[nameIndex] = result
+    return result
+}
+
+context(env: Environment)
+private fun Expression.App.tryReduceProjectionApp(): Expression? {
+    val [headExpr, args] = this.unfoldApp()
+    val headConst = headExpr as? Expression.Const ?: return null
+    val projectionInfo = headConst.projectionReductionInfo() ?: return null
+    if (args.size < projectionInfo.arity) return null
+
+    val projectionExpr = env.addCustomExpr {
+        Expression.Proj(
+            typeName = projectionInfo.inductiveNameIndex,
+            idx = projectionInfo.fieldIndex,
+            struct = args[projectionInfo.structArgIndex].ie,
+            ie = it,
+        )
+    }
+    return projectionExpr.applyArgs(args.drop(projectionInfo.arity))
+}
+
 private fun chooseLazyDeltaSide(left: LazyDeltaStep?, right: LazyDeltaStep?): LazyDeltaChoice? {
     if (left == null && right == null) return null
     if (left != null && right == null) return LazyDeltaChoice.Left
@@ -484,10 +561,16 @@ private fun chooseLazyDeltaSide(left: LazyDeltaStep?, right: LazyDeltaStep?): La
 }
 
 context(env: Environment)
-private fun Expression.tryLazyDeltaStep(): LazyDeltaStep? {
+private fun Expression.tryLazyDeltaStep(localCtx: List<Expression>): LazyDeltaStep? {
     val headExpr = this.asAppSpine().first
-    val headStep = headExpr.lazyDeltaStepInfo() ?: return null
-    val unfoldedExpr = this.tryUnfoldSpineHeadOnce() ?: return null
+    val headStep = when (headExpr) {
+        is Expression.Proj -> LazyDeltaHeadInfo(LazyDeltaStepKind.Forced)
+        else -> headExpr.lazyDeltaStepInfo()
+    } ?: return null
+    val unfoldedExpr = when (this) {
+        is Expression.Proj -> this.tryWhnfStep(localCtx)
+        else -> this.tryUnfoldSpineHeadOnce()
+    } ?: return null
     if (unfoldedExpr == this) return null
     return LazyDeltaStep(
         unfoldedExpr = unfoldedExpr,
@@ -499,6 +582,11 @@ private fun Expression.tryLazyDeltaStep(): LazyDeltaStep? {
 context(env: Environment)
 private fun Expression.tryUnfoldSpineHeadOnce(): Expression? = when (this) {
     is Expression.App -> {
+        if (this.shouldKeepNatPrimitiveOpaque()) return null
+        this.tryReduceProjectionApp()?.let { return it }
+        val projectionHead = this.unfoldApp().first as? Expression.Const
+        if (projectionHead?.projectionReductionInfo() != null) return null
+
         val spine = this.unfoldApp()
         val originalHead = spine.first
         val originalArgs = spine.second
@@ -583,7 +671,7 @@ private fun Expression.isWhnfByShape(): Boolean = when (this) {
     is Expression.Sort,
     is Expression.StrVal -> true
 
-    is Expression.Const -> this.decl !is Declaration.Def
+    is Expression.Const -> this.decl !is Declaration.Def || this.projectionReductionInfo() != null
 
     is Expression.App,
     is Expression.LetE,
@@ -1120,13 +1208,26 @@ fun Expression.reduce(
     if (env.shouldLog) println("trying to reduce ${this}")
     val result = when (this) {
         is Expression.App -> {
+            val projectionReducedExpr = (this.instantiateLevelParams(levelSubst) as? Expression.App)?.let { appExpr ->
+                val projectionHead = appExpr.unfoldApp().first as? Expression.Const
+                val projectionInfo = projectionHead?.projectionReductionInfo()
+                when {
+                    projectionInfo == null -> null
+                    appExpr.unfoldApp().second.size < projectionInfo.arity -> appExpr
+                    else -> appExpr.tryReduceProjectionApp()?.reduce(localCtx = localCtx)
+                }
+            }
             val natReducedExpr = this.tryReduceNatLiteral(levelSubst)
             val natPrimitiveArity = this.natLiteralPrimitiveArity()
-            if (natReducedExpr != null) {
+            if (projectionReducedExpr != null) {
+                projectionReducedExpr
+            } else if (natReducedExpr != null) {
                 natReducedExpr
             } else if (natPrimitiveArity != null) {
                 val appExpr = this.instantiateLevelParams(levelSubst) as Expression.App
-                if (appExpr.unfoldApp().second.size < natPrimitiveArity) {
+                if (appExpr.shouldKeepNatPrimitiveOpaque()) {
+                    appExpr
+                } else if (appExpr.unfoldApp().second.size < natPrimitiveArity) {
                     appExpr
                 } else {
                     val unfoldedApp = appExpr.tryUnfoldSpineHeadOnce()
@@ -1247,11 +1348,19 @@ fun Expression.whnf(
 context(env: Environment)
 private fun Expression.tryWhnfStep(localCtx: List<Expression>): Expression? = when (this) {
     is Expression.App -> {
+        val projectionHead = this.unfoldApp().first as? Expression.Const
+        val projectionInfo = projectionHead?.projectionReductionInfo()
+        if (projectionInfo != null) {
+            if (this.unfoldApp().second.size < projectionInfo.arity) return null
+            this.tryReduceProjectionApp()?.let { return it }
+        }
         this.tryReduceNatLiteral(emptyMap())?.let { return it }
         if (this.natLiteralPrimitiveArity() != null) {
+            if (this.shouldKeepNatPrimitiveOpaque()) return null
             if (this.unfoldApp().second.size < this.natLiteralPrimitiveArity()!!) return null
             this.tryUnfoldSpineHeadOnce()?.let { return it }
         }
+        this.tryUnfoldSpineHeadOnce()?.let { return it }
 
         when (val fnWhnf = this.fnExpr.whnf(localCtx = localCtx)) {
             is Expression.Lam -> fnWhnf.bodyExpr.applySubst(listOf(this.argExpr))
@@ -1268,7 +1377,11 @@ private fun Expression.tryWhnfStep(localCtx: List<Expression>): Expression? = wh
         }
     }
 
-    is Expression.Const -> if (this.isNatLiteralPrimitiveConst()) null else this.tryUnfoldReducibleHeadOnce()
+    is Expression.Const -> if (this.isNatLiteralPrimitiveConst() || this.projectionReductionInfo() != null) {
+        null
+    } else {
+        this.tryUnfoldReducibleHeadOnce()
+    }
     is Expression.LetE -> this.bodyExpr.applySubst(listOf(this.valueExpr))
     is Expression.Mdata -> this.expr
 
@@ -1347,6 +1460,43 @@ private fun Expression.App.natLiteralPrimitiveArity(): Int? {
         "Nat.succ" -> 1
         "Nat.add", "Nat.sub", "Nat.mul", "Nat.pow", "Nat.div", "Nat.mod", "Nat.beq", "Nat.ble" -> 2
         else -> null
+    }
+}
+
+context(env: Environment)
+private fun Expression.containsNatLiteralAbove(threshold: NatValue): Boolean = when (this) {
+    is Expression.NatVal -> this.natVal > threshold
+    is Expression.Bvar, is Expression.Const, is Expression.Sort, is Expression.StrVal -> false
+    is Expression.App -> this.fnExpr.containsNatLiteralAbove(threshold) || this.argExpr.containsNatLiteralAbove(
+        threshold
+    )
+
+    is Expression.ForallE -> this.typeExpr.containsNatLiteralAbove(threshold) || this.bodyExpr.containsNatLiteralAbove(
+        threshold
+    )
+
+    is Expression.Lam -> this.typeExpr.containsNatLiteralAbove(threshold) || this.bodyExpr.containsNatLiteralAbove(
+        threshold
+    )
+
+    is Expression.LetE -> this.typeExpr.containsNatLiteralAbove(threshold) ||
+            this.valueExpr.containsNatLiteralAbove(threshold) ||
+            this.bodyExpr.containsNatLiteralAbove(threshold)
+
+    is Expression.Mdata -> this.expr.containsNatLiteralAbove(threshold)
+    is Expression.Proj -> this.structExpr.containsNatLiteralAbove(threshold)
+}
+
+context(env: Environment)
+private fun Expression.App.shouldKeepNatPrimitiveOpaque(): Boolean {
+    val headConst = this.unfoldApp().first as? Expression.Const ?: return false
+    return when (headConst.name.toStringDetailed()) {
+        "Nat.beq", "Nat.ble" -> this.unfoldApp().second.any { argExpr ->
+            argExpr.maxLooseBVarIndex() >= 0 &&
+                    argExpr.containsNatLiteralAbove(NatValue.fromString("1024"))
+        }
+
+        else -> false
     }
 }
 
