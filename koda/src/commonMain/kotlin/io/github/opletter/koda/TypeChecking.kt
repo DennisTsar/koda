@@ -582,7 +582,6 @@ private fun Expression.tryLazyDeltaStep(localCtx: List<Expression>): LazyDeltaSt
 context(env: Environment)
 private fun Expression.tryUnfoldSpineHeadOnce(): Expression? = when (this) {
     is Expression.App -> {
-        if (this.shouldKeepNatPrimitiveOpaque()) return null
         this.tryReduceProjectionApp()?.let { return it }
         val projectionHead = this.unfoldApp().first as? Expression.Const
         if (projectionHead?.projectionReductionInfo() != null) return null
@@ -1225,9 +1224,7 @@ fun Expression.reduce(
                 natReducedExpr
             } else if (natPrimitiveArity != null) {
                 val appExpr = this.instantiateLevelParams(levelSubst) as Expression.App
-                if (appExpr.shouldKeepNatPrimitiveOpaque()) {
-                    appExpr
-                } else if (appExpr.unfoldApp().second.size < natPrimitiveArity) {
+                if (appExpr.unfoldApp().second.size < natPrimitiveArity) {
                     appExpr
                 } else {
                     val unfoldedApp = appExpr.tryUnfoldSpineHeadOnce()
@@ -1356,7 +1353,6 @@ private fun Expression.tryWhnfStep(localCtx: List<Expression>): Expression? = wh
         }
         this.tryReduceNatLiteral(emptyMap())?.let { return it }
         if (this.natLiteralPrimitiveArity() != null) {
-            if (this.shouldKeepNatPrimitiveOpaque()) return null
             if (this.unfoldApp().second.size < this.natLiteralPrimitiveArity()!!) return null
             this.tryUnfoldSpineHeadOnce()?.let { return it }
         }
@@ -1463,42 +1459,6 @@ private fun Expression.App.natLiteralPrimitiveArity(): Int? {
     }
 }
 
-context(env: Environment)
-private fun Expression.containsNatLiteralAbove(threshold: NatValue): Boolean = when (this) {
-    is Expression.NatVal -> this.natVal > threshold
-    is Expression.Bvar, is Expression.Const, is Expression.Sort, is Expression.StrVal -> false
-    is Expression.App -> this.fnExpr.containsNatLiteralAbove(threshold) || this.argExpr.containsNatLiteralAbove(
-        threshold
-    )
-
-    is Expression.ForallE -> this.typeExpr.containsNatLiteralAbove(threshold) || this.bodyExpr.containsNatLiteralAbove(
-        threshold
-    )
-
-    is Expression.Lam -> this.typeExpr.containsNatLiteralAbove(threshold) || this.bodyExpr.containsNatLiteralAbove(
-        threshold
-    )
-
-    is Expression.LetE -> this.typeExpr.containsNatLiteralAbove(threshold) ||
-            this.valueExpr.containsNatLiteralAbove(threshold) ||
-            this.bodyExpr.containsNatLiteralAbove(threshold)
-
-    is Expression.Mdata -> this.expr.containsNatLiteralAbove(threshold)
-    is Expression.Proj -> this.structExpr.containsNatLiteralAbove(threshold)
-}
-
-context(env: Environment)
-private fun Expression.App.shouldKeepNatPrimitiveOpaque(): Boolean {
-    val headConst = this.unfoldApp().first as? Expression.Const ?: return false
-    return when (headConst.name.toStringDetailed()) {
-        "Nat.beq", "Nat.ble" -> this.unfoldApp().second.any { argExpr ->
-            argExpr.maxLooseBVarIndex() >= 0 &&
-                    argExpr.containsNatLiteralAbove(NatValue.fromString("1024"))
-        }
-
-        else -> false
-    }
-}
 
 context(env: Environment)
 private fun boolCtor(value: Boolean): Expression {
