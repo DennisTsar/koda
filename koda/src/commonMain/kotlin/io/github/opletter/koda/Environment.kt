@@ -24,19 +24,6 @@ data class ReduceCacheKey(
     val localCtxId: Int,
 )
 
-data class LevelEqCacheKey(
-    val leftLevelId: Int,
-    val rightLevelId: Int,
-    val epoch: Int,
-)
-
-data class LevelLeCacheKey(
-    val leftLevelId: Int,
-    val rightLevelId: Int,
-    val balance: Int,
-    val epoch: Int,
-)
-
 data class ProjectionReductionInfo(
     val inductiveNameIndex: Int,
     val fieldIndex: Int,
@@ -115,8 +102,6 @@ class Environment {
     val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
     val reduceCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
     val reduceCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
-    val levelEqCache: MutableMap<LevelEqCacheKey, Boolean> = mutableMapOf()
-    val levelLeCache: MutableMap<LevelLeCacheKey, Boolean> = mutableMapOf()
     val liftCache: MutableMap<Long, Expression> = mutableMapOf()
     val applySubstSingleCache: MutableMap<Long, Expression> = mutableMapOf()
     val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
@@ -137,8 +122,6 @@ class Environment {
     private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
     private var nextLevelIndex: Int = 0
-    var levelComparisonEpoch: Int = 0
-    private var nextLevelComparisonEpoch: Int = 1
 
     private sealed interface LevelKey {
         data class Succ(val levelIl: Int) : LevelKey
@@ -292,8 +275,6 @@ class Environment {
         customExprIntern.clear()
         reduceCacheNoLevelSubst.clear()
         reduceCacheWithCtxNoLevelSubst.clear()
-        levelEqCache.clear()
-        levelLeCache.clear()
         liftCache.clear()
         applySubstSingleCache.clear()
         maxLooseBVarIndexCache.clearNegative()
@@ -310,14 +291,6 @@ class Environment {
         defEqInProgressSkips = 0
         defEqCycleAssumptionDepth = 0
         inferTypeCacheHits = 0
-        levelComparisonEpoch = 0
-        nextLevelComparisonEpoch = 1
-    }
-
-    fun enterLevelComparisonEpoch(): Int {
-        val previousEpoch = levelComparisonEpoch
-        levelComparisonEpoch = nextLevelComparisonEpoch++
-        return previousEpoch
     }
 
     var shouldLog = false

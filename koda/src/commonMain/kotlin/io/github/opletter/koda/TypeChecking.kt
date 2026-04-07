@@ -10,8 +10,7 @@ fun typeCheck(data: Sequence<ExportType>) {
 
 context(env: Environment)
 fun _typeCheck(rawData: Sequence<ExportType>) {
-    val debugTimingRanges = listOf(0..0)
-    val skipChecksBefore = 0
+    val debugTimingRanges = emptyList<IntRange>()
     rawData.forEachIndexed { index, data ->
         //i: progress = 1000000 13.462160800s
         //i: progress = 1100000 24.175118s
@@ -25,9 +24,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
             println(" (checked ${env.counter} declarations)")
         }
-//        if (index in 33_368_440..33_368_470) {
-//            println("i: narrow-progress = $index ${env.clock.elapsedNow()}")
-//        }
         val shouldTimeDeclaration = data is Declaration && debugTimingRanges.any { index in it }
         if (env.shouldLog || shouldTimeDeclaration) {
             println("started: ${env.clock.elapsedNow()}")
@@ -52,10 +48,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             is Declaration -> {
                 // (1): "the declaration is not already declared in the environment"
                 data.registerInto(env)
-                if (index < skipChecksBefore) {
-                    env.declTypeByName[data.name] = data.typeExpr
-                    env.counter++
-                } else {
                 // (2): "has no duplicate universe parameters"
                 // not the most efficient check but probably doesn't matter?
                 check(data.levelParams.toSet().size == data.levelParams.size) { "Duplicate universe parameters in $data" }
@@ -64,7 +56,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 val declaredTypeSortLevel = data.typeExpr.inferSort()
 
                 val debugStart = env.clock.elapsedNow()
-//                if (index > 33368400)
                 when (data) {
                     is Declaration.Axiom -> {} // no extra checks needed
                     is Declaration.Def -> {
@@ -96,22 +87,12 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 
                 env.declTypeByName[data.name] = data.typeExpr
                 env.counter++
-                }
 
                 // (4): "the declaration's type has no free variables"
                 // TODO
             }
 
-            is Inductive -> {
-                if (index < skipChecksBefore) {
-                    data.registerInto(env)
-                    data.types.forEach { inductive -> env.declTypeByName[inductive.name] = inductive.typeExpr }
-                    data.ctors.forEach { ctor -> env.declTypeByName[ctor.name] = ctor.typeExpr }
-                    data.recs.forEach { rec -> env.declTypeByName[rec.name] = rec.typeExpr }
-                } else {
-                    checkInductive(data)
-                }
-            }
+            is Inductive -> checkInductive(data)
 
             is Meta -> {} // no-op
         }
@@ -142,15 +123,7 @@ private fun Expression.checkHasType(
     expectedType: Expression,
     localCtx: List<Expression> = emptyList(),
 ): Boolean {
-    val shouldTracePushforwardComp =
-        this.ie in 31853204..31853217 || expectedType.ie in 31853190..31853200
-    if (shouldTracePushforwardComp) {
-        println("i: checkHasType enter value=${this.ie} expected=${expectedType.ie} ctx=${localCtx.size} time=${env.clock.elapsedNow()}")
-    }
     val expectedTypeWhnf = expectedType.whnf(localCtx = localCtx)
-    if (shouldTracePushforwardComp) {
-        println("i: checkHasType whnf-done expected=${expectedTypeWhnf.ie} ctx=${localCtx.size} time=${env.clock.elapsedNow()}")
-    }
     if (this is Expression.Lam && expectedTypeWhnf is Expression.ForallE) {
         val _ = this.typeExpr.inferSort(localCtx = localCtx)
         if (!this.typeExpr.isDefEq(expectedTypeWhnf.typeExpr, localCtx, localCtx)) {
@@ -162,15 +135,8 @@ private fun Expression.checkHasType(
         )
     }
 
-    if (shouldTracePushforwardComp) {
-        println("i: checkHasType infer value=${this.ie} ctx=${localCtx.size} time=${env.clock.elapsedNow()}")
-    }
     val inferredValueType = this.inferType(localCtx = localCtx)
     if (env.shouldLog) println("inferred type of value: ${inferredValueType/*.toStringDetailed()*/}")
-    if (shouldTracePushforwardComp) {
-        println("i: checkHasType infer-done inferred=${inferredValueType.ie} ctx=${localCtx.size} time=${env.clock.elapsedNow()}")
-        println("i: checkHasType defeq expected=${expectedType.ie} inferred=${inferredValueType.ie} ctx=${localCtx.size} time=${env.clock.elapsedNow()}")
-    }
     return expectedType.isDefEq(inferredValueType, localCtx, localCtx)
 }
 
@@ -182,26 +148,6 @@ fun Expression.isDefEq(
 ): Boolean {
     val leftExpr = this
     val rightExpr = other
-    val tracePushforwardCompPairs = listOf(
-        setOf(31853187, -353),
-        setOf(31853186, 31853114),
-        setOf(-1063, 31853114),
-        setOf(-1063, -1936),
-        setOf(-2923, -1936),
-        setOf(-2922, -1935),
-        setOf(-2807, -1861),
-        setOf(-2806, -1860),
-        setOf(-3761, -3763),
-        setOf(-8058, -10266),
-    )
-    val shouldTracePushforwardCompDefEq =
-        tracePushforwardCompPairs.any { setOf(leftExpr.ie, rightExpr.ie) == it }
-    if (shouldTracePushforwardCompDefEq) {
-        val leftSpine = leftExpr.asAppSpine()
-        val rightSpine = rightExpr.asAppSpine()
-        println("i: isDefEq heads left=${leftSpine.first} args=${leftSpine.second.size} right=${rightSpine.first} args=${rightSpine.second.size} time=${env.clock.elapsedNow()}")
-        println("i: isDefEq enter left=${leftExpr.ie} right=${rightExpr.ie} ctxL=${localCtxLeft.size} ctxR=${localCtxRight.size} time=${env.clock.elapsedNow()}")
-    }
     env.defEqCalls += 1
 
     val leftCtxId = env.localCtxId(localCtxLeft)
@@ -234,16 +180,10 @@ fun Expression.isDefEq(
             true
         } else {
             val lazyDeltaEq = leftExpr.tryLazyDeltaDefEq(rightExpr, localCtxLeft, localCtxRight)
-            if (shouldTracePushforwardCompDefEq) {
-                println("i: isDefEq lazyDelta left=${leftExpr.ie} right=${rightExpr.ie} result=$lazyDeltaEq time=${env.clock.elapsedNow()}")
-            }
             if (lazyDeltaEq != null) {
                 lazyDeltaEq
             } else {
                 val sameShape = leftExpr.sameShape(rightExpr)
-                if (shouldTracePushforwardCompDefEq) {
-                    println("i: isDefEq sameShape left=${leftExpr.ie} right=${rightExpr.ie} result=$sameShape time=${env.clock.elapsedNow()}")
-                }
                 if (sameShape) {
                     true
                 } else {
@@ -251,31 +191,6 @@ fun Expression.isDefEq(
                         if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.whnf(localCtx = localCtxLeft)
                     val rightWhnfExpr =
                         if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.whnf(localCtx = localCtxRight)
-                    if (shouldTracePushforwardCompDefEq) {
-                        val leftWhnfSpine = leftWhnfExpr.asAppSpine()
-                        val rightWhnfSpine = rightWhnfExpr.asAppSpine()
-                        println(
-                            "i: isDefEq whnf left=${leftWhnfExpr.ie}:${leftWhnfExpr::class.simpleName}:${leftWhnfSpine.first} args=${leftWhnfSpine.second.size} " +
-                                    "right=${rightWhnfExpr.ie}:${rightWhnfExpr::class.simpleName}:${rightWhnfSpine.first} args=${rightWhnfSpine.second.size} " +
-                                    "time=${env.clock.elapsedNow()}"
-                        )
-                    }
-                    val sameConstHeadWithLevelMismatch =
-                        (leftWhnfExpr.asAppSpine().first as? Expression.Const)?.let { leftHeadConst ->
-                            val rightHeadConst =
-                                rightWhnfExpr.asAppSpine().first as? Expression.Const ?: return@let false
-                            leftHeadConst.name == rightHeadConst.name &&
-                                    leftHeadConst.levels.size == rightHeadConst.levels.size &&
-                                    !leftHeadConst.levels.zip(rightHeadConst.levels).all { levelPair ->
-                                        levelPair.first.isEqual(levelPair.second)
-                                    }
-                        } == true
-                    if (
-                        sameConstHeadWithLevelMismatch &&
-                        leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
-                    ) {
-                        true
-                    } else
                     if (leftWhnfExpr == rightWhnfExpr) {
                         true
                     } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
@@ -363,32 +278,13 @@ private fun Expression.tryLazyDeltaDefEq(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    val tracePushforwardCompPairs = listOf(
-        setOf(31853186, 31853114),
-        setOf(-1063, 31853114),
-        setOf(-1063, -1936),
-        setOf(-2923, -1936),
-        setOf(-2922, -1935),
-        setOf(-2807, -1861),
-        setOf(-2806, -1860),
-        setOf(-3761, -3763),
-        setOf(-8058, -10266),
-    )
-    val shouldTracePushforwardCompDefEq =
-        tracePushforwardCompPairs.any { setOf(this.ie, other.ie) == it }
     val leftSpine = this.asAppSpine()
     val rightSpine = other.asAppSpine()
     this.trySameHeadConstCongruence(other, localCtxLeft, localCtxRight)?.let { return it }
     if (!this.shouldTryLazyDeltaWith(other)) return null
 
-    if (shouldTracePushforwardCompDefEq) {
-        println("i: lazyDelta start left=${this.ie} right=${other.ie} time=${env.clock.elapsedNow()}")
-    }
     val leftStep = this.tryLazyDeltaStep(localCtxLeft)
     val rightStep = other.tryLazyDeltaStep(localCtxRight)
-    if (shouldTracePushforwardCompDefEq) {
-        println("i: lazyDelta steps left=${leftStep?.unfoldedExpr?.ie}/${leftStep?.kind} right=${rightStep?.unfoldedExpr?.ie}/${rightStep?.kind} time=${env.clock.elapsedNow()}")
-    }
     val choice = when {
         leftStep?.unfoldedExpr?.reachesLazyDeltaHeadOf(other, localCtxLeft) == true &&
                 rightStep?.unfoldedExpr?.reachesLazyDeltaHeadOf(this, localCtxRight) != true -> LazyDeltaChoice.Left
@@ -397,9 +293,6 @@ private fun Expression.tryLazyDeltaDefEq(
                 leftStep?.unfoldedExpr?.reachesLazyDeltaHeadOf(other, localCtxLeft) != true -> LazyDeltaChoice.Right
 
         else -> chooseLazyDeltaSide(leftStep, rightStep)
-    }
-    if (shouldTracePushforwardCompDefEq) {
-        println("i: lazyDelta choice=$choice left=${this.ie} right=${other.ie} time=${env.clock.elapsedNow()}")
     }
     return when (choice) {
         LazyDeltaChoice.Left ->
@@ -442,20 +335,6 @@ private fun Expression.trySameHeadConstCongruence(
 ): Boolean? {
     val leftSpine = this.asAppSpine()
     val rightSpine = other.asAppSpine()
-    val tracePushforwardCompPairs = listOf(
-        setOf(31853187, -353),
-        setOf(31853186, 31853114),
-        setOf(-1063, 31853114),
-        setOf(-1063, -1936),
-        setOf(-2923, -1936),
-        setOf(-2922, -1935),
-        setOf(-2807, -1861),
-        setOf(-2806, -1860),
-        setOf(-3761, -3763),
-        setOf(-8058, -10266),
-    )
-    val shouldTracePushforwardCompDefEq =
-        tracePushforwardCompPairs.any { setOf(this.ie, other.ie) == it }
     val leftConst = leftSpine.first as? Expression.Const ?: return null
     val rightConst = rightSpine.first as? Expression.Const ?: return null
     val leftArgs = leftSpine.second
@@ -477,15 +356,6 @@ private fun Expression.trySameHeadConstCongruence(
     ) {
         return null
     }
-    if (shouldTracePushforwardCompDefEq) {
-        println(
-            "i: sameHeadCongruence levels " +
-                    leftConst.levels.zip(rightConst.levels).joinToString { levelPair ->
-                        "${levelPair.first.il}:${levelPair.second.il}:${levelPair.first.isEqual(levelPair.second)}"
-                    } +
-                    " time=${env.clock.elapsedNow()}"
-        )
-    }
     val levelsMatch = leftConst.levels == rightConst.levels ||
             leftConst.levels.zip(rightConst.levels).all { levelPair ->
                 levelPair.first.isEqual(levelPair.second)
@@ -493,9 +363,6 @@ private fun Expression.trySameHeadConstCongruence(
     if (!levelsMatch) return null
     val shouldTryOptimized = leftArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true ||
             rightArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true
-    if (shouldTracePushforwardCompDefEq) {
-        println("i: sameHeadCongruence head=${leftConst.name.toStringDetailed()} argCount=${leftArgs.size} optimized=$shouldTryOptimized time=${env.clock.elapsedNow()}")
-    }
     if (shouldTryOptimized) {
         val optimized = compareAppArgumentsWithKnownFunctionTypes(
             leftConst,
@@ -509,9 +376,6 @@ private fun Expression.trySameHeadConstCongruence(
     }
 
     for (index in leftArgs.lastIndex downTo 0) {
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: sameHeadCongruence compare-arg index=$index left=${leftArgs[index].ie} right=${rightArgs[index].ie} time=${env.clock.elapsedNow()}")
-        }
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
             return null
         }
@@ -536,25 +400,14 @@ private fun Expression.App.isDefEqWhnfSpine(
 ): Boolean {
     val leftSpine = this.unfoldApp()
     val rightSpine = other.unfoldApp()
-    val shouldTracePushforwardCompDefEq =
-        setOf(this.ie, other.ie) == setOf(-2923, -1936)
     val leftArgs = leftSpine.second
     val rightArgs = rightSpine.second
     if (leftArgs.size != rightArgs.size) {
         return this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
                 this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
     }
-    if (shouldTracePushforwardCompDefEq) {
-        println("i: whnfSpine head-compare left=${leftSpine.first.ie} right=${rightSpine.first.ie} time=${env.clock.elapsedNow()}")
-    }
     if (!leftSpine.first.isDefEq(rightSpine.first, localCtxLeft, localCtxRight)) {
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: whnfSpine head-mismatch left=${leftSpine.first.ie} right=${rightSpine.first.ie} time=${env.clock.elapsedNow()}")
-        }
         return false
-    }
-    if (shouldTracePushforwardCompDefEq) {
-        println("i: whnfSpine head-match left=${leftSpine.first.ie} right=${rightSpine.first.ie} time=${env.clock.elapsedNow()}")
     }
     val shouldTryOptimized = leftSpine.first.sameShape(rightSpine.first) &&
             (leftArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true ||
@@ -571,13 +424,7 @@ private fun Expression.App.isDefEqWhnfSpine(
         if (optimized == true) return true
     }
     for (index in leftArgs.lastIndex downTo 0) {
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: whnfSpine arg-compare index=$index left=${leftArgs[index].ie} right=${rightArgs[index].ie} time=${env.clock.elapsedNow()}")
-        }
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
-            if (shouldTracePushforwardCompDefEq) {
-                println("i: whnfSpine arg-mismatch index=$index left=${leftArgs[index].ie} right=${rightArgs[index].ie} time=${env.clock.elapsedNow()}")
-            }
             return false
         }
     }
@@ -890,23 +737,12 @@ private fun Expression.isDefEqWhnf(
     localCtxRight: List<Expression>,
 ): Boolean = when (this) {
     is Expression.App if other is Expression.App ->
-        if (this.isFullyAppliedSingleCtorStructureConstructor() && other.isFullyAppliedSingleCtorStructureConstructor()) {
-            val leftHeadConst = this.unfoldApp().first as? Expression.Const
-            val rightHeadConst = other.unfoldApp().first as? Expression.Const
-            val sameExplicitCtorHead = leftHeadConst != null &&
-                    rightHeadConst != null &&
-                    leftHeadConst.name == rightHeadConst.name &&
-                    leftHeadConst.levels.size == rightHeadConst.levels.size &&
-                    leftHeadConst.levels.zip(rightHeadConst.levels).all { levelPair ->
-                        levelPair.first.isEqual(levelPair.second)
-                    }
-            if (sameExplicitCtorHead) {
-                this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight) ||
-                        this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
-            } else {
-                this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight) ||
-                        this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight)
-            }
+        if (
+            this.isFullyAppliedSingleCtorStructureConstructor() &&
+            other.isFullyAppliedSingleCtorStructureConstructor()
+        ) {
+            this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight) ||
+                    this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight)
         } else {
             this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight) ||
                     this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
@@ -941,24 +777,12 @@ private fun Expression.isDefEqWhnf(
     }
 
     is Expression.Lam if other is Expression.Lam -> {
-        val shouldTracePushforwardCompDefEq = setOf(this.ie, other.ie) == setOf(-2807, -1861)
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: lamDefEq type-compare left=${this.typeExpr.ie} right=${other.typeExpr.ie} time=${env.clock.elapsedNow()}")
-        }
-        val typeEq = this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight)
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: lamDefEq type-result=$typeEq time=${env.clock.elapsedNow()}")
-        }
-        val bodyCtxLeft = listOf(this.typeExpr) + localCtxLeft
-        val bodyCtxRight = listOf(other.typeExpr) + localCtxRight
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: lamDefEq body-compare left=${this.bodyExpr.ie} right=${other.bodyExpr.ie} time=${env.clock.elapsedNow()}")
-        }
-        typeEq &&
-                (
-                        this.bodyExpr.tryProofIrrelevanceDefEq(other.bodyExpr, bodyCtxLeft, bodyCtxRight) ||
-                                this.bodyExpr.isDefEq(other.bodyExpr, bodyCtxLeft, bodyCtxRight)
-                        )
+        this.typeExpr.isDefEq(other.typeExpr, localCtxLeft, localCtxRight) &&
+                this.bodyExpr.isDefEq(
+                    other.bodyExpr,
+                    listOf(this.typeExpr) + localCtxLeft,
+                    listOf(other.typeExpr) + localCtxRight,
+                )
     }
 
     is Expression.Lam ->
@@ -1060,10 +884,10 @@ private fun Expression.tryCompareWithKnownFunctionType(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    val leftWhnf = this.whnf(localCtx = localCtxLeft)
-    val rightWhnf = other.whnf(localCtx = localCtxRight)
-    val leftLam = leftWhnf as? Expression.Lam
-    val rightLam = rightWhnf as? Expression.Lam
+    val leftReduced = this.reduce(localCtx = localCtxLeft)
+    val rightReduced = other.reduce(localCtx = localCtxRight)
+    val leftLam = leftReduced as? Expression.Lam
+    val rightLam = rightReduced as? Expression.Lam
     if (leftLam == null && rightLam == null) return null
     if (!leftDomain.isDefEq(rightDomain, localCtxLeft, localCtxRight)) return null
 
@@ -1071,22 +895,20 @@ private fun Expression.tryCompareWithKnownFunctionType(
     val leftUnderBinder = if (leftLam != null) {
         leftLam.bodyExpr
     } else {
-        val liftedLeft = leftWhnf.lift(1)
+        val liftedLeft = leftReduced.lift(1)
         env.addCustomExpr { Expression.App(liftedLeft.ie, binderExpr.ie, it) }
     }
     val rightUnderBinder = if (rightLam != null) {
         rightLam.bodyExpr
     } else {
-        val liftedRight = rightWhnf.lift(1)
+        val liftedRight = rightReduced.lift(1)
         env.addCustomExpr { Expression.App(liftedRight.ie, binderExpr.ie, it) }
     }
-    return withDefEqCycleAssumptions {
-        leftUnderBinder.isDefEq(
-            rightUnderBinder,
-            listOf(leftDomain) + localCtxLeft,
-            listOf(rightDomain) + localCtxRight,
-        )
-    }
+    return leftUnderBinder.isDefEq(
+        rightUnderBinder,
+        listOf(leftDomain) + localCtxLeft,
+        listOf(rightDomain) + localCtxRight,
+    )
 }
 
 private fun Expression.canBeStructureLikeValue(): Boolean = when (this) {
@@ -2237,103 +2059,11 @@ private fun Expression.forallBinderCount(): Int {
 }
 
 context(env: Environment)
-private fun Expression.tryDirectStructureConstructorDefEq(
-    other: Expression,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
-): Boolean? {
-    val shouldTracePushforwardCompDefEq = setOf(this.ie, other.ie) == setOf(-2923, -1936)
-    if (shouldTracePushforwardCompDefEq) {
-        println("i: directStructureCtor enter left=${this.ie} right=${other.ie} time=${env.clock.elapsedNow()}")
-    }
-    val [leftHeadExpr, leftArgs] = this.unfoldApp()
-    val [rightHeadExpr, rightArgs] = other.unfoldApp()
-    val leftCtorConst = leftHeadExpr as? Expression.Const ?: return null
-    val rightCtorConst = rightHeadExpr as? Expression.Const ?: return null
-    val leftCtorDecl = leftCtorConst.decl as? Inductive.ConstructorVal ?: return null
-    val rightCtorDecl = rightCtorConst.decl as? Inductive.ConstructorVal ?: return null
-    if (leftCtorDecl.name != rightCtorDecl.name) return null
-    if (leftCtorDecl.numParams != rightCtorDecl.numParams || leftCtorDecl.numFields != rightCtorDecl.numFields) {
-        return null
-    }
-    val expectedArgCount = leftCtorDecl.numParams + leftCtorDecl.numFields
-    if (leftArgs.size != expectedArgCount || rightArgs.size != expectedArgCount) {
-        return null
-    }
-    if (leftCtorConst.levels.size != rightCtorConst.levels.size) {
-        return false
-    }
-    if (!leftCtorConst.levels.zip(rightCtorConst.levels).all { levelPair ->
-            levelPair.first.isEqual(levelPair.second)
-        }) {
-        return false
-    }
-
-    val typeNameIndex = env.nameIndices[leftCtorDecl.inductName] ?: return null
-    val structureDecl = env.declarations[typeNameIndex] as? Inductive.InductiveVal ?: return null
-    if (structureDecl.isRec || structureDecl.ctors.size != 1 || structureDecl.numIndices != 0) {
-        return null
-    }
-    if (leftCtorDecl.numParams != structureDecl.numParams) {
-        return false
-    }
-
-    val leftProjectionLevelSubst = leftCtorConst.composeLevelSubst(emptyMap())
-    val rightProjectionLevelSubst = rightCtorConst.composeLevelSubst(emptyMap())
-    var leftCtorType: Expression = leftCtorDecl.typeExpr.instantiateLevelParams(leftProjectionLevelSubst)
-    var rightCtorType: Expression = rightCtorDecl.typeExpr.instantiateLevelParams(rightProjectionLevelSubst)
-
-    repeat(leftCtorDecl.numParams) { binderIndex ->
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: directStructureCtor param=$binderIndex left=${leftArgs[binderIndex].ie} right=${rightArgs[binderIndex].ie} time=${env.clock.elapsedNow()}")
-        }
-        val leftCtorForall = leftCtorType as? Expression.ForallE ?: return false
-        val rightCtorForall = rightCtorType as? Expression.ForallE ?: return false
-        val leftParamArg = leftArgs[binderIndex]
-        val rightParamArg = rightArgs[binderIndex]
-        if (!leftParamArg.isDefEq(rightParamArg, localCtxLeft, localCtxRight)) {
-            return false
-        }
-        leftCtorType = leftCtorForall.bodyExpr.applySubst(listOf(leftParamArg))
-        rightCtorType = rightCtorForall.bodyExpr.applySubst(listOf(rightParamArg))
-    }
-
-    repeat(leftCtorDecl.numFields) { fieldIndex ->
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: directStructureCtor field=$fieldIndex left=${leftArgs[leftCtorDecl.numParams + fieldIndex].ie} right=${rightArgs[rightCtorDecl.numParams + fieldIndex].ie} time=${env.clock.elapsedNow()}")
-        }
-        val leftFieldBinder = leftCtorType as? Expression.ForallE ?: return false
-        val rightFieldBinder = rightCtorType as? Expression.ForallE ?: return false
-        val leftFieldType = leftFieldBinder.typeExpr
-        val rightFieldType = rightFieldBinder.typeExpr
-        val lhsFieldExpr = leftArgs[leftCtorDecl.numParams + fieldIndex]
-        val rhsFieldExpr = rightArgs[rightCtorDecl.numParams + fieldIndex]
-        if (shouldTracePushforwardCompDefEq) {
-            val leftFieldSpine = lhsFieldExpr.asAppSpine()
-            val rightFieldSpine = rhsFieldExpr.asAppSpine()
-            val leftFieldTypeWhnfPreview = leftFieldType.whnf(localCtx = localCtxLeft)
-            val rightFieldTypeWhnfPreview = rightFieldType.whnf(localCtx = localCtxRight)
-            println("i: directStructureCtor field-head left=${leftFieldSpine.first} args=${leftFieldSpine.second.size} right=${rightFieldSpine.first} args=${rightFieldSpine.second.size} time=${env.clock.elapsedNow()}")
-            println("i: directStructureCtor field-type left=${leftFieldTypeWhnfPreview::class.simpleName}:${leftFieldTypeWhnfPreview.ie} right=${rightFieldTypeWhnfPreview::class.simpleName}:${rightFieldTypeWhnfPreview.ie} time=${env.clock.elapsedNow()}")
-        }
-        val fieldEq = withDefEqCycleAssumptions {
-            lhsFieldExpr.isDefEq(rhsFieldExpr, localCtxLeft, localCtxRight)
-        }
-        if (!fieldEq) return false
-        leftCtorType = leftFieldBinder.bodyExpr.applySubst(listOf(lhsFieldExpr))
-        rightCtorType = rightFieldBinder.bodyExpr.applySubst(listOf(rhsFieldExpr))
-    }
-
-    return true
-}
-
-context(env: Environment)
 private fun Expression.tryStructureEtaDefEq(
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    val shouldTracePushforwardCompDefEq = setOf(this.ie, other.ie) == setOf(-2923, -1936)
     val leftKey = this.ie.toLong() and 0xffffffffL
     val rightKey = other.ie.toLong() and 0xffffffffL
     val guardKey = if (leftKey <= rightKey) {
@@ -2343,15 +2073,8 @@ private fun Expression.tryStructureEtaDefEq(
     }
     if (!env.structureEtaInProgress.add(guardKey)) return false
     try {
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: structureEta enter left=${this.ie} right=${other.ie} time=${env.clock.elapsedNow()}")
-        }
         if (!this.hasNoUnboundBvars(localCtxLeft.size) || !other.hasNoUnboundBvars(localCtxRight.size)) {
             return false
-        }
-        this.tryDirectStructureConstructorDefEq(other, localCtxLeft, localCtxRight)?.let { return it }
-        if (shouldTracePushforwardCompDefEq) {
-            println("i: structureEta direct-path-miss left=${this.ie} right=${other.ie} time=${env.clock.elapsedNow()}")
         }
         val leftType0 = this.inferType(localCtx = localCtxLeft)
         val rightType0 = other.inferType(localCtx = localCtxRight)
