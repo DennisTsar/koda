@@ -356,27 +356,28 @@ private fun Expression.trySameHeadConstCongruence(
     ) {
         return null
     }
-    val congruenceMismatchIsDecisive =
-        leftConst.lazyDeltaStepInfo() == null && rightConst.lazyDeltaStepInfo() == null
     val levelsMatch = leftConst.levels == rightConst.levels ||
             leftConst.levels.zip(rightConst.levels).all { levelPair ->
                 levelPair.first.isEqual(levelPair.second)
             }
     if (!levelsMatch) return null
-    compareAppArgumentsWithKnownFunctionTypes(
-        leftConst,
-        leftArgs,
-        rightConst,
-        rightArgs,
-        localCtxLeft,
-        localCtxRight,
-        definitiveMismatch = congruenceMismatchIsDecisive,
-    )?.let { return true }
-    if (!congruenceMismatchIsDecisive) return null
+    val shouldTryOptimized = leftArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true ||
+            rightArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true
+    if (shouldTryOptimized) {
+        val optimized = compareAppArgumentsWithKnownFunctionTypes(
+            leftConst,
+            leftArgs,
+            rightConst,
+            rightArgs,
+            localCtxLeft,
+            localCtxRight,
+        )
+        if (optimized == true) return true
+    }
 
     for (index in leftArgs.lastIndex downTo 0) {
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
-            return false.takeIf { congruenceMismatchIsDecisive }
+            return null
         }
     }
     return true
@@ -408,14 +409,20 @@ private fun Expression.App.isDefEqWhnfSpine(
     if (!leftSpine.first.isDefEq(rightSpine.first, localCtxLeft, localCtxRight)) {
         return false
     }
-    compareAppArgumentsWithKnownFunctionTypes(
-        leftSpine.first,
-        leftArgs,
-        rightSpine.first,
-        rightArgs,
-        localCtxLeft,
-        localCtxRight,
-    )?.let { return true }
+    val shouldTryOptimized = leftSpine.first.sameShape(rightSpine.first) &&
+            (leftArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true ||
+                    rightArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true)
+    if (shouldTryOptimized) {
+        val optimized = compareAppArgumentsWithKnownFunctionTypes(
+            leftSpine.first,
+            leftArgs,
+            rightSpine.first,
+            rightArgs,
+            localCtxLeft,
+            localCtxRight,
+        )
+        if (optimized == true) return true
+    }
     for (index in leftArgs.lastIndex downTo 0) {
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
             return false
@@ -432,9 +439,9 @@ private fun compareAppArgumentsWithKnownFunctionTypes(
     rightArgs: List<Expression>,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
-    definitiveMismatch: Boolean = false,
 ): Boolean? {
     if (leftArgs.size != rightArgs.size) return null
+
     var leftFnType = leftHead.inferType(localCtx = localCtxLeft)
     var rightFnType = rightHead.inferType(localCtx = localCtxRight)
     for (index in leftArgs.indices) {
@@ -454,9 +461,7 @@ private fun compareAppArgumentsWithKnownFunctionTypes(
 
             else -> leftArg.isDefEq(rightArg, localCtxLeft, localCtxRight)
         }
-        if (!argsMatch) {
-            return false.takeIf { definitiveMismatch }
-        }
+        if (!argsMatch) return false
 
         leftFnType = leftBinder.bodyExpr.applySubst(listOf(leftArg))
         rightFnType = rightBinder.bodyExpr.applySubst(listOf(rightArg))
@@ -562,22 +567,11 @@ private fun Expression.tryLazyDeltaStep(localCtx: List<Expression>): LazyDeltaSt
         is Expression.Proj -> LazyDeltaHeadInfo(LazyDeltaStepKind.Forced)
         else -> headExpr.lazyDeltaStepInfo()
     } ?: return null
-    var unfoldedExpr = when (this) {
+    val unfoldedExpr = when (this) {
         is Expression.Proj -> this.tryWhnfStep(localCtx)
         else -> this.tryUnfoldSpineHeadOnce()
     } ?: return null
     if (unfoldedExpr == this) return null
-
-    repeat(32) {
-        val nextHead = unfoldedExpr.asAppSpine().first
-        val nextExpr = when (nextHead) {
-            is Expression.Proj -> unfoldedExpr.tryWhnfStep(localCtx)
-            else -> if (nextHead.lazyDeltaStepInfo() != null) unfoldedExpr.tryUnfoldSpineHeadOnce() else null
-        } ?: return@repeat
-        if (nextExpr == unfoldedExpr) return@repeat
-        unfoldedExpr = nextExpr
-    }
-
     return LazyDeltaStep(
         unfoldedExpr = unfoldedExpr,
         kind = headStep.kind,
@@ -890,8 +884,8 @@ private fun Expression.tryCompareWithKnownFunctionType(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    val leftReduced = this.whnf(localCtx = localCtxLeft)
-    val rightReduced = other.whnf(localCtx = localCtxRight)
+    val leftReduced = this.reduce(localCtx = localCtxLeft)
+    val rightReduced = other.reduce(localCtx = localCtxRight)
     val leftLam = leftReduced as? Expression.Lam
     val rightLam = rightReduced as? Expression.Lam
     if (leftLam == null && rightLam == null) return null
