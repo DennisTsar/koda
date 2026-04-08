@@ -260,16 +260,16 @@ context(env: Environment)
 private fun Expression.reachesLazyDeltaHeadOf(
     other: Expression,
     localCtx: List<Expression>,
-    maxSteps: Int = 12,
 ): Boolean {
     var current = this
-    repeat(maxSteps) {
+    val seen = mutableSetOf<Int>()
+    while (true) {
         if (current.matchesLazyDeltaHeadOf(other)) return true
+        if (!seen.add(current.ie)) return false
         val next = current.tryLazyDeltaStep(localCtx)?.unfoldedExpr ?: return false
         if (next == current) return false
         current = next
     }
-    return current.matchesLazyDeltaHeadOf(other)
 }
 
 context(env: Environment)
@@ -562,27 +562,33 @@ private fun Expression.tryLazyDeltaStep(localCtx: List<Expression>): LazyDeltaSt
         is Expression.Proj -> LazyDeltaHeadInfo(LazyDeltaStepKind.Forced)
         else -> headExpr.lazyDeltaStepInfo()
     } ?: return null
-    var unfoldedExpr = when (this) {
-        is Expression.Proj -> this.tryWhnfStep(localCtx)
-        else -> this.tryUnfoldSpineHeadOnce()
-    } ?: return null
-    if (unfoldedExpr == this) return null
-
-    repeat(32) {
-        val nextHead = unfoldedExpr.asAppSpine().first
-        val nextExpr = when (nextHead) {
-            is Expression.Proj -> unfoldedExpr.tryWhnfStep(localCtx)
-            else -> if (nextHead.lazyDeltaStepInfo() != null) unfoldedExpr.tryUnfoldSpineHeadOnce() else null
-        } ?: return@repeat
-        if (nextExpr == unfoldedExpr) return@repeat
-        unfoldedExpr = nextExpr
-    }
+    val unfoldedExpr = this.unfoldLazyDeltaHeadToFixpoint(localCtx) ?: return null
 
     return LazyDeltaStep(
         unfoldedExpr = unfoldedExpr,
         kind = headStep.kind,
         regularHeight = headStep.regularHeight,
     )
+}
+
+context(env: Environment)
+private fun Expression.unfoldLazyDeltaHeadToFixpoint(localCtx: List<Expression>): Expression? {
+    var current = this
+    var changed = false
+    val seen = mutableSetOf<Int>()
+    while (true) {
+        if (!seen.add(current.ie)) {
+            return current.takeIf { changed }
+        }
+        val headExpr = current.asAppSpine().first
+        val next = when (headExpr) {
+            is Expression.Proj -> current.tryWhnfStep(localCtx)
+            else -> if (headExpr.lazyDeltaStepInfo() != null) current.tryUnfoldSpineHeadOnce() else null
+        } ?: return current.takeIf { changed }
+        if (next == current) return current.takeIf { changed }
+        current = next
+        changed = true
+    }
 }
 
 context(env: Environment)
