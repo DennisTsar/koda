@@ -179,27 +179,54 @@ fun Expression.isDefEq(
         ) {
             true
         } else {
-            val lazyDeltaEq = leftExpr.tryLazyDeltaDefEq(rightExpr, localCtxLeft, localCtxRight)
-            if (lazyDeltaEq != null) {
-                lazyDeltaEq
+            val leftProjectionDelta = leftExpr.tryProjectionDeltaStep()
+            val rightProjectionDelta = rightExpr.tryProjectionDeltaStep()
+            if (leftProjectionDelta != null || rightProjectionDelta != null) {
+                when {
+                    leftProjectionDelta != null && rightProjectionDelta != null ->
+                        leftProjectionDelta.isDefEq(rightProjectionDelta, localCtxLeft, localCtxRight)
+
+                    leftProjectionDelta != null ->
+                        leftProjectionDelta.isDefEq(rightExpr, localCtxLeft, localCtxRight)
+
+                    else ->
+                        leftExpr.isDefEq(rightProjectionDelta!!, localCtxLeft, localCtxRight)
+                }
             } else {
-                val sameShape = leftExpr.sameShape(rightExpr)
-                if (sameShape) {
-                    true
+                val preWhnfCongruence = leftExpr.tryProjectionLikeCongruence(rightExpr, localCtxLeft, localCtxRight)
+                if (preWhnfCongruence != null) {
+                    if (env.shouldLog) {
+                        println("i: preWhnfCongruence left=${leftExpr.ie} right=${rightExpr.ie} result=$preWhnfCongruence time=${env.clock.elapsedNow()}")
+                    }
+                    preWhnfCongruence
                 } else {
-                    val leftWhnfExpr =
-                        if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.whnf(localCtx = localCtxLeft)
-                    val rightWhnfExpr =
-                        if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.whnf(localCtx = localCtxRight)
-                    if (leftWhnfExpr == rightWhnfExpr) {
-                        true
-                    } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
-                        true
+                    val lazyDeltaEq = leftExpr.tryLazyDeltaDefEq(rightExpr, localCtxLeft, localCtxRight)
+                    if (lazyDeltaEq != null) {
+                        lazyDeltaEq
                     } else {
-                        val tempLog = env.shouldLog
-                        env.shouldLog = false
-                        leftWhnfExpr.tryProofIrrelevanceDefEq(rightWhnfExpr, localCtxLeft, localCtxRight)
-                            .also { env.shouldLog = tempLog }
+                        val sameShape = leftExpr.sameShape(rightExpr)
+                        if (sameShape) {
+                            true
+                        } else {
+                            val leftWhnfExpr =
+                                if (leftExpr.isWhnfByShape()) leftExpr else leftExpr.whnf(localCtx = localCtxLeft)
+                            val rightWhnfExpr =
+                                if (rightExpr.isWhnfByShape()) rightExpr else rightExpr.whnf(localCtx = localCtxRight)
+                            if (leftWhnfExpr == rightWhnfExpr) {
+                                true
+                            } else if (leftWhnfExpr.isDefEqWhnf(rightWhnfExpr, localCtxLeft, localCtxRight)) {
+                                true
+                            } else {
+                                val tempLog = env.shouldLog
+                                env.shouldLog = false
+                                leftWhnfExpr.tryProofIrrelevanceDefEq(
+                                    rightWhnfExpr,
+                                    localCtxLeft,
+                                    localCtxRight,
+                                )
+                                    .also { env.shouldLog = tempLog }
+                            }
+                        }
                     }
                 }
             }
@@ -239,6 +266,13 @@ private enum class LazyDeltaChoice {
     Right,
     Both,
 }
+
+private data class ProjectionAppShape(
+    val inductiveNameIndex: Int,
+    val fieldIndex: Int,
+    val structExpr: Expression,
+    val extraArgs: List<Expression>,
+)
 
 context(env: Environment)
 private fun Expression.matchesLazyDeltaHeadOf(other: Expression): Boolean {
@@ -356,11 +390,24 @@ private fun Expression.trySameHeadConstCongruence(
     ) {
         return null
     }
+    val leftProjectionInfo = leftConst.projectionReductionInfo()
+    val rightProjectionInfo = rightConst.projectionReductionInfo()
+    if (
+        leftProjectionInfo != null &&
+        rightProjectionInfo != null &&
+        leftArgs.size >= leftProjectionInfo.arity &&
+        rightArgs.size >= rightProjectionInfo.arity
+    ) {
+        return null
+    }
     val levelsMatch = leftConst.levels == rightConst.levels ||
             leftConst.levels.zip(rightConst.levels).all { levelPair ->
                 levelPair.first.isEqual(levelPair.second)
             }
     if (!levelsMatch) return null
+    if (env.shouldLog) {
+        println("i: sameHeadConstCongruence head=${leftConst.name.toStringDetailed()} argCount=${leftArgs.size} time=${env.clock.elapsedNow()}")
+    }
     val shouldTryOptimized = leftArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true ||
             rightArgs.lastOrNull()?.hasTheoremOrOpaqueHead() == true
     if (shouldTryOptimized) {
@@ -377,6 +424,72 @@ private fun Expression.trySameHeadConstCongruence(
 
     for (index in leftArgs.lastIndex downTo 0) {
         if (!leftArgs[index].isDefEq(rightArgs[index], localCtxLeft, localCtxRight)) {
+            return null
+        }
+    }
+    return true
+}
+
+context(env: Environment)
+private fun Expression.tryProjectionDeltaStep(): Expression? = when (this) {
+    is Expression.App -> this.tryReduceProjectionApp()
+    else -> null
+}
+
+context(env: Environment)
+private fun Expression.projectionAppShapeOrNull(): ProjectionAppShape? {
+    return when (this) {
+        is Expression.Proj -> ProjectionAppShape(
+            inductiveNameIndex = this.typeNameIndex,
+            fieldIndex = this.projIndex,
+            structExpr = this.structExpr,
+            extraArgs = emptyList(),
+        )
+
+        is Expression.App -> {
+            val spine = this.asAppSpine()
+            val headExpr = spine.first
+            val args = spine.second
+            when (headExpr) {
+                is Expression.Proj -> ProjectionAppShape(
+                    inductiveNameIndex = headExpr.typeNameIndex,
+                    fieldIndex = headExpr.projIndex,
+                    structExpr = headExpr.structExpr,
+                    extraArgs = args,
+                )
+
+                else -> null
+            }
+        }
+
+        else -> null
+    }
+}
+
+context(env: Environment)
+private fun Expression.tryProjectionLikeCongruence(
+    other: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean? {
+    val leftProjection = this.projectionAppShapeOrNull() ?: return null
+    val rightProjection = other.projectionAppShapeOrNull() ?: return null
+    if (leftProjection.inductiveNameIndex != rightProjection.inductiveNameIndex) return null
+    if (leftProjection.fieldIndex != rightProjection.fieldIndex) return null
+    if (leftProjection.extraArgs.size != rightProjection.extraArgs.size) return null
+    if (env.shouldLog) {
+        println(
+            "i: projectionCongruence left=${this.ie} right=${other.ie} " +
+                    "field=${leftProjection.inductiveNameIndex}.${leftProjection.fieldIndex} " +
+                    "structs=${leftProjection.structExpr.ie}:${rightProjection.structExpr.ie} " +
+                    "extraArgs=${leftProjection.extraArgs.size} time=${env.clock.elapsedNow()}"
+        )
+    }
+    if (!leftProjection.structExpr.isDefEq(rightProjection.structExpr, localCtxLeft, localCtxRight)) {
+        return null
+    }
+    for (index in leftProjection.extraArgs.lastIndex downTo 0) {
+        if (!leftProjection.extraArgs[index].isDefEq(rightProjection.extraArgs[index], localCtxLeft, localCtxRight)) {
             return null
         }
     }
@@ -909,6 +1022,18 @@ private fun Expression.tryCompareWithKnownFunctionType(
         listOf(leftDomain) + localCtxLeft,
         listOf(rightDomain) + localCtxRight,
     )
+}
+
+context(env: Environment)
+private fun Expression.isEtaComparableStructureType(localCtx: List<Expression>): Boolean {
+    val [typeHead, _] = this.unfoldApp()
+    val typeConst = typeHead as? Expression.Const ?: return false
+    val typeNameIndex = env.nameIndices[typeConst.name] ?: return false
+    val structureDecl = env.declarations[typeNameIndex] as? Inductive.InductiveVal ?: return false
+    if (structureDecl.isRec || structureDecl.ctors.size != 1 || structureDecl.numIndices != 0) {
+        return false
+    }
+    return !this.inferSort(localCtx = localCtx).isLessOrEqual(Level.Zero)
 }
 
 private fun Expression.canBeStructureLikeValue(): Boolean = when (this) {
@@ -2110,9 +2235,10 @@ private fun Expression.tryStructureEtaDefEq(
             return args.drop(ctorHeadDecl.numParams)
         }
 
-        val leftCtorFieldArgs = this.constructorFieldArgsOrNull()
-        val rightCtorFieldArgs = other.constructorFieldArgsOrNull()
-        val compareDirectCtorFields = leftCtorFieldArgs != null && rightCtorFieldArgs != null
+        val leftWhnfValue = this.whnf(localCtx = localCtxLeft)
+        val rightWhnfValue = other.whnf(localCtx = localCtxRight)
+        val leftCtorFieldArgs = leftWhnfValue.constructorFieldArgsOrNull()
+        val rightCtorFieldArgs = rightWhnfValue.constructorFieldArgsOrNull()
         val leftProjectionLevelSubst = leftTypeConst.composeLevelSubst(emptyMap())
         val rightProjectionLevelSubst = rightTypeConst.composeLevelSubst(emptyMap())
         val leftParamArgs = leftTypeArgs.take(constructorDecl.numParams)
@@ -2132,6 +2258,8 @@ private fun Expression.tryStructureEtaDefEq(
             val rightFieldBinder = rightCtorType as? Expression.ForallE ?: return false
             val leftFieldType = leftFieldBinder.typeExpr
             val rightFieldType = rightFieldBinder.typeExpr
+            val leftFieldTypeWhnf = leftFieldType.reduce(localCtx = localCtxLeft)
+            val rightFieldTypeWhnf = rightFieldType.reduce(localCtx = localCtxRight)
             val lhsProj = env.addCustomExpr {
                 Expression.Proj(
                     typeName = typeNameIndex,
@@ -2143,16 +2271,20 @@ private fun Expression.tryStructureEtaDefEq(
             val rhsProj = env.addCustomExpr {
                 Expression.Proj(typeName = typeNameIndex, idx = fieldIndex, struct = other.ie, ie = it)
             }
-            val lhsFieldExpr = if (compareDirectCtorFields) leftCtorFieldArgs[fieldIndex] else lhsProj
-            val rhsFieldExpr = if (compareDirectCtorFields) rightCtorFieldArgs[fieldIndex] else rhsProj
+            val lhsFieldValueExpr = leftCtorFieldArgs?.get(fieldIndex) ?: lhsProj
+            val rhsFieldValueExpr = rightCtorFieldArgs?.get(fieldIndex) ?: rhsProj
+            val compareViaProjection =
+                (leftFieldTypeWhnf is Expression.ForallE && rightFieldTypeWhnf is Expression.ForallE) ||
+                        (leftFieldTypeWhnf.isEtaComparableStructureType(localCtxLeft) &&
+                                rightFieldTypeWhnf.isEtaComparableStructureType(localCtxRight))
+            val lhsFieldExpr = if (compareViaProjection) lhsProj else lhsFieldValueExpr
+            val rhsFieldExpr = if (compareViaProjection) rhsProj else rhsFieldValueExpr
             val fieldEq = withDefEqCycleAssumptions {
                 when {
                     leftFieldType.inferSort(localCtx = localCtxLeft).isLessOrEqual(Level.Zero) &&
                             rightFieldType.inferSort(localCtx = localCtxRight).isLessOrEqual(Level.Zero) -> true
 
                     else -> {
-                        val leftFieldTypeWhnf = leftFieldType.reduce(localCtx = localCtxLeft)
-                        val rightFieldTypeWhnf = rightFieldType.reduce(localCtx = localCtxRight)
                         val leftFieldFnType = leftFieldTypeWhnf as? Expression.ForallE
                         val rightFieldFnType = rightFieldTypeWhnf as? Expression.ForallE
                         if (leftFieldFnType != null && rightFieldFnType != null) {
@@ -2170,8 +2302,8 @@ private fun Expression.tryStructureEtaDefEq(
                 }
             }
             if (!fieldEq) return false
-            leftCtorType = leftFieldBinder.bodyExpr.applySubst(listOf(lhsFieldExpr))
-            rightCtorType = rightFieldBinder.bodyExpr.applySubst(listOf(rhsFieldExpr))
+            leftCtorType = leftFieldBinder.bodyExpr.applySubst(listOf(lhsFieldValueExpr))
+            rightCtorType = rightFieldBinder.bodyExpr.applySubst(listOf(rhsFieldValueExpr))
         }
         return true
     } finally {
