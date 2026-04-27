@@ -854,8 +854,8 @@ private fun Expression.isDefEqWhnf(
             this.isFullyAppliedSingleCtorStructureConstructor() &&
             other.isFullyAppliedSingleCtorStructureConstructor()
         ) {
-            this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight) ||
-                    this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
+            this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight) ||
+                    this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight)
         } else {
             this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight) ||
                     this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
@@ -997,10 +997,10 @@ private fun Expression.tryCompareWithKnownFunctionType(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    val leftWhnf = this.whnf(localCtx = localCtxLeft)
-    val rightWhnf = other.whnf(localCtx = localCtxRight)
-    val leftLam = leftWhnf as? Expression.Lam
-    val rightLam = rightWhnf as? Expression.Lam
+    val leftReduced = this.reduce(localCtx = localCtxLeft)
+    val rightReduced = other.reduce(localCtx = localCtxRight)
+    val leftLam = leftReduced as? Expression.Lam
+    val rightLam = rightReduced as? Expression.Lam
     if (leftLam == null && rightLam == null) return null
     if (!leftDomain.isDefEq(rightDomain, localCtxLeft, localCtxRight)) return null
 
@@ -1008,13 +1008,13 @@ private fun Expression.tryCompareWithKnownFunctionType(
     val leftUnderBinder = if (leftLam != null) {
         leftLam.bodyExpr
     } else {
-        val liftedLeft = leftWhnf.lift(1)
+        val liftedLeft = leftReduced.lift(1)
         env.addCustomExpr { Expression.App(liftedLeft.ie, binderExpr.ie, it) }
     }
     val rightUnderBinder = if (rightLam != null) {
         rightLam.bodyExpr
     } else {
-        val liftedRight = rightWhnf.lift(1)
+        val liftedRight = rightReduced.lift(1)
         env.addCustomExpr { Expression.App(liftedRight.ie, binderExpr.ie, it) }
     }
     return leftUnderBinder.isDefEq(
@@ -1341,7 +1341,7 @@ fun Expression.reduce(
                     else -> appExpr.tryReduceProjectionApp()?.reduce(localCtx = localCtx)
                 }
             }
-            val natReducedExpr = this.tryReduceNatLiteral(levelSubst, localCtx)
+            val natReducedExpr = this.tryReduceNatLiteral(levelSubst)
             val natPrimitiveArity = this.natLiteralPrimitiveArity()
             if (projectionReducedExpr != null) {
                 projectionReducedExpr
@@ -1476,7 +1476,7 @@ private fun Expression.tryWhnfStep(localCtx: List<Expression>): Expression? = wh
             if (this.unfoldApp().second.size < projectionInfo.arity) return null
             this.tryReduceProjectionApp()?.let { return it }
         }
-        this.tryReduceNatLiteral(emptyMap(), localCtx)?.let { return it }
+        this.tryReduceNatLiteral(emptyMap())?.let { return it }
         if (this.natLiteralPrimitiveArity() != null) {
             if (this.unfoldApp().second.size < this.natLiteralPrimitiveArity()!!) return null
             this.tryUnfoldSpineHeadOnce()?.let { return it }
@@ -1597,72 +1597,66 @@ private fun boolCtor(value: Boolean): Expression {
 }
 
 context(env: Environment)
-private fun Expression.App.tryReduceNatLiteral(
-    levelSubst: Map<Int, Level>,
-    localCtx: List<Expression> = emptyList(),
-): Expression? {
+private fun Expression.App.tryReduceNatLiteral(levelSubst: Map<Int, Level>): Expression? {
     val [headExpr, args] = this.unfoldApp()
     val headConst = headExpr as? Expression.Const ?: return null
-    val headName = headConst.name.toStringDetailed()
 
-    // This literal compression is only sound as cheap constant folding on context-free terms.
-    fun natLiteralArg(index: Int): NatValue? {
+    fun natArg(index: Int): NatValue? {
         val argExpr = args.getOrNull(index) ?: return null
-        if (!argExpr.hasNoUnboundBvars(0)) return null
-        return argExpr.reduce(levelSubst, localCtx).asNatLiteralValue()
+        return argExpr.reduce(levelSubst).asNatLiteralValue()
     }
 
-    return when (headName) {
+    return when (headConst.name.toStringDetailed()) {
         "Nat.succ" -> {
-            val argNat = natLiteralArg(0) ?: return null
+            val argNat = natArg(0) ?: return null
             env.addCustomExpr { Expression.NatVal(argNat + NatValue.ONE, it) }
         }
 
         "Nat.add" -> {
-            val lhs = natLiteralArg(0) ?: return null
-            val rhs = natLiteralArg(1) ?: return null
+            val lhs = natArg(0) ?: return null
+            val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(lhs + rhs, it) }
         }
 
         "Nat.sub" -> {
-            val lhs = natLiteralArg(0) ?: return null
-            val rhs = natLiteralArg(1) ?: return null
+            val lhs = natArg(0) ?: return null
+            val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(if (lhs >= rhs) lhs - rhs else NatValue.ZERO, it) }
         }
 
         "Nat.mul" -> {
-            val lhs = natLiteralArg(0) ?: return null
-            val rhs = natLiteralArg(1) ?: return null
+            val lhs = natArg(0) ?: return null
+            val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(lhs * rhs, it) }
         }
 
         "Nat.pow" -> {
-            val base = natLiteralArg(0) ?: return null
-            val exponent = natLiteralArg(1)?.toIntOrNull() ?: return null
+            val base = natArg(0) ?: return null
+            val exponent = natArg(1)?.toIntOrNull() ?: return null
             env.addCustomExpr { Expression.NatVal(base.pow(exponent), it) }
         }
 
         "Nat.div" -> {
-            val lhs = natLiteralArg(0) ?: return null
-            val rhs = natLiteralArg(1) ?: return null
+            val lhs = natArg(0) ?: return null
+            val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(lhs.divLean(rhs), it) }
         }
 
         "Nat.mod" -> {
-            val lhs = natLiteralArg(0) ?: return null
-            val rhs = natLiteralArg(1) ?: return null
+            val lhs = natArg(0) ?: return null
+            val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(lhs.modLean(rhs), it) }
         }
 
         "Nat.beq" -> {
-            val lhs = natLiteralArg(0) ?: return null
-            val rhs = natLiteralArg(1) ?: return null
+            val lhs = natArg(0) ?: return null
+            val rhs = natArg(1) ?: return null
             boolCtor(lhs == rhs)
         }
 
         "Nat.ble" -> {
-            val lhs = natLiteralArg(0) ?: return null
-            val rhs = natLiteralArg(1) ?: return null
+            val lhs = natArg(0) ?: return null
+            val rhs = natArg(1) ?: return null
             boolCtor(lhs <= rhs)
         }
 
@@ -1688,16 +1682,6 @@ private fun Expression.tryUnfoldReducibleHeadOnce(levelSubst: Map<Int, Level> = 
                 is Expression.Lam -> fn.bodyExpr.applySubst(listOf(this.argExpr))
                 is Expression.Const -> {
                     val defDecl = fn.decl as? Declaration.Def ?: return null
-                    if (env.shouldLog) {
-                        val lastArgNat = this.unfoldApp().second.lastOrNull() as? Expression.NatVal
-                        val lastArgLong = lastArgNat?.natVal?.toLongOrNull()
-                        if (lastArgLong != null && lastArgLong % 1024L == 0L) {
-                            println(
-                                "i: unfoldHeadDef head=${fn.name.toStringDetailed()} expr=${this.ie} arg=$lastArgLong " +
-                                        "time=${env.clock.elapsedNow()}"
-                            )
-                        }
-                    }
                     val fnUnfolded = defDecl.valueExpr.instantiateLevelParams(fn.composeLevelSubst(emptyMap()))
                     env.addCustomExpr { this.copy(fn = fnUnfolded.ie, ie = it) }
                 }
@@ -1836,6 +1820,7 @@ private fun Expression.App.tryReduceRecursor(
     val majorArgIndex =
         recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors + recursorDecl.numIndices
     if (args.size <= majorArgIndex) return null
+
     val recursorArgsPrefixSize = recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors
     val prefixArgs = args.take(recursorArgsPrefixSize)
 
@@ -1983,6 +1968,7 @@ private fun Expression.App.tryReduceRecursorHead(
     val majorArgIndex =
         recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors + recursorDecl.numIndices
     if (args.size <= majorArgIndex) return null
+
     val recursorArgsPrefixSize = recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors
     val prefixArgs = args.take(recursorArgsPrefixSize)
 
@@ -2027,15 +2013,6 @@ private fun Expression.App.tryReduceRecursorHead(
 
     val majorNatLit = iotaMajorWhnf as? Expression.NatVal
     if (majorNatLit != null) {
-        if (env.shouldLog) {
-            val majorLong = majorNatLit.natVal.toLongOrNull()
-            if (majorLong != null && majorLong % 1024L == 0L) {
-                println(
-                    "i: recursorHeadNat rec=${recConst.name.toStringDetailed()} expr=${this.ie} major=$majorLong " +
-                            "time=${env.clock.elapsedNow()}"
-                )
-            }
-        }
         val natRulesByFields: List<Pair<Int, Inductive.RecursorVal.RecursorRule>> =
             recursorDecl.rules.mapNotNull { rule ->
                 val ctorDecl = env.constructorByName[rule.ctorName] ?: return@mapNotNull null
@@ -2297,10 +2274,9 @@ private fun Expression.tryStructureEtaDefEq(
             val lhsFieldValueExpr = leftCtorFieldArgs?.get(fieldIndex) ?: lhsProj
             val rhsFieldValueExpr = rightCtorFieldArgs?.get(fieldIndex) ?: rhsProj
             val compareViaProjection =
-                (leftCtorFieldArgs == null || rightCtorFieldArgs == null) &&
-                        ((leftFieldTypeWhnf is Expression.ForallE && rightFieldTypeWhnf is Expression.ForallE) ||
-                                (leftFieldTypeWhnf.isEtaComparableStructureType(localCtxLeft) &&
-                                        rightFieldTypeWhnf.isEtaComparableStructureType(localCtxRight)))
+                (leftFieldTypeWhnf is Expression.ForallE && rightFieldTypeWhnf is Expression.ForallE) ||
+                        (leftFieldTypeWhnf.isEtaComparableStructureType(localCtxLeft) &&
+                                rightFieldTypeWhnf.isEtaComparableStructureType(localCtxRight))
             val lhsFieldExpr = if (compareViaProjection) lhsProj else lhsFieldValueExpr
             val rhsFieldExpr = if (compareViaProjection) rhsProj else rhsFieldValueExpr
             val fieldEq = withDefEqCycleAssumptions {
@@ -2308,7 +2284,21 @@ private fun Expression.tryStructureEtaDefEq(
                     leftFieldType.inferSort(localCtx = localCtxLeft).isLessOrEqual(Level.Zero) &&
                             rightFieldType.inferSort(localCtx = localCtxRight).isLessOrEqual(Level.Zero) -> true
 
-                    else -> lhsFieldExpr.isDefEq(rhsFieldExpr, localCtxLeft, localCtxRight)
+                    else -> {
+                        val leftFieldFnType = leftFieldTypeWhnf as? Expression.ForallE
+                        val rightFieldFnType = rightFieldTypeWhnf as? Expression.ForallE
+                        if (leftFieldFnType != null && rightFieldFnType != null) {
+                            lhsFieldExpr.tryCompareWithKnownFunctionType(
+                                rhsFieldExpr,
+                                leftFieldFnType.typeExpr,
+                                rightFieldFnType.typeExpr,
+                                localCtxLeft,
+                                localCtxRight,
+                            ) ?: lhsFieldExpr.isDefEq(rhsFieldExpr, localCtxLeft, localCtxRight)
+                        } else {
+                            lhsFieldExpr.isDefEq(rhsFieldExpr, localCtxLeft, localCtxRight)
+                        }
+                    }
                 }
             }
             if (!fieldEq) return false
