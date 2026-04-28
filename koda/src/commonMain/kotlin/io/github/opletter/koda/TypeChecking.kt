@@ -1,5 +1,44 @@
 package io.github.opletter.koda
 
+private val natLiteralValueCacheByEnvironment = mutableMapOf<Environment, MutableMap<Int, NatValue?>>()
+private var targetDiagnosticEnabled = false
+private var targetDiagnosticBudget = 500
+private var targetReduceCalls = 0
+private var targetWhnfSteps = 0
+private var targetDefEqCalls = 0
+private var afterTargetDeclarationTraceRemaining = 20_000
+private var targetDeclarationSeen = false
+
+context(env: Environment)
+private fun targetDiag(message: String) {
+    if (!targetDiagnosticEnabled || targetDiagnosticBudget <= 0) return
+    targetDiagnosticBudget -= 1
+    println("target-diag: $message")
+}
+
+context(env: Environment)
+private fun Expression.diagShape(): String {
+    if (this is Expression.NatVal) {
+        return "NatVal#$ie(${this.natVal})"
+    }
+    if (this is Expression.Proj) {
+        return "Proj#$ie.${this.typeNameIndex}.${this.projIndex}(struct=${this.structExpr.diagShape()})"
+    }
+    val [headExpr, args] = this.asAppSpine()
+    val head = (headExpr as? Expression.Const)?.name?.toStringDetailed()
+        ?: if (headExpr is Expression.Proj) headExpr.diagShape() else headExpr::class.simpleName
+    return "${this::class.simpleName}#$ie($head/${args.size} ${args.take(3).map { it.ie }})"
+}
+
+context(env: Environment)
+private fun clearNatLiteralValueCache() {
+    natLiteralValueCacheByEnvironment.remove(env)
+}
+
+context(env: Environment)
+private fun natLiteralValueCache(): MutableMap<Int, NatValue?> =
+    natLiteralValueCacheByEnvironment.getOrPut(env) { mutableMapOf() }
+
 fun typeCheck(data: Sequence<ExportType>) {
     val env = Environment()
 //    typeCheck(data, env = env)
@@ -114,8 +153,36 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
+    val previousTargetDiagnosticEnabled = targetDiagnosticEnabled
+    val isTargetDeclaration =
+        value.ie == 44770041 || expectedType.ie == 44769966 ||
+                value.ie == 44792074 || expectedType.ie == 44792073
+    if (isTargetDeclaration) {
+        targetDeclarationSeen = true
+        targetDiagnosticEnabled = true
+        targetDiagnosticBudget = 500
+        targetReduceCalls = 0
+        targetWhnfSteps = 0
+        targetDefEqCalls = 0
+        targetDiag("start target value=${value.diagShape()} expected=${expectedType.diagShape()}")
+    }
+    val traceThisDeclaration = targetDeclarationSeen && afterTargetDeclarationTraceRemaining > 0
+    if (traceThisDeclaration) {
+        afterTargetDeclarationTraceRemaining -= 1
+        println("after-target-decl start value=${value.diagShape()} expected=${expectedType.diagShape()} time=${env.clock.elapsedNow()}")
+    }
+    clearNatLiteralValueCache()
     if (env.shouldLog) println("found value: ${value/*.toStringDetailed()*/}")
-    return value.checkHasType(expectedType)
+    return try {
+        value.checkHasType(expectedType)
+    } finally {
+        if (traceThisDeclaration) {
+            println("after-target-decl end value=${value.ie} expected=${expectedType.ie} time=${env.clock.elapsedNow()}")
+        }
+        targetDiag("end target reduceCalls=$targetReduceCalls whnfSteps=$targetWhnfSteps defEqCalls=$targetDefEqCalls")
+        targetDiagnosticEnabled = previousTargetDiagnosticEnabled
+        clearNatLiteralValueCache()
+    }
 }
 
 context(env: Environment)
@@ -149,6 +216,15 @@ fun Expression.isDefEq(
     val leftExpr = this
     val rightExpr = other
     env.defEqCalls += 1
+    if (targetDiagnosticEnabled) {
+        targetDefEqCalls += 1
+        if (targetDefEqCalls <= 20 || targetDefEqCalls % 10_000 == 0) {
+            targetDiag(
+                "defeq#$targetDefEqCalls left=${leftExpr.diagShape()} right=${rightExpr.diagShape()} " +
+                        "ctx=${localCtxLeft.size}/${localCtxRight.size}"
+            )
+        }
+    }
 
     val leftCtxId = env.localCtxId(localCtxLeft)
     val rightCtxId = env.localCtxId(localCtxRight)
@@ -1329,6 +1405,12 @@ fun Expression.reduce(
     } else if (cacheKey != null) {
         env.reduceCacheWithCtxNoLevelSubst[cacheKey]?.let { return it }
     }
+    if (targetDiagnosticEnabled) {
+        targetReduceCalls += 1
+        if (targetReduceCalls <= 20 || targetReduceCalls % 10_000 == 0) {
+            targetDiag("reduce#$targetReduceCalls ${this.diagShape()} ctx=${localCtx.size}")
+        }
+    }
     if (env.shouldLog) println("trying to reduce ${this}")
     val result = when (this) {
         is Expression.App -> {
@@ -1349,7 +1431,13 @@ fun Expression.reduce(
                 natReducedExpr
             } else if (natPrimitiveArity != null) {
                 val appExpr = this.instantiateLevelParams(levelSubst) as Expression.App
-                if (appExpr.unfoldApp().second.size < natPrimitiveArity) {
+                val [natHeadExpr, natArgs] = appExpr.unfoldApp()
+                val natHeadConst = natHeadExpr as? Expression.Const
+                if (natArgs.size < natPrimitiveArity) {
+                    appExpr
+                } else if (natHeadConst?.name?.toStringDetailed() == "Nat.succ") {
+                    appExpr
+                } else if (appExpr.shouldDelayNatBleUnfoldAfterLiteralMiss()) {
                     appExpr
                 } else {
                     val unfoldedApp = appExpr.tryUnfoldSpineHeadOnce()
@@ -1470,6 +1558,12 @@ fun Expression.whnf(
 context(env: Environment)
 private fun Expression.tryWhnfStep(localCtx: List<Expression>): Expression? = when (this) {
     is Expression.App -> {
+        if (targetDiagnosticEnabled) {
+            targetWhnfSteps += 1
+            if (targetWhnfSteps <= 20 || targetWhnfSteps % 10_000 == 0) {
+                targetDiag("whnfStep#$targetWhnfSteps ${this.diagShape()} ctx=${localCtx.size}")
+            }
+        }
         val projectionHead = this.unfoldApp().first as? Expression.Const
         val projectionInfo = projectionHead?.projectionReductionInfo()
         if (projectionInfo != null) {
@@ -1478,7 +1572,11 @@ private fun Expression.tryWhnfStep(localCtx: List<Expression>): Expression? = wh
         }
         this.tryReduceNatLiteral(emptyMap())?.let { return it }
         if (this.natLiteralPrimitiveArity() != null) {
-            if (this.unfoldApp().second.size < this.natLiteralPrimitiveArity()!!) return null
+            val [natHeadExpr, natArgs] = this.unfoldApp()
+            if (natArgs.size < this.natLiteralPrimitiveArity()!!) return null
+            val natHeadConst = natHeadExpr as? Expression.Const
+            if (natHeadConst?.name?.toStringDetailed() == "Nat.succ") return null
+            if (this.shouldDelayNatBleUnfoldAfterLiteralMiss()) return null
             this.tryUnfoldSpineHeadOnce()?.let { return it }
         }
         this.tryUnfoldSpineHeadOnce()?.let { return it }
@@ -1584,6 +1682,28 @@ private fun Expression.App.natLiteralPrimitiveArity(): Int? {
     }
 }
 
+context(env: Environment)
+private fun Expression.App.shouldDelayNatBleUnfoldAfterLiteralMiss(): Boolean {
+    val [headExpr, args] = this.unfoldApp()
+    val headConst = headExpr as? Expression.Const ?: return false
+    if (headConst.name.toStringDetailed() != "Nat.ble" || args.size != 2) return false
+
+    val lhs = args[0].tryEvalNatLiteralValue() ?: return false
+    val rhs = args[1]
+    if (rhs.tryEvalNatLiteralValue() != null) return false
+
+    var visibleSuccDepth = NatValue.ZERO
+    var current = rhs
+    while (visibleSuccDepth < lhs) {
+        val [currentHead, currentArgs] = current.unfoldApp()
+        val currentConst = currentHead as? Expression.Const ?: break
+        if (currentConst.name.toStringDetailed() != "Nat.succ" || currentArgs.size != 1) break
+        visibleSuccDepth += NatValue.ONE
+        current = currentArgs[0]
+    }
+
+    return lhs > visibleSuccDepth + NatValue.ONE
+}
 
 context(env: Environment)
 private fun boolCtor(value: Boolean): Expression {
@@ -1597,64 +1717,266 @@ private fun boolCtor(value: Boolean): Expression {
 }
 
 context(env: Environment)
-private fun Expression.App.tryReduceNatLiteral(levelSubst: Map<Int, Level>): Expression? {
-    val [headExpr, args] = this.unfoldApp()
+private fun NatValue.powNat(exponent: NatValue): NatValue {
+    if (exponent.isZero()) return NatValue.ONE
+    if (this.isZero()) return NatValue.ZERO
+
+    var remainingExp = exponent
+    var base = this
+    var acc = NatValue.ONE
+    val two = NatValue.ONE + NatValue.ONE
+    while (!remainingExp.isZero()) {
+        val quotientAndRemainder = remainingExp.divMod(two)
+        val quotient = quotientAndRemainder.first
+        val remainder = quotientAndRemainder.second
+        if (!remainder.isZero()) {
+            acc *= base
+        }
+        remainingExp = quotient
+        if (!remainingExp.isZero()) {
+            base *= base
+        }
+    }
+    return acc
+}
+
+context(env: Environment)
+private fun Expression.tryEvalNatLiteralValue(
+    levelSubst: Map<Int, Level> = emptyMap(),
+    inProgress: MutableSet<Int> = mutableSetOf(),
+): NatValue? {
+    var current = if (levelSubst.isEmpty()) this else this.instantiateLevelParams(levelSubst)
+    if (levelSubst.isEmpty()) {
+        val cache = natLiteralValueCache()
+        if (cache.containsKey(current.ie)) return cache[current.ie]
+    }
+    val seen = mutableSetOf<Int>()
+    while (true) {
+        current.asNatLiteralValue()?.let { value ->
+            if (levelSubst.isEmpty()) natLiteralValueCache()[this.ie] = value
+            return value
+        }
+        if (!seen.add(current.ie)) {
+            if (levelSubst.isEmpty()) natLiteralValueCache()[this.ie] = null
+            return null
+        }
+        if (!inProgress.add(current.ie)) {
+            if (levelSubst.isEmpty()) natLiteralValueCache()[this.ie] = null
+            return null
+        }
+        val next = try {
+            current.tryExposeNatLiteralStep(inProgress)
+        } finally {
+            inProgress.remove(current.ie)
+        } ?: run {
+            if (levelSubst.isEmpty()) natLiteralValueCache()[this.ie] = null
+            return null
+        }
+        if (next == current) {
+            if (levelSubst.isEmpty()) natLiteralValueCache()[this.ie] = null
+            return null
+        }
+        current = next
+        if (levelSubst.isEmpty()) {
+            val cache = natLiteralValueCache()
+            if (cache.containsKey(current.ie)) {
+                val cached = cache[current.ie]
+                cache[this.ie] = cached
+                return cached
+            }
+        }
+    }
+}
+
+context(env: Environment)
+private fun Expression.tryExposeNatLiteralStep(inProgress: MutableSet<Int>): Expression? = when (this) {
+    is Expression.App -> {
+        this.tryReduceNatLiteral(emptyMap(), inProgress)?.let { return it }
+
+        val [headExpr, args] = this.unfoldApp()
+        val headConst = headExpr as? Expression.Const
+        val natPrimitiveArity = this.natLiteralPrimitiveArity()
+        if (headConst != null && natPrimitiveArity != null && args.size >= natPrimitiveArity) {
+            return null
+        }
+
+        this.tryReduceNonNatRecursorHeadForNatLiteral(inProgress)?.let { return it }
+        this.tryReduceQuotHead(emptyMap(), emptyList())?.let { return it }
+        this.tryUnfoldSpineHeadOnce()?.let { return it }
+
+        val reducedHead = headExpr.tryExposeNatLiteralStep(inProgress) ?: return null
+        reducedHead.applyArgs(args)
+    }
+
+    is Expression.Const -> if (this.isNatLiteralPrimitiveConst() || this.projectionReductionInfo() != null) {
+        null
+    } else {
+        this.tryUnfoldReducibleHeadOnce()
+    }
+
+    is Expression.LetE -> this.bodyExpr.applySubst(listOf(this.valueExpr))
+    is Expression.Mdata -> this.expr
+
+    is Expression.Proj -> {
+        val structExpr = this.structExpr.tryStringLitCtor() ?: this.structExpr
+        val [head, args] = structExpr.unfoldApp()
+        val ctorConst = head as? Expression.Const
+        val ctorDecl = ctorConst?.decl as? Inductive.ConstructorVal
+        if (
+            ctorDecl != null &&
+            ctorDecl.inductName == this.typeNameExpr &&
+            this.projIndex in 0 until ctorDecl.numFields &&
+            args.size == ctorDecl.numParams + ctorDecl.numFields
+        ) {
+            args[ctorDecl.numParams + this.projIndex]
+        } else {
+            val nextStruct = this.structExpr.tryExposeNatLiteralStep(inProgress) ?: return null
+            env.addCustomExpr {
+                Expression.Proj(
+                    typeName = this.typeNameIndex,
+                    idx = this.projIndex,
+                    struct = nextStruct.ie,
+                    ie = it,
+                )
+            }
+        }
+    }
+
+    else -> null
+}
+
+context(env: Environment)
+private fun Expression.App.tryReduceNonNatRecursorHeadForNatLiteral(inProgress: MutableSet<Int>): Expression? {
+    val headExpr = this.unfoldApp().first
+    val args = this.unfoldApp().second
+    val recConst = headExpr as? Expression.Const ?: return null
+    val recursorDecl = recConst.decl as? Inductive.RecursorVal ?: return null
+    val inductiveDeclIndex = recursorDecl.all.singleOrNull() ?: return null
+    val inductiveDecl = env.declarations[inductiveDeclIndex] as? Inductive.InductiveVal ?: return null
+    if (inductiveDecl.name.toStringDetailed() == "Nat") return null
+
+    val majorArgIndex =
+        recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors + recursorDecl.numIndices
+    if (args.size <= majorArgIndex) return null
+
+    val majorWhnf = args[majorArgIndex].tryExposeConstructorForNatLiteral(inProgress) ?: return null
+    val [majorHead, majorArgs] = majorWhnf.unfoldApp()
+    val majorCtor = majorHead as? Expression.Const ?: return null
+    val constructorDecl = majorCtor.decl as? Inductive.ConstructorVal ?: return null
+    val matchingRule = recursorDecl.rules.singleOrNull { rule ->
+        rule.ctorName == majorCtor.name
+    } ?: return null
+    if (majorArgs.size != constructorDecl.numParams + matchingRule.nfields) return null
+
+    val recursorLevelSubst = recConst.composeLevelSubst(emptyMap())
+    val recursorArgsPrefixSize = recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors
+    val prefixArgs = args.take(recursorArgsPrefixSize)
+    val fieldArgs = majorArgs.drop(constructorDecl.numParams)
+
+    var reducedExpr: Expression = matchingRule.rhsExpr.instantiateLevelParams(recursorLevelSubst)
+    (prefixArgs + fieldArgs).forEach { substArg: Expression ->
+        reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, substArg.ie, it) }
+    }
+    args.drop(majorArgIndex + 1).forEach { extraArg: Expression ->
+        reducedExpr = env.addCustomExpr { Expression.App(reducedExpr.ie, extraArg.ie, it) }
+    }
+    return reducedExpr
+}
+
+context(env: Environment)
+private fun Expression.tryExposeConstructorForNatLiteral(inProgress: MutableSet<Int>): Expression? {
+    var current = this
+    val seen = mutableSetOf<Int>()
+    while (true) {
+        val stringCtor = current.tryStringLitCtor()
+        val ctorCandidate = stringCtor ?: current
+        val ctorHead = ctorCandidate.unfoldApp().first as? Expression.Const
+        if (ctorHead?.decl is Inductive.ConstructorVal) return ctorCandidate
+        if (!seen.add(current.ie)) return null
+        if (!inProgress.add(current.ie)) return null
+        val next = try {
+            current.tryExposeNatLiteralStep(inProgress)
+        } finally {
+            inProgress.remove(current.ie)
+        } ?: return null
+        if (next == current) return null
+        current = next
+    }
+}
+
+context(env: Environment)
+private fun Expression.App.tryReduceNatLiteral(
+    levelSubst: Map<Int, Level>,
+    inProgress: MutableSet<Int> = mutableSetOf(),
+): Expression? {
+    val appExpr = if (levelSubst.isEmpty()) this else this.instantiateLevelParams(levelSubst) as? Expression.App
+        ?: return null
+    val [headExpr, args] = appExpr.unfoldApp()
     val headConst = headExpr as? Expression.Const ?: return null
 
     fun natArg(index: Int): NatValue? {
         val argExpr = args.getOrNull(index) ?: return null
-        return argExpr.reduce(levelSubst).asNatLiteralValue()
+        return argExpr.tryEvalNatLiteralValue(inProgress = inProgress)
     }
 
     return when (headConst.name.toStringDetailed()) {
         "Nat.succ" -> {
+            if (args.size != 1) return null
             val argNat = natArg(0) ?: return null
             env.addCustomExpr { Expression.NatVal(argNat + NatValue.ONE, it) }
         }
 
         "Nat.add" -> {
+            if (args.size != 2) return null
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(lhs + rhs, it) }
         }
 
         "Nat.sub" -> {
+            if (args.size != 2) return null
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(if (lhs >= rhs) lhs - rhs else NatValue.ZERO, it) }
         }
 
         "Nat.mul" -> {
+            if (args.size != 2) return null
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(lhs * rhs, it) }
         }
 
         "Nat.pow" -> {
+            if (args.size != 2) return null
             val base = natArg(0) ?: return null
-            val exponent = natArg(1)?.toIntOrNull() ?: return null
-            env.addCustomExpr { Expression.NatVal(base.pow(exponent), it) }
+            val exponent = natArg(1) ?: return null
+            env.addCustomExpr { Expression.NatVal(base.powNat(exponent), it) }
         }
 
         "Nat.div" -> {
+            if (args.size != 2) return null
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(lhs.divLean(rhs), it) }
         }
 
         "Nat.mod" -> {
+            if (args.size != 2) return null
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             env.addCustomExpr { Expression.NatVal(lhs.modLean(rhs), it) }
         }
 
         "Nat.beq" -> {
+            if (args.size != 2) return null
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             boolCtor(lhs == rhs)
         }
 
         "Nat.ble" -> {
+            if (args.size != 2) return null
             val lhs = natArg(0) ?: return null
             val rhs = natArg(1) ?: return null
             boolCtor(lhs <= rhs)
@@ -1896,9 +2218,15 @@ private fun Expression.App.tryReduceRecursor(
     }
 
     val majorWhnf = args[majorArgIndex].whnf(levelSubst, localCtx)
+    if (targetDiagnosticEnabled && recursorDecl.name.toStringDetailed() == "Nat.rec") {
+        targetDiag("recFull Nat.rec majorWhnf=${majorWhnf.diagShape()} args=${args.size} majorIndex=$majorArgIndex")
+    }
     tryReduceCtorOrNatMajor(majorWhnf)?.let { return it }
 
     val majorReduced = args[majorArgIndex].reduce(levelSubst, localCtx)
+    if (targetDiagnosticEnabled && recursorDecl.name.toStringDetailed() == "Nat.rec") {
+        targetDiag("recFull Nat.rec majorReduced=${majorReduced.diagShape()} args=${args.size} majorIndex=$majorArgIndex")
+    }
     tryReduceCtorOrNatMajor(majorReduced)?.let { return it }
 
     run {
@@ -1989,6 +2317,9 @@ private fun Expression.App.tryReduceRecursorHead(
     }
 
     val majorWhnf = args[majorArgIndex].whnf(levelSubst, localCtx)
+    if (targetDiagnosticEnabled && recursorDecl.name.toStringDetailed() == "Nat.rec") {
+        targetDiag("recHead Nat.rec major=${majorWhnf.diagShape()} args=${args.size} majorIndex=$majorArgIndex")
+    }
     val iotaMajorWhnf = majorWhnf.tryStringLitCtor() ?: majorWhnf
     val [majorHead, majorArgs] = iotaMajorWhnf.unfoldApp()
 
