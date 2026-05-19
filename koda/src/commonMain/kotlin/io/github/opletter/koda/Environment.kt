@@ -100,6 +100,8 @@ class Environment {
     val clock = TimeSource.Monotonic.markNow()
 
     val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
+    val whnfCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
+    val whnfCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
     val reduceCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
     val reduceCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
     val natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
@@ -274,6 +276,8 @@ class Environment {
         expressions.clearNegative() // MEM: 924 MB
         nextExprIndex = -100
         customExprIntern.clear()
+        whnfCacheNoLevelSubst.clear()
+        whnfCacheWithCtxNoLevelSubst.clear()
         reduceCacheNoLevelSubst.clear()
         reduceCacheWithCtxNoLevelSubst.clear()
         natLiteralCacheNoLevelSubst.clear()
