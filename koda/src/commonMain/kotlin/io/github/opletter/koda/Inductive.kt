@@ -161,8 +161,8 @@ private fun checkSharedParams(
         check(actualParamType.isDefEq(expectedParamType, inductiveLocalCtx, referenceLocalCtx)) {
             "Mutual inductive ${inductive.name.toStringDetailed()} parameter #$paramIndex type mismatch with ${referenceInductive.name.toStringDetailed()}: expected ${expectedParamType.toStringDetailed()}, got ${actualParamType.toStringDetailed()}"
         }
-        referenceLocalCtx = listOf(expectedParamType) + referenceLocalCtx
-        inductiveLocalCtx = listOf(actualParamType) + inductiveLocalCtx
+        referenceLocalCtx = env.consLocalCtx(expectedParamType, referenceLocalCtx)
+        inductiveLocalCtx = env.consLocalCtx(actualParamType, inductiveLocalCtx)
     }
 }
 
@@ -258,7 +258,7 @@ private fun walkForalls(
             ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
 
         onBinder(binderIndex, forall.typeExpr, currentLocalCtx)
-        currentLocalCtx = listOf(forall.typeExpr) + currentLocalCtx
+        currentLocalCtx = env.consLocalCtx(forall.typeExpr, currentLocalCtx)
         currentExpr = forall.bodyExpr
     }
 
@@ -359,7 +359,7 @@ private fun checkRecursorRuleType(
 
     val ruleLocalCtx =
         ruleBinders.fold(emptyList<Expression>()) { localCtx: List<Expression>, binder: Expression.ForallE ->
-            listOf(binder.typeExpr) + localCtx
+            env.consLocalCtx(binder.typeExpr, localCtx)
         }
 
     fun binderExpr(outerIndex: Int): Expression {

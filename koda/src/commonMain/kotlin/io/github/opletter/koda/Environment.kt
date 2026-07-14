@@ -14,6 +14,26 @@ data class LocalCtxStepKey(
     val tailCtxId: Int,
 )
 
+private class LocalContext(
+    val head: Expression,
+    val tail: List<Expression>,
+    val internId: Int,
+) : AbstractList<Expression>() {
+    override val size: Int = tail.size + 1
+
+    override fun get(index: Int): Expression {
+        if (index !in indices) throw IndexOutOfBoundsException("Index $index out of bounds for context of size $size")
+        var remaining = index
+        var current: List<Expression> = this
+        while (current is LocalContext) {
+            if (remaining == 0) return current.head
+            remaining -= 1
+            current = current.tail
+        }
+        return current[remaining]
+    }
+}
+
 data class InferTypeCacheKey(
     val exprId: Int,
     val localCtxId: Int,
@@ -121,6 +141,7 @@ class Environment {
     var defEqCacheHits: Long = 0
     var defEqInProgressSkips: Long = 0
     var defEqCycleAssumptionDepth: Int = 0
+    var natLiteralRecognitionDepth: Int = 0
     var inferTypeCacheHits: Long = 0
     private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
@@ -259,12 +280,21 @@ class Environment {
         return newExpr
     }
 
+    private fun localCtxStepId(headExprId: Int, tailCtxId: Int): Int {
+        val stepKey = LocalCtxStepKey(headExprId, tailCtxId)
+        return localCtxIntern.getOrPut(stepKey) { nextLocalCtxId++ }
+    }
+
+    fun consLocalCtx(head: Expression, tail: List<Expression>): List<Expression> {
+        return LocalContext(head, tail, localCtxStepId(head.ie, localCtxId(tail)))
+    }
+
     fun localCtxId(localCtx: List<Expression>): Int {
         if (localCtx.isEmpty()) return 0
+        if (localCtx is LocalContext) return localCtx.internId
         var ctxId = 0
         for (index in localCtx.indices.reversed()) {
-            val stepKey = LocalCtxStepKey(localCtx[index].ie, ctxId)
-            ctxId = localCtxIntern.getOrPut(stepKey) { nextLocalCtxId++ }
+            ctxId = localCtxStepId(localCtx[index].ie, ctxId)
         }
         return ctxId
     }
@@ -296,6 +326,7 @@ class Environment {
         defEqCacheHits = 0
         defEqInProgressSkips = 0
         defEqCycleAssumptionDepth = 0
+        natLiteralRecognitionDepth = 0
         inferTypeCacheHits = 0
     }
 
