@@ -10,12 +10,14 @@ data class DefEqCacheKey(
 )
 
 data class LocalCtxStepKey(
-    val headExprId: Int,
+    val headTypeExprId: Int,
+    val headValueExprId: Int?,
     val tailCtxId: Int,
 )
 
 private class LocalContext(
     val head: Expression,
+    val headValue: Expression?,
     val tail: List<Expression>,
     val internId: Int,
 ) : AbstractList<Expression>() {
@@ -32,11 +34,24 @@ private class LocalContext(
         }
         return current[remaining]
     }
+
+    fun valueAt(index: Int): Expression? {
+        if (index !in indices) throw IndexOutOfBoundsException("Index $index out of bounds for context of size $size")
+        var remaining = index
+        var current: List<Expression> = this
+        while (current is LocalContext) {
+            if (remaining == 0) return current.headValue
+            remaining -= 1
+            current = current.tail
+        }
+        return null
+    }
 }
 
 data class InferTypeCacheKey(
     val exprId: Int,
     val localCtxId: Int,
+    val validate: Boolean,
 )
 
 data class ReduceCacheKey(
@@ -44,12 +59,65 @@ data class ReduceCacheKey(
     val localCtxId: Int,
 )
 
+data class ExprPairKey(val firstExprId: Int, val second: Int)
+
 data class ProjectionReductionInfo(
     val inductiveNameIndex: Int,
     val fieldIndex: Int,
     val arity: Int,
     val structArgIndex: Int,
 )
+
+class NameIndexStore {
+    private var keys: Array<Name?> = arrayOfNulls(16)
+    private var values: IntArray = IntArray(16)
+    private var size = 0
+
+    private fun startIndex(key: Name): Int = key.hashCode() and (keys.size - 1)
+
+    operator fun get(key: Name): Int? {
+        var index = startIndex(key)
+        while (true) {
+            val current = keys[index] ?: return null
+            if (current == key) return values[index]
+            index = (index + 1) and (keys.size - 1)
+        }
+    }
+
+    operator fun set(key: Name, value: Int) {
+        if ((size + 1) * 3 >= keys.size * 2) resize()
+        insert(key, value)
+    }
+
+    private fun insert(key: Name, value: Int) {
+        var index = startIndex(key)
+        while (true) {
+            val current = keys[index]
+            if (current == null) {
+                keys[index] = key
+                values[index] = value
+                size += 1
+                return
+            }
+            if (current == key) {
+                values[index] = value
+                return
+            }
+            index = (index + 1) and (keys.size - 1)
+        }
+    }
+
+    private fun resize() {
+        val oldKeys = keys
+        val oldValues = values
+        keys = arrayOfNulls(oldKeys.size * 2)
+        values = IntArray(keys.size)
+        size = 0
+        oldKeys.forEachIndexed { index, key ->
+            if (key != null) insert(key, oldValues[index])
+        }
+    }
+}
 
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
@@ -71,6 +139,8 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
             negative[index]
         }
     }
+
+    operator fun get(index: Int?): T? = index?.let { this[it] }
 
     operator fun set(index: Int, value: T) {
         if (index >= 0) {
@@ -108,9 +178,9 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
 }
 
 class Environment {
-    val names: MutableMap<Int, Name> = mutableMapOf(0 to Name.Str(0, "", 0))
-    val nameIndices: MutableMap<Name, Int> = mutableMapOf(Name.Str(0, "", 0) to 0)
-    val declarations: MutableMap<Int, NamedDecl> = mutableMapOf()
+    val names: IntObjectStore<Name> = IntObjectStore(listOf(0 to Name.Str(0, "", 0)))
+    val nameIndices: NameIndexStore = NameIndexStore().also { it[Name.Str(0, "", 0)] = 0 }
+    val declarations: IntObjectStore<NamedDecl> = IntObjectStore()
     val levelParamByNameIndex: MutableMap<Int, Level.Param> = mutableMapOf()
     val constructorByName: MutableMap<Name, Inductive.ConstructorVal> = mutableMapOf()
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
@@ -122,27 +192,25 @@ class Environment {
     val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
     val whnfCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
     val whnfCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
-    val reduceCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
-    val reduceCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
     val natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
-    val liftCache: MutableMap<Long, Expression> = mutableMapOf()
-    val applySubstSingleCache: MutableMap<Long, Expression> = mutableMapOf()
+    val liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    val applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    val unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
     val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
-    val sameShapeCache: MutableMap<Long, Boolean> = mutableMapOf()
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
-    val structureEtaInProgress: MutableSet<Long> = mutableSetOf()
+    internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
-    val defEqInProgress: MutableSet<DefEqCacheKey> = mutableSetOf()
+    val defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
     val inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
-    val inferTypeInProgress: MutableSet<InferTypeCacheKey> = mutableSetOf()
     private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
     var defEqCalls: Long = 0
     var defEqCacheHits: Long = 0
-    var defEqInProgressSkips: Long = 0
-    var defEqCycleAssumptionDepth: Int = 0
-    var natLiteralRecognitionDepth: Int = 0
     var inferTypeCacheHits: Long = 0
+    var proofIrrelevanceAttempts: Long = 0
+    var proofIrrelevanceSuccesses: Long = 0
+    var typedCongruenceProofSkips: Long = 0
+    var eagerReduction = false
     private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
     private var nextLevelIndex: Int = 0
@@ -280,13 +348,21 @@ class Environment {
         return newExpr
     }
 
-    private fun localCtxStepId(headExprId: Int, tailCtxId: Int): Int {
-        val stepKey = LocalCtxStepKey(headExprId, tailCtxId)
+    private fun localCtxStepId(headTypeExprId: Int, headValueExprId: Int?, tailCtxId: Int): Int {
+        val stepKey = LocalCtxStepKey(headTypeExprId, headValueExprId, tailCtxId)
         return localCtxIntern.getOrPut(stepKey) { nextLocalCtxId++ }
     }
 
-    fun consLocalCtx(head: Expression, tail: List<Expression>): List<Expression> {
-        return LocalContext(head, tail, localCtxStepId(head.ie, localCtxId(tail)))
+    fun consLocalCtx(
+        head: Expression,
+        tail: List<Expression>,
+        value: Expression? = null,
+    ): List<Expression> {
+        return LocalContext(head, value, tail, localCtxStepId(head.ie, value?.ie, localCtxId(tail)))
+    }
+
+    fun localCtxValue(localCtx: List<Expression>, index: Int): Expression? {
+        return (localCtx as? LocalContext)?.valueAt(index)
     }
 
     fun localCtxId(localCtx: List<Expression>): Int {
@@ -294,7 +370,7 @@ class Environment {
         if (localCtx is LocalContext) return localCtx.internId
         var ctxId = 0
         for (index in localCtx.indices.reversed()) {
-            ctxId = localCtxStepId(localCtx[index].ie, ctxId)
+            ctxId = localCtxStepId(localCtx[index].ie, null, ctxId)
         }
         return ctxId
     }
@@ -308,30 +384,26 @@ class Environment {
         customExprIntern.clear()
         whnfCacheNoLevelSubst.clear()
         whnfCacheWithCtxNoLevelSubst.clear()
-        reduceCacheNoLevelSubst.clear()
-        reduceCacheWithCtxNoLevelSubst.clear()
         natLiteralCacheNoLevelSubst.clear()
         liftCache.clear()
         applySubstSingleCache.clear()
+        unfoldedDefinitionCache.clear()
         maxLooseBVarIndexCache.clearNegative()
-        sameShapeCache.clear()
-        structureEtaInProgress.clear()
         defEqCache.clear()
-        defEqInProgress.clear()
+        defEqAppFailures.clear()
         inferTypeCacheNoLevelSubst.clear()
-        inferTypeInProgress.clear()
         localCtxIntern.clear()
         nextLocalCtxId = 1
         defEqCalls = 0
         defEqCacheHits = 0
-        defEqInProgressSkips = 0
-        defEqCycleAssumptionDepth = 0
-        natLiteralRecognitionDepth = 0
         inferTypeCacheHits = 0
+        proofIrrelevanceAttempts = 0
+        proofIrrelevanceSuccesses = 0
+        typedCongruenceProofSkips = 0
+        eagerReduction = false
     }
 
     var shouldLog = false
-    var shouldLog2 = false
 
     var counter = 0
 
