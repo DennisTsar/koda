@@ -55,7 +55,7 @@ fun checkInductive(data: Inductive) {
     val fieldSortLevels: List<Level> =
         inductives.map { inductiveInfos.getValue(it).sortLevel } + firstInfo.paramSortLevels
     val maxFieldSortLevel = fieldSortLevels.reduce { acc: Level, level: Level ->
-        env.addCustomMaxLevel(acc.il, level.il)
+        makeLevelMax(acc, level)
     }
 
     data.registerInto(env)

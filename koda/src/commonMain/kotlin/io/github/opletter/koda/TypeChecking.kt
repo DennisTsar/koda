@@ -2,7 +2,14 @@ package io.github.opletter.koda
 
 private var debugClosedEvaluation = false
 private var debugTargetDeclaration = false
-private const val debugTargetIndex = 51_500_000
+private const val debugTargetIndex = -1//21_000_000///51_500_000
+
+internal data class StructureEtaRecursorInfo(
+    val inductiveDeclIndex: Int,
+    val inductiveDecl: Inductive.InductiveVal,
+    val constructorDecl: Inductive.ConstructorVal,
+    val rule: Inductive.RecursorVal.RecursorRule,
+)
 
 fun typeCheck(data: Sequence<ExportType>) {
     val env = Environment()
@@ -29,28 +36,30 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             println("i: progress = $index ${env.clock.elapsedNow()}")
             println(" (checked ${env.counter} declarations)")
         }
-//        if (index < debugTargetIndex) {
-//            when (data) {
-//                is Name -> data.registerInto(env)
-//                is Level -> data.registerInto(env)
-//                is Expression -> data.registerInto(env)
-//                is Declaration -> {
-//                    data.registerInto(env)
-//                    env.declTypeByName[data.name] = data.typeExpr
-//                    env.counter++
-//                }
-//                is Inductive -> {
-//                    data.registerInto(env)
-//                    (data.types + data.ctors + data.recs).forEach { declaration ->
-//                        env.declTypeByName[declaration.name] = declaration.typeExpr
-//                    }
-//                }
-//                is Meta -> {}
-//            }
-//            return@forEachIndexed
-//        }
+        if (index < debugTargetIndex) {
+            when (data) {
+                is Name -> data.registerInto(env)
+                is Level -> data.registerInto(env)
+                is Expression -> data.registerInto(env)
+                is Declaration -> {
+                    data.registerInto(env)
+                    env.declTypeByName[data.name] = data.typeExpr
+                    env.counter++
+                }
+
+                is Inductive -> {
+                    data.registerInto(env)
+                    (data.types + data.ctors + data.recs).forEach { declaration ->
+                        env.declTypeByName[declaration.name] = declaration.typeExpr
+                    }
+                }
+
+                is Meta -> {}
+            }
+            return@forEachIndexed
+        }
         val shouldTimeDeclaration = data is Declaration && debugTimingRanges.any { index in it }
-//        debugTargetDeclaration = index == debugTargetIndex && data is Declaration
+        debugTargetDeclaration = index == debugTargetIndex && data is Declaration
 //        if (debugTargetDeclaration && data is Declaration) {
 //            debugDeclarationShape(data)
 //        }
@@ -191,24 +200,20 @@ private fun debugDeclarationShape(declaration: Declaration) {
                 pending.add(expression.fnExpr)
                 pending.add(expression.argExpr)
             }
-
             is Expression.Const -> constants[expression.name] = (constants[expression.name] ?: 0) + 1
             is Expression.ForallE -> {
                 pending.add(expression.typeExpr)
                 pending.add(expression.bodyExpr)
             }
-
             is Expression.Lam -> {
                 pending.add(expression.typeExpr)
                 pending.add(expression.bodyExpr)
             }
-
             is Expression.LetE -> {
                 pending.add(expression.typeExpr)
                 pending.add(expression.valueExpr)
                 pending.add(expression.bodyExpr)
             }
-
             is Expression.Mdata -> pending.add(expression.expr)
             is Expression.Proj -> pending.add(expression.structExpr)
             is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
@@ -257,24 +262,20 @@ private fun Expression.debugContainsConstant(detailedName: String): Boolean {
                 pending.add(expression.fnExpr)
                 pending.add(expression.argExpr)
             }
-
             is Expression.Const -> if (expression.name.toStringDetailed() == detailedName) return true
             is Expression.ForallE -> {
                 pending.add(expression.typeExpr)
                 pending.add(expression.bodyExpr)
             }
-
             is Expression.Lam -> {
                 pending.add(expression.typeExpr)
                 pending.add(expression.bodyExpr)
             }
-
             is Expression.LetE -> {
                 pending.add(expression.typeExpr)
                 pending.add(expression.valueExpr)
                 pending.add(expression.bodyExpr)
             }
-
             is Expression.Mdata -> pending.add(expression.expr)
             is Expression.Proj -> pending.add(expression.structExpr)
             is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
@@ -710,23 +711,19 @@ private fun ClosedClosure.closedDefEq(
                     expressions.addLast(current.fnExpr to depth)
                     expressions.addLast(current.argExpr to depth)
                 }
-
                 is Expression.ForallE -> {
                     expressions.addLast(current.typeExpr to depth)
                     expressions.addLast(current.bodyExpr to depth + 1)
                 }
-
                 is Expression.Lam -> {
                     expressions.addLast(current.typeExpr to depth)
                     expressions.addLast(current.bodyExpr to depth + 1)
                 }
-
                 is Expression.LetE -> {
                     expressions.addLast(current.typeExpr to depth)
                     expressions.addLast(current.valueExpr to depth)
                     expressions.addLast(current.bodyExpr to depth + 1)
                 }
-
                 is Expression.Mdata -> expressions.addLast(current.expr to depth)
                 is Expression.Proj -> expressions.addLast(current.structExpr to depth)
                 is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
@@ -1096,7 +1093,6 @@ private fun ClosedClosure.closedDefEq(
                 ClosedEvalEnv.Empty,
                 neutralDomain.rigidTypeIsProp(),
             )
-
             fun applyNeutral(value: ClosedValue, lambda: Expression.Lam?): ClosedClosure {
                 if (lambda != null) {
                     return ClosedClosure(
@@ -1143,7 +1139,6 @@ private fun ClosedClosure.closedDefEq(
                     ClosedEvalEnv.Empty,
                     forall.typeExpr.rigidTypeIsProp(),
                 )
-
                 fun applyNeutral(value: ClosedValue): ClosedClosure = ClosedClosure(
                     value.head.expression,
                     value.head.locals,
@@ -1337,7 +1332,6 @@ private fun ClosedClosure.closedWhnf(
             val exponent = values[1].toIntOrNull() ?: return null
             transientNat(values[0].pow(exponent))
         }
-
         ClosedNatPrimitive.Div -> transientNat(values[0].divLean(values[1]))
         ClosedNatPrimitive.Mod -> transientNat(values[0].modLean(values[1]))
         ClosedNatPrimitive.Beq -> boolCtor(values[0] == values[1])
@@ -1887,7 +1881,6 @@ private fun Expression.quickIsDefEq(
     return when {
         this is Expression.Bvar && other is Expression.Bvar ->
             if (this.bvar == other.bvar) true else null
-
         this is Expression.ForallE && other is Expression.ForallE ->
             this.isDefEqBinding(other, localCtxLeft, localCtxRight, lambda = false)
 
@@ -2852,7 +2845,6 @@ private sealed interface InferFrame {
         val validate: Boolean,
         val localCtx: List<Expression>,
     ) : InferFrame
-
     data class LetBody(val value: Expression) : InferFrame
     data class Projection(
         val expression: Expression.Proj,
@@ -3083,7 +3075,6 @@ fun Expression.inferType(
                                 pendingConstants.addLast(expression.fnExpr)
                                 pendingConstants.addLast(expression.argExpr)
                             }
-
                             is Expression.Const -> if (
                                 expression.name.toStringDetailed() == "AbsoluteValue.IsAdmissible.card"
                             ) {
@@ -3102,23 +3093,19 @@ fun Expression.inferType(
                                             "domains=${cardDomains.joinToString()} tail=${cardBody?.debugShallow()}"
                                 )
                             }
-
                             is Expression.ForallE -> {
                                 pendingConstants.addLast(expression.typeExpr)
                                 pendingConstants.addLast(expression.bodyExpr)
                             }
-
                             is Expression.Lam -> {
                                 pendingConstants.addLast(expression.typeExpr)
                                 pendingConstants.addLast(expression.bodyExpr)
                             }
-
                             is Expression.LetE -> {
                                 pendingConstants.addLast(expression.typeExpr)
                                 pendingConstants.addLast(expression.valueExpr)
                                 pendingConstants.addLast(expression.bodyExpr)
                             }
-
                             is Expression.Mdata -> pendingConstants.addLast(expression.expr)
                             is Expression.Proj -> pendingConstants.addLast(expression.structExpr)
                             is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
@@ -3197,7 +3184,7 @@ fun Expression.inferType(
             is InferFrame.PiBody -> {
                 var level = requireSort(result, frame.tail, frame.tailCtx)
                 for (domainSort in frame.domainSorts.asReversed()) {
-                    level = env.addCustomImaxLevel(domainSort.il, level.il)
+                    level = makeLevelImax(domainSort, level)
                 }
                 result = env.addCustomExpr { Expression.Sort(level.il, it) }
             }
@@ -4051,20 +4038,17 @@ private fun Expression.App.tryReduceRecursorHead(
     tryReduceNatValueRecursorMajor(recursorDecl, iotaMajorWhnf, ::applyRule)?.let { return it }
 
     run {
-        val inductiveDeclIndex = recursorDecl.all.singleOrNull() ?: return@run
-        val inductiveDecl = env.declarations[inductiveDeclIndex] as? Inductive.InductiveVal ?: return@run
-        if (inductiveDecl.isRec || inductiveDecl.numIndices != 0 || inductiveDecl.ctors.size != 1) return@run
-
-        val singleRule = recursorDecl.rules.singleOrNull() ?: return@run
-        val constructorDecl =
-            env.declarations[inductiveDecl.ctors.single()] as? Inductive.ConstructorVal ?: return@run
-        if (constructorDecl.numParams != recursorDecl.numParams) return@run
-        if (constructorDecl.numFields != singleRule.nfields) return@run
-        if (singleRule.ctorName != constructorDecl.name) return@run
+        val etaInfo = recursorDecl.structureEtaInfo() ?: return@run
+        val inductiveDeclIndex = etaInfo.inductiveDeclIndex
+        val inductiveDecl = etaInfo.inductiveDecl
+        val constructorDecl = etaInfo.constructorDecl
+        val singleRule = etaInfo.rule
 
         val majorType = majorWhnf.inferType(localCtx = localCtx, validate = false).whnf(localCtx = localCtx)
-        val majorTypeHead = majorType.asAppSpine().first as? Expression.Const ?: return@run
+        val majorTypeSpine = majorType.asAppSpine()
+        val majorTypeHead = majorTypeSpine.first as? Expression.Const ?: return@run
         if (majorTypeHead.name != inductiveDecl.name) return@run
+        if (majorTypeSpine.second.size != inductiveDecl.numParams) return@run
         if (majorType.inferSort(localCtx = localCtx, validate = false).isLessOrEqual(Level.Zero)) return@run
 
         val fieldArgs = List(constructorDecl.numFields) { fieldIndex ->
@@ -4081,6 +4065,33 @@ private fun Expression.App.tryReduceRecursorHead(
     }
 
     return null
+}
+
+context(env: Environment)
+private fun Inductive.RecursorVal.structureEtaInfo(): StructureEtaRecursorInfo? {
+    val cacheKey = this.name
+    if (env.structureEtaRecursorCache.containsKey(cacheKey)) {
+        return env.structureEtaRecursorCache[cacheKey]
+    }
+
+    val result = run {
+        val singleRule = this.rules.singleOrNull() ?: return@run null
+        val constructorDeclIndex = env.nameIndices[singleRule.ctorName] ?: return@run null
+        val constructorDecl =
+            env.declarations[constructorDeclIndex] as? Inductive.ConstructorVal ?: return@run null
+        val inductiveDeclIndex = env.nameIndices[constructorDecl.inductName] ?: return@run null
+        val inductiveDecl =
+            env.declarations[inductiveDeclIndex] as? Inductive.InductiveVal ?: return@run null
+        if (inductiveDecl.isRec || inductiveDecl.numIndices != 0 || inductiveDecl.ctors.size != 1) return@run null
+        if (inductiveDecl.ctors.single() != constructorDeclIndex) return@run null
+        if (constructorDecl.numParams != inductiveDecl.numParams) return@run null
+        if (constructorDecl.numFields != singleRule.nfields) return@run null
+        if (singleRule.ctorName != constructorDecl.name) return@run null
+
+        StructureEtaRecursorInfo(inductiveDeclIndex, inductiveDecl, constructorDecl, singleRule)
+    }
+    env.structureEtaRecursorCache[cacheKey] = result
+    return result
 }
 
 context(env: Environment)
@@ -4732,7 +4743,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
             if (newLeft == this.left && newRight == this.right) {
                 this
             } else {
-                env.addCustomMaxLevel(newLeft.il, newRight.il)
+                makeLevelMax(newLeft, newRight)
             }
         }
 
@@ -4742,7 +4753,7 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
             if (newLeft == this.left && newRight == this.right) {
                 this
             } else {
-                env.addCustomImaxLevel(newLeft.il, newRight.il)
+                makeLevelImax(newLeft, newRight)
             }
         }
     }

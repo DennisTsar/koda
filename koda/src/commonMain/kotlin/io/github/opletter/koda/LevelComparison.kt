@@ -1,109 +1,289 @@
 package io.github.opletter.koda
 
+private data class LevelOffset(val base: Level, val offset: Int)
+
+private data class LevelComparisonKey(val greater: Int, val lesser: Int)
+
 context(env: Environment)
 fun Level.isEqual(other: Level): Boolean {
-    if (this === other || this == other || this.il == other.il) return true
-    return this.isLessOrEqual(other) && other.isLessOrEqual(this)
+    if (this === other || this.il == other.il) return true
+    val forward = this.trySimpleIsLessOrEqual(other)
+    if (forward == false) return false
+    val backward = other.trySimpleIsLessOrEqual(this)
+    if (backward == false) return false
+    if (forward == true && backward == true) return true
+    return this.normalizeLevel().il == other.normalizeLevel().il
+}
+
+context(env: Environment)
+fun makeLevelMax(left: Level, right: Level): Level {
+    if (left.isExplicit() && right.isExplicit()) {
+        return if (left.toOffset().offset >= right.toOffset().offset) left else right
+    }
+    if (left.il == right.il) return left
+    if (left === Level.Zero) return right
+    if (right === Level.Zero) return left
+    if (right is Level.Max && (right.left.il == left.il || right.right.il == left.il)) return right
+    if (left is Level.Max && (left.left.il == right.il || left.right.il == right.il)) return left
+
+    val leftOffset = left.toOffset()
+    val rightOffset = right.toOffset()
+    if (leftOffset.base.il == rightOffset.base.il) {
+        return if (leftOffset.offset >= rightOffset.offset) left else right
+    }
+    return env.addCustomMaxLevel(left.il, right.il)
+}
+
+context(env: Environment)
+fun makeLevelImax(left: Level, right: Level): Level {
+    if (right.isDefinitelyNonzero()) return makeLevelMax(left, right)
+    if (right === Level.Zero) return Level.Zero
+    if (left === Level.Zero || left.isOne()) return right
+    if (left.il == right.il) return left
+    return env.addCustomImaxLevel(left.il, right.il)
+}
+
+context(env: Environment)
+fun Level.isLessOrEqual(other: Level): Boolean {
+    this.trySimpleIsLessOrEqual(other)?.let { return it }
+    val lesser = this.normalizeLevel()
+    val greater = other.normalizeLevel()
+    val cache = mutableMapOf<LevelComparisonKey, Boolean>()
+
+    fun isGeq(left: Level, right: Level): Boolean {
+        val key = LevelComparisonKey(left.il, right.il)
+        cache[key]?.let { return it }
+
+        val result = when {
+            left.il == right.il || right === Level.Zero -> true
+            right is Level.Max -> isGeq(left, right.left) && isGeq(left, right.right)
+            left is Level.Max && (isGeq(left.left, right) || isGeq(left.right, right)) -> true
+            right is Level.Imax -> isGeq(left, right.left) && isGeq(left, right.right)
+            left is Level.Imax -> isGeq(left.right, right)
+            else -> {
+                val leftOffset = left.toOffset()
+                val rightOffset = right.toOffset()
+                when {
+                    leftOffset.base.il == rightOffset.base.il || rightOffset.base === Level.Zero ->
+                        leftOffset.offset >= rightOffset.offset
+
+                    leftOffset.offset == rightOffset.offset && leftOffset.offset > 0 ->
+                        isGeq(leftOffset.base, rightOffset.base)
+
+                    else -> false
+                }
+            }
+        }
+        cache[key] = result
+        return result
+    }
+
+    return isGeq(greater, lesser)
+}
+
+context(env: Environment)
+private fun Level.trySimpleIsLessOrEqual(other: Level, balance: Int = 0): Boolean? = when {
+    balance == 0 && other === Level.Zero -> this.isDefinitelyLeZero()
+    this.il == other.il && balance >= 0 -> true
+    this === Level.Zero && balance >= 0 -> true
+    other === Level.Zero && balance < 0 -> false
+    this is Level.Param && other is Level.Param -> this.name == other.name && balance >= 0
+    this is Level.Param && other === Level.Zero -> false
+    this === Level.Zero && other is Level.Param -> balance >= 0
+    this is Level.Succ -> this.level.trySimpleIsLessOrEqual(other, balance - 1)
+    other is Level.Succ -> this.trySimpleIsLessOrEqual(other.level, balance + 1)
+    this is Level.Max -> {
+        val leftResult = this.left.trySimpleIsLessOrEqual(other, balance)
+        if (leftResult == false) {
+            false
+        } else {
+            val rightResult = this.right.trySimpleIsLessOrEqual(other, balance)
+            when {
+                rightResult == false -> false
+                leftResult == true && rightResult == true -> true
+                else -> null
+            }
+        }
+    }
+
+    this is Level.Param && other is Level.Max -> {
+        val leftResult = this.trySimpleIsLessOrEqual(other.left, balance)
+        if (leftResult == true) {
+            true
+        } else {
+            val rightResult = this.trySimpleIsLessOrEqual(other.right, balance)
+            when {
+                rightResult == true -> true
+                leftResult == false && rightResult == false -> false
+                else -> null
+            }
+        }
+    }
+
+    this === Level.Zero && other is Level.Max -> {
+        val leftResult = this.trySimpleIsLessOrEqual(other.left, balance)
+        if (leftResult == true) {
+            true
+        } else {
+            val rightResult = this.trySimpleIsLessOrEqual(other.right, balance)
+            when {
+                rightResult == true -> true
+                leftResult == false && rightResult == false -> false
+                else -> null
+            }
+        }
+    }
+
+    else -> null
 }
 
 context(env: Environment)
 private fun Level.isDefinitelyLeZero(): Boolean = when (this) {
     Level.Zero -> true
-    is Level.Param -> false
-    is Level.Succ -> false
+    is Level.Param, is Level.Succ -> false
     is Level.Max -> this.left.isDefinitelyLeZero() && this.right.isDefinitelyLeZero()
     is Level.Imax -> this.right.isDefinitelyLeZero()
 }
 
-// Based on the reference implementation in Type Checking in Lean 4, which is from Gabriel Ebner's Lean 3 checker trepplein
-// https://ammkrn.github.io/type_checking_in_lean4/levels.html#partial-order-on-levels
 context(env: Environment)
-fun Level.isLessOrEqual(other: Level, balance: Int = 0): Boolean = when (this) {
-    else if balance == 0 && other is Level.Zero -> this.isDefinitelyLeZero()
-    is Level.Zero if balance >= 0 -> true
-    else if other is Level.Zero && balance < 0 -> false
-    is Level.Param if other is Level.Param -> this.name == other.name && balance >= 0
-    is Level.Param if other is Level.Zero -> false
-    is Level.Zero if other is Level.Param -> balance >= 0
-    is Level.Succ -> this.level.isLessOrEqual(other, balance - 1)
-    else if other is Level.Succ -> this.isLessOrEqual(other.level, balance + 1)
-    is Level.Max -> this.left.isLessOrEqual(other, balance) && this.right.isLessOrEqual(other, balance)
-//    is Level.Param, is Level.Zero if other is Level.Max -> // illegal syntax
-    is Level.Param if other is Level.Max -> this.isLessOrEqual(other.left, balance)
-            || this.isLessOrEqual(other.right, balance)
+private fun Level.normalizeLevel(): Level {
+    env.levelNormalizationCache[this.il]?.let { return it }
 
-    is Level.Zero if other is Level.Max -> this.isLessOrEqual(other.left, balance)
-            || this.isLessOrEqual(other.right, balance)
+    val offset = this.toOffset()
+    val normalized = when (val base = offset.base) {
+        Level.Zero -> Level.Zero.addOffset(offset.offset)
+        is Level.Param -> env.addCustomParamLevel(base.nameIndex).addOffset(offset.offset)
+        is Level.Imax -> {
+            val normalizedImax = makeNormalizedImax(
+                base.left.normalizeLevel(),
+                base.right.normalizeLevel(),
+            )
+            normalizedImax.addOffset(offset.offset)
+        }
 
-    is Level.Imax if this.right is Level.Param -> {
-        compareByCases(this.right as Level.Param) { this.isLessOrEqual(env.levels[other.il]!!, balance) }
+        is Level.Max -> {
+            val rawArgs = mutableListOf<Level>()
+            val pending = ArrayDeque<Level>()
+            pending.addLast(base)
+            while (pending.isNotEmpty()) {
+                when (val current = pending.removeLast()) {
+                    is Level.Max -> {
+                        pending.addLast(current.right)
+                        pending.addLast(current.left)
+                    }
+
+                    else -> rawArgs += current
+                }
+            }
+
+            val normalizedArgs = mutableListOf<Level>()
+            rawArgs.forEach { argument ->
+                val normalizedArgument = argument.normalizeLevel()
+                val normalizedPending = ArrayDeque<Level>()
+                normalizedPending.addLast(normalizedArgument)
+                while (normalizedPending.isNotEmpty()) {
+                    when (val current = normalizedPending.removeLast()) {
+                        is Level.Max -> {
+                            normalizedPending.addLast(current.right)
+                            normalizedPending.addLast(current.left)
+                        }
+
+                        else -> normalizedArgs += current.addOffset(offset.offset)
+                    }
+                }
+            }
+            makeNormalizedMax(normalizedArgs)
+        }
+
+        is Level.Succ -> error("toOffset returned a successor base")
     }
 
-    else if other is Level.Imax && other.right is Level.Param -> {
-        compareByCases(other.right as Level.Param) { env.levels[this.il]!!.isLessOrEqual(other, balance) }
-    }
-
-    is Level.Imax if other is Level.Imax && balance >= 0 && this.left.isEqual(other.left) && this.right.isEqual(other.right) -> true
-    is Level.Imax if this.right is Level.Imax -> {
-        val customImax = env.addCustomImaxLevel(this.left.il, (this.right as Level.Imax).right.il)
-        val customMax = env.addCustomMaxLevel(customImax.il, this.right.il)
-        customMax.isLessOrEqual(other, balance)
-    }
-
-    is Level.Imax if this.right is Level.Max -> {
-        val rightMax = this.right as Level.Max
-        val leftImax = env.addCustomImaxLevel(this.left.il, rightMax.left.il)
-        val rightImax = env.addCustomImaxLevel(this.left.il, rightMax.right.il)
-        val customMax = env.addCustomMaxLevel(leftImax.il, rightImax.il)
-        customMax.isLessOrEqual(other, balance)
-    }
-    else if other is Level.Imax && other.right is Level.Imax -> {
-        val customImax = env.addCustomImaxLevel(other.left.il, (other.right as Level.Imax).right.il)
-        val customMax = env.addCustomMaxLevel(customImax.il, other.right.il)
-        this.isLessOrEqual(customMax, balance)
-    }
-
-    else if other is Level.Imax && other.right is Level.Max -> {
-        val rightMax = other.right as Level.Max
-        val leftImax = env.addCustomImaxLevel(other.left.il, rightMax.left.il)
-        val rightImax = env.addCustomImaxLevel(other.left.il, rightMax.right.il)
-        val customMax = env.addCustomMaxLevel(leftImax.il, rightImax.il)
-        this.isLessOrEqual(customMax, balance)
-    }
-    else if (this != this.simplify() || other != other.simplify()) ->
-        this.simplify().isLessOrEqual(other.simplify(), balance)
-
-    Level.Zero, is Level.Imax, is Level.Param ->
-        error("unexpected unhandled case: ${this.toStringDetailed()} ${other.toStringDetailed()} $balance")
+    env.levelNormalizationCache[this.il] = normalized
+    return normalized
 }
 
 context(env: Environment)
-private inline fun <T> withTemporaryLevel(levelIndex: Int, tempLevel: Level, block: () -> T): T {
-    val previousLevel = env.levels[levelIndex] ?: error("Level $levelIndex not found")
-    env.levels[levelIndex] = tempLevel
-    return try {
-        block()
-    } finally {
-        env.levels[levelIndex] = previousLevel
+private fun Level.toOffset(): LevelOffset {
+    var base = this
+    var offset = 0
+    while (base is Level.Succ) {
+        base = base.level
+        offset += 1
     }
+    return LevelOffset(base, offset)
 }
 
 context(env: Environment)
-private fun compareByCases(paramLevel: Level.Param, compare: () -> Boolean): Boolean {
-    val caseZero = withTemporaryLevel(paramLevel.il, Level.Zero) { compare() }
-    val tempParamLevel = env.addCustomParamLevel(paramLevel.nameIndex)
-    val succLevel = Level.Succ(tempParamLevel.il, paramLevel.il)
-    val caseSucc = withTemporaryLevel(paramLevel.il, succLevel) { compare() }
-    return caseZero && caseSucc
+private fun Level.isExplicit(): Boolean = this.toOffset().base === Level.Zero
+
+context(env: Environment)
+private fun Level.isOne(): Boolean {
+    val offset = this.toOffset()
+    return offset.base === Level.Zero && offset.offset == 1
 }
 
 context(env: Environment)
-private fun Level.simplify(): Level = when (this) {
-    is Level.Imax if this.right.isEqual(Level.Zero) -> Level.Zero
-    is Level.Imax if this.right is Level.Succ -> env.addCustomMaxLevel(this.left.il, this.right.il)
-    // In case of emergency, uncomment code
-//    is Level.Imax if this.right.isEqual(this.left) -> this.left
-//    is Level.Max if this.right.isEqual(this.left) -> this.left
+private fun Level.addOffset(amount: Int): Level {
+    var result = this
+    repeat(amount) {
+        result = env.addCustomSuccLevel(result.il)
+    }
+    return result
+}
 
-    else -> this
+context(env: Environment)
+private fun makeNormalizedMax(arguments: List<Level>): Level {
+    check(arguments.isNotEmpty())
+
+    val greatestByBase = mutableMapOf<Int, LevelOffset>()
+    val pending = ArrayDeque<Level>()
+    arguments.asReversed().forEach(pending::addLast)
+    while (pending.isNotEmpty()) {
+        when (val argument = pending.removeLast()) {
+            is Level.Max -> {
+                pending.addLast(argument.right)
+                pending.addLast(argument.left)
+            }
+
+            else -> {
+                val offset = argument.toOffset()
+                val previous = greatestByBase[offset.base.il]
+                if (previous == null || previous.offset < offset.offset) {
+                    greatestByBase[offset.base.il] = offset
+                }
+            }
+        }
+    }
+
+    val explicit = greatestByBase[Level.Zero.il]
+    if (
+        explicit != null &&
+        greatestByBase.values.any { it.base !== Level.Zero && it.offset >= explicit.offset }
+    ) {
+        greatestByBase.remove(Level.Zero.il)
+    }
+
+    val reduced = greatestByBase.values
+        .sortedWith(compareBy<LevelOffset>({ it.base.il }, { it.offset }))
+        .map { it.base.addOffset(it.offset) }
+    if (reduced.size == 1) return reduced.single()
+
+    var result = reduced.last()
+    for (index in reduced.lastIndex - 1 downTo 0) {
+        result = env.addCustomMaxLevel(reduced[index].il, result.il)
+    }
+    return result
+}
+
+context(env: Environment)
+private fun makeNormalizedImax(left: Level, right: Level): Level {
+    return makeLevelImax(left, right)
+}
+
+context(env: Environment)
+private fun Level.isDefinitelyNonzero(): Boolean = when (this) {
+    Level.Zero, is Level.Param -> false
+    is Level.Succ -> true
+    is Level.Max -> this.left.isDefinitelyNonzero() || this.right.isDefinitelyNonzero()
+    is Level.Imax -> this.right.isDefinitelyNonzero()
 }

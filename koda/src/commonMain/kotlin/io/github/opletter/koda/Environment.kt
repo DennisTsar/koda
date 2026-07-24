@@ -186,6 +186,7 @@ class Environment {
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
     val expressions: IntObjectStore<Expression> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
+    val levelNormalizationCache: MutableMap<Int, Level> = mutableMapOf()
 
     val clock = TimeSource.Monotonic.markNow()
 
@@ -199,6 +200,7 @@ class Environment {
     val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
+    internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
     val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
     val defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
     val inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
@@ -379,6 +381,7 @@ class Environment {
         levels.clearNegative() // MEM: 100 MB
         nextLevelIndex = 0
         customLevelIntern.clear()
+        levelNormalizationCache.clear()
         expressions.clearNegative() // MEM: 924 MB
         nextExprIndex = -100
         customExprIntern.clear()
