@@ -337,13 +337,13 @@ class Environment {
 
     fun addCustomExpr(exprConstructor: (Int) -> Expression): Expression {
         val candidateIndex = nextExprIndex - 1
-        val newExpr = exprConstructor(candidateIndex) // MEM: 3.71 GB
+        val newExpr = exprConstructor(candidateIndex)
         val internKey = newExpr.toExprKey()
         if (internKey != null) {
             customExprIntern[internKey]?.let { return it }
         }
         nextExprIndex = candidateIndex
-        expressions[nextExprIndex] = newExpr // MEM: 5.68 GB
+        expressions[nextExprIndex] = newExpr
         if (internKey != null) {
             customExprIntern[internKey] = newExpr
         }
@@ -378,11 +378,11 @@ class Environment {
     }
 
     fun clearCustom() {
-        levels.clearNegative() // MEM: 100 MB
+        levels.clearNegative()
         nextLevelIndex = 0
         customLevelIntern.clear()
         levelNormalizationCache.clear()
-        expressions.clearNegative() // MEM: 924 MB
+        expressions.clearNegative()
         nextExprIndex = -100
         customExprIntern.clear()
         whnfCacheNoLevelSubst.clear()

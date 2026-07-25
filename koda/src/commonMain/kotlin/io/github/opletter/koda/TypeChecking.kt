@@ -4409,10 +4409,10 @@ fun Expression.lift(amount: Int): Expression {
     if (amount == 0 || this.maxLooseBVarIndex() < 0) return this
     val cacheKey = ExprPairKey(this.ie, amount)
     env.liftCache[cacheKey]?.let { return it }
-    val result = this.rewriteBinders { bvarExpr, depth -> // MEM: 3 GB
+    val result = this.rewriteBinders { bvarExpr, depth ->
         if (bvarExpr.bvar >= depth) {
-            env.addCustomExpr { // MEM: 750 MB
-                bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it) // MEM: 150 MB
+            env.addCustomExpr {
+                bvarExpr.copy(bvar = bvarExpr.bvar + amount, ie = it)
             }
         } else {
             bvarExpr
@@ -4545,15 +4545,15 @@ fun Expression.applySubst(subst: List<Expression>): Expression {
         }
     }
 
-    val result = this.rewriteBinders { bvarExpr, currentDepth -> // MEM: 11 GB
+    val result = this.rewriteBinders { bvarExpr, currentDepth ->
         when {
             bvarExpr.bvar < currentDepth -> bvarExpr
             bvarExpr.bvar - currentDepth < subst.size ->
-                getLiftedSubst(bvarExpr.bvar - currentDepth, currentDepth) // MEM: 3 GB
+                getLiftedSubst(bvarExpr.bvar - currentDepth, currentDepth)
 
             else -> {
-                env.addCustomExpr { // MEM: 2 GB
-                    bvarExpr.copy(bvar = bvarExpr.bvar - subst.size, ie = it) // MEM: 490 MB
+                env.addCustomExpr {
+                    bvarExpr.copy(bvar = bvarExpr.bvar - subst.size, ie = it)
                 }
             }
         }
@@ -4620,7 +4620,7 @@ context(env: Environment)
 private fun Expression.rewriteBinders(
     depth: Int = 0,
     rewriteBvar: (Expression.Bvar, Int) -> Expression
-): Expression { // MEM: 11 GB
+): Expression {
     val cache = BinderRewriteCache()
     fun cacheKey(expr: Expression, currentDepth: Int): Long =
         (currentDepth.toLong() shl 32) xor (expr.ie.toLong() and 0xffffffffL)
