@@ -147,6 +147,8 @@ private fun Level.isDefinitelyLeZero(): Boolean = when (this) {
 
 context(env: Environment)
 private fun Level.normalizeLevel(): Level {
+    env.levelNormalizationCache[this.il]?.let { return it }
+
     val offset = this.toOffset()
     val normalized = when (val base = offset.base) {
         Level.Zero -> Level.Zero.addOffset(offset.offset)
@@ -196,6 +198,7 @@ private fun Level.normalizeLevel(): Level {
         is Level.Succ -> error("toOffset returned a successor base")
     }
 
+    env.levelNormalizationCache[this.il] = normalized
     return normalized
 }
 
