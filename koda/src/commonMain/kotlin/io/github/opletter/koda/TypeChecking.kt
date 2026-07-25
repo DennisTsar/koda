@@ -817,10 +817,8 @@ private fun ClosedClosure.closedDefEq(
                 )
             ) continue else return fail("missing environment binding")
         }
-        val compared = unfoldForComparison(task.left, task.right)
+        val [left, right] = unfoldForComparison(task.left, task.right)
             ?: return fail("closure reduction stuck")
-        val left = compared.first
-        val right = compared.second
 
         val leftProjection = left.head.expression as? Expression.Proj
         val rightProjection = right.head.expression as? Expression.Proj
@@ -855,8 +853,7 @@ private fun ClosedClosure.closedDefEq(
             val leftIsAnyConstructor = (left.head.expression as? Expression.Const)?.decl is Inductive.ConstructorVal
             val rightIsAnyConstructor = (right.head.expression as? Expression.Const)?.decl is Inductive.ConstructorVal
             if (leftEta != null && rightEta == null && !rightIsAnyConstructor) {
-                val inductiveIndex = leftEta.first
-                val constructor = leftEta.second
+                val [inductiveIndex, constructor] = leftEta
                 val constructorConst = left.head.expression as Expression.Const
                 for (fieldIndex in 0 until constructor.numFields) {
                     pending.addLast(
@@ -876,8 +873,7 @@ private fun ClosedClosure.closedDefEq(
                 continue
             }
             if (rightEta != null && leftEta == null && !leftIsAnyConstructor) {
-                val inductiveIndex = rightEta.first
-                val constructor = rightEta.second
+                val [inductiveIndex, constructor] = rightEta
                 val constructorConst = right.head.expression as Expression.Const
                 for (fieldIndex in 0 until constructor.numFields) {
                     pending.addLast(
@@ -2027,9 +2023,7 @@ private fun Expression.tryStructuralDefEq(other: Expression): Boolean? {
     val visited = mutableSetOf<ExprPairKey>()
     pending.addLast(this to other)
     while (pending.isNotEmpty()) {
-        val pair = pending.removeLast()
-        val left = pair.first
-        val right = pair.second
+        val [left, right] = pending.removeLast()
         if (left === right) continue
         if (!visited.add(ExprPairKey(left.ie, right.ie))) continue
 
@@ -4570,9 +4564,7 @@ private fun Environment.findRootInductive(shortName: String): Pair<Int, Inductiv
 
 private fun Environment.findChildNameIndex(parentNameIndex: Int, shortName: String): Int? {
     return this.names.toList()
-        .firstOrNull { entry ->
-            val nameIndex = entry.first
-            val name = entry.second
+        .firstOrNull { [nameIndex, name] ->
             nameIndex != 0 &&
                     name is Name.Str &&
                     name.pre == parentNameIndex &&
