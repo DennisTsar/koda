@@ -214,11 +214,7 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
 }
 
 context(env: Environment)
-private fun Expression.checkHasType(
-    expectedType: Expression,
-    localCtx: List<Expression> = emptyList(),
-): Boolean {
-    check(localCtx.isEmpty()) { "Declaration checking requires closed terms" }
+private fun Expression.checkHasType(expectedType: Expression): Boolean {
     val inferredValueType = this.inferType()
     if (env.shouldLog) println("inferred type of value: ${inferredValueType/*.toStringDetailed()*/}")
     if (env.shouldLog) {
@@ -2643,20 +2639,15 @@ private sealed interface InferFrame {
     data class LambdaBody(val opened: List<OpenLambda>) : InferFrame
     data class LetType(
         val expression: Expression.LetE,
-        val validate: Boolean,
         val localCtx: List<Expression>,
     ) : InferFrame
     data class LetValue(
         val expression: Expression.LetE,
-        val type: Expression,
-        val value: Expression,
-        val validate: Boolean,
         val localCtx: List<Expression>,
     ) : InferFrame
     data class LetBody(val value: Expression) : InferFrame
     data class Projection(
         val expression: Expression.Proj,
-        val validate: Boolean,
         val localCtx: List<Expression>,
     ) : InferFrame
 }
@@ -2760,7 +2751,7 @@ fun Expression.inferType(
 
                 is Expression.LetE -> {
                     if (validate) {
-                        frames.addLast(InferFrame.LetType(expr, validate, currentCtx))
+                        frames.addLast(InferFrame.LetType(expr, currentCtx))
                         current = expr.typeExpr
                     } else {
                         frames.addLast(InferFrame.LetBody(expr.valueExpr))
@@ -2778,7 +2769,7 @@ fun Expression.inferType(
                 }
 
                 is Expression.Proj -> {
-                    frames.addLast(InferFrame.Projection(expr, validate, currentCtx))
+                    frames.addLast(InferFrame.Projection(expr, currentCtx))
                     current = expr.structExpr
                 }
 
@@ -3026,9 +3017,6 @@ fun Expression.inferType(
                 frames.addLast(
                     InferFrame.LetValue(
                         frame.expression,
-                        frame.expression.typeExpr,
-                        frame.expression.valueExpr,
-                        frame.validate,
                         frame.localCtx,
                     )
                 )
@@ -3038,20 +3026,21 @@ fun Expression.inferType(
             }
 
             is InferFrame.LetValue -> {
-                check(frame.type.isDefEq(result, frame.localCtx, frame.localCtx)) {
+                val expression = frame.expression
+                check(expression.typeExpr.isDefEq(result, frame.localCtx, frame.localCtx)) {
                     "Let value type mismatch in ${frame.expression.toStringDetailed()}: " +
-                            "expected ${frame.type.toStringDetailed()}, got ${result.toStringDetailed()}"
+                            "expected ${expression.typeExpr.toStringDetailed()}, got ${result.toStringDetailed()}"
                 }
-                frames.addLast(InferFrame.LetBody(frame.value))
-                current = frame.expression.bodyExpr
-                currentCtx = env.consLocalCtx(frame.type, frame.localCtx, frame.value)
+                frames.addLast(InferFrame.LetBody(expression.valueExpr))
+                current = expression.bodyExpr
+                currentCtx = env.consLocalCtx(expression.typeExpr, frame.localCtx, expression.valueExpr)
                 evaluating = true
             }
 
             is InferFrame.LetBody -> result = result.applySubst(listOf(frame.value))
 
             is InferFrame.Projection ->
-                result = frame.expression.inferProjectionType(result, frame.localCtx, frame.validate)
+                result = frame.expression.inferProjectionType(result, frame.localCtx)
         }
     }
 }
@@ -3644,7 +3633,6 @@ context(env: Environment)
 private fun Expression.Proj.inferProjectionType(
     structType0: Expression,
     localCtx: List<Expression>,
-    validate: Boolean,
 ): Expression {
     val structTypeExpr = structType0.whnf(localCtx = localCtx)
     val [structTypeHead, structTypeArgs] = structTypeExpr.unfoldApp()
