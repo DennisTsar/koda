@@ -6,9 +6,13 @@ import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.name
 import kotlin.io.path.useLines
 
-fun main() {
-    (1..28).forEach {
-        runTutorial(it)
+fun main(args: Array<String>) {
+    runFile(Path(args[0]))
+}
+
+fun runFile(file: java.nio.file.Path) {
+    file.useLines { lines ->
+        typeCheck(lines.map { Json.decodeFromString<ExportTypeWrapper>(it).value })
     }
 }
 
@@ -24,7 +28,7 @@ fun runTutorial(level: Int) {
     val shouldSucceed = file.parent.parent.name == "good"
     var success = true
     try {
-        typeCheck(parsedData)
+        typeCheck(parsedData.asSequence())
     } catch (e: Exception) {
         success = false
         if (shouldSucceed) {
