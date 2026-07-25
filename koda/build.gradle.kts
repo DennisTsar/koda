@@ -14,7 +14,12 @@ kotlin {
         implementation(libs.kotlinx.serialization.json)
     }
 
-    jvm()
+    jvm {
+        @OptIn(ExperimentalKotlinGradlePluginApi::class)
+        mainRun {
+            mainClass = "MainKt"
+        }
+    }
     js {
         browser()
         nodejs()
