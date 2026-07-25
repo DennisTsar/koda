@@ -177,142 +177,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
     }
 }
 
-context(env: Environment)
-private fun debugDeclarationShape(declaration: Declaration) {
-    val value = when (declaration) {
-        is Declaration.Def -> declaration.valueExpr
-        is Declaration.Opaque -> declaration.valueExpr
-        is Declaration.Thm -> declaration.valueExpr
-        else -> return
-    }
-    val pending = ArrayDeque<Expression>()
-    val seen = mutableSetOf<Int>()
-    val forms = mutableMapOf<String, Int>()
-    val constants = mutableMapOf<Name, Int>()
-    pending.add(value)
-    while (pending.isNotEmpty()) {
-        val expression = pending.removeLast()
-        if (!seen.add(expression.ie)) continue
-        val form = expression::class.simpleName ?: "?"
-        forms[form] = (forms[form] ?: 0) + 1
-        when (expression) {
-            is Expression.App -> {
-                pending.add(expression.fnExpr)
-                pending.add(expression.argExpr)
-            }
-            is Expression.Const -> constants[expression.name] = (constants[expression.name] ?: 0) + 1
-            is Expression.ForallE -> {
-                pending.add(expression.typeExpr)
-                pending.add(expression.bodyExpr)
-            }
-            is Expression.Lam -> {
-                pending.add(expression.typeExpr)
-                pending.add(expression.bodyExpr)
-            }
-            is Expression.LetE -> {
-                pending.add(expression.typeExpr)
-                pending.add(expression.valueExpr)
-                pending.add(expression.bodyExpr)
-            }
-            is Expression.Mdata -> pending.add(expression.expr)
-            is Expression.Proj -> pending.add(expression.structExpr)
-            is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
-        }
-    }
-    fun Expression.shallow(depth: Int = 0): String {
-        if (depth >= 4) return this::class.simpleName ?: "?"
-        val [head, args] = asAppSpine()
-        if (args.isNotEmpty()) {
-            return "${head.shallow(depth + 1)}(${
-                args.take(5).joinToString { it.shallow(depth + 1) }
-            }${if (args.size > 5) ",..." else ""})"
-        }
-        return when (this) {
-            is Expression.Const -> name.toStringDetailed()
-            is Expression.NatVal -> natVal.toString()
-            is Expression.Bvar -> "#$bvar"
-            is Expression.Lam -> "lam(${bodyExpr.shallow(depth + 1)})"
-            is Expression.LetE -> "let(${valueExpr.shallow(depth + 1)},${bodyExpr.shallow(depth + 1)})"
-            is Expression.Mdata -> expr.shallow(depth + 1)
-            is Expression.Proj -> "proj[$projIndex](${structExpr.shallow(depth + 1)})"
-            is Expression.ForallE -> "forall(${bodyExpr.shallow(depth + 1)})"
-            is Expression.Sort -> "sort"
-            is Expression.StrVal -> "str"
-            is Expression.App -> error("unreachable")
-        }
-    }
-    println("debug declaration: ${declaration.name.toStringDetailed()} value=${value.shallow()}")
-    println("debug nodes: total=${seen.size} forms=${forms.entries.sortedByDescending { it.value }}")
-    println(
-        "debug constants: " + constants.entries.sortedByDescending { it.value }.take(40)
-            .joinToString { "${it.key.toStringDetailed()}=${it.value}" }
-    )
-}
-
-context(env: Environment)
-private fun Expression.debugContainsConstant(detailedName: String): Boolean {
-    val pending = ArrayDeque<Expression>()
-    val seen = mutableSetOf<Int>()
-    pending.add(this)
-    while (pending.isNotEmpty()) {
-        val expression = pending.removeLast()
-        if (!seen.add(expression.ie)) continue
-        when (expression) {
-            is Expression.App -> {
-                pending.add(expression.fnExpr)
-                pending.add(expression.argExpr)
-            }
-            is Expression.Const -> if (expression.name.toStringDetailed() == detailedName) return true
-            is Expression.ForallE -> {
-                pending.add(expression.typeExpr)
-                pending.add(expression.bodyExpr)
-            }
-            is Expression.Lam -> {
-                pending.add(expression.typeExpr)
-                pending.add(expression.bodyExpr)
-            }
-            is Expression.LetE -> {
-                pending.add(expression.typeExpr)
-                pending.add(expression.valueExpr)
-                pending.add(expression.bodyExpr)
-            }
-            is Expression.Mdata -> pending.add(expression.expr)
-            is Expression.Proj -> pending.add(expression.structExpr)
-            is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
-        }
-    }
-    return false
-}
-
-context(env: Environment)
-private fun Expression.debugHead(): String {
-    val [head, args] = this.asAppSpine()
-    val headName = (head as? Expression.Const)?.name?.toStringDetailed() ?: head::class.simpleName
-    return "id=$ie head=$headName args=${args.size} loose=${maxLooseBVarIndex()}"
-}
-
-context(env: Environment)
-private fun Expression.debugShallow(depth: Int = 0): String {
-    if (depth >= 3) return debugHead()
-    val [head, args] = asAppSpine()
-    if (args.isNotEmpty()) {
-        return "${head.debugShallow(depth + 1)}(${args.take(5).joinToString { it.debugShallow(depth + 1) }}" +
-                if (args.size > 5) ",...)" else ")"
-    }
-    return when (this) {
-        is Expression.Const -> name.toStringDetailed()
-        is Expression.NatVal -> natVal.toString()
-        is Expression.Bvar -> "#$bvar"
-        is Expression.Lam -> "lam(${bodyExpr.debugShallow(depth + 1)})"
-        is Expression.LetE -> "let(${valueExpr.debugShallow(depth + 1)},${bodyExpr.debugShallow(depth + 1)})"
-        is Expression.Mdata -> expr.debugShallow(depth)
-        is Expression.Proj -> "proj[$projIndex](${structExpr.debugShallow(depth + 1)})"
-        is Expression.ForallE -> "forall(${bodyExpr.debugShallow(depth + 1)})"
-        is Expression.Sort -> "sort"
-        is Expression.StrVal -> "str"
-        is Expression.App -> error("unreachable")
-    }
-}
 
 context(env: Environment)
 private fun Expression.rigidTypeIsProp(): Boolean {
@@ -371,8 +235,8 @@ fun Expression.isDefEq(
     localCtxRight: List<Expression> = emptyList(),
 ): Boolean {
     env.defEqCalls += 1
-    val traceDefEq = false
-    if (traceDefEq) println("debug defeq phase: start")
+//    val traceDefEq = false
+//    if (traceDefEq) println("debug defeq phase: start")
     if (this === other) return true
     val cacheKey = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
     env.defEqCache[cacheKey]?.let { cached ->
@@ -384,7 +248,7 @@ fun Expression.isDefEq(
         return value
     }
 
-    if (traceDefEq) println("debug defeq phase: quick")
+//    if (traceDefEq) println("debug defeq phase: quick")
     this.quickIsDefEq(other, localCtxLeft, localCtxRight)?.let { return finish(it) }
     if (
         (this.asNatLiteralValue() != null || other.asNatLiteralValue() != null) &&
@@ -392,29 +256,29 @@ fun Expression.isDefEq(
     ) {
         return finish(true)
     }
-    if (traceDefEq) println("debug defeq phase: bool")
+//    if (traceDefEq) println("debug defeq phase: bool")
     this.tryClosedBoolTrueDefEq(other, localCtxLeft)?.let { return finish(it) }
     other.tryClosedBoolTrueDefEq(this, localCtxRight)?.let { return finish(it) }
-    if (traceDefEq) println("debug defeq phase: structural")
+//    if (traceDefEq) println("debug defeq phase: structural")
     this.tryStructuralDefEq(other)?.let { return finish(it) }
 
-    if (traceDefEq) println("debug defeq phase: cheap whnf")
+//    if (traceDefEq) println("debug defeq phase: cheap whnf")
     val leftCore = this.whnfCore(localCtxLeft, cheapProjection = true)
     val rightCore = other.whnfCore(localCtxRight, cheapProjection = true)
-    if (traceDefEq) println("debug defeq phase: core quick")
+//    if (traceDefEq) println("debug defeq phase: core quick")
     leftCore.quickIsDefEq(rightCore, localCtxLeft, localCtxRight)?.let { return finish(it) }
     leftCore.tryStructuralDefEq(rightCore)?.let { return finish(it) }
     if (leftCore.tryProofIrrelevanceDefEqNoLog(rightCore, localCtxLeft, localCtxRight)) {
         return finish(true)
     }
 
-    if (traceDefEq) println("debug defeq phase: lazy delta")
+//    if (traceDefEq) println("debug defeq phase: lazy delta")
     val lazyResult = leftCore.lazyDeltaDefEq(rightCore, localCtxLeft, localCtxRight)
-    if (traceDefEq) {
-        println("debug defeq phase: after lazy delta")
-        println("debug lazy left=${lazyResult.left.debugShallow()}")
-        println("debug lazy right=${lazyResult.right.debugShallow()}")
-    }
+//    if (traceDefEq) {
+//        println("debug defeq phase: after lazy delta")
+//        println("debug lazy left=${lazyResult.left.debugShallow()}")
+//        println("debug lazy right=${lazyResult.right.debugShallow()}")
+//    }
     lazyResult.decision?.let { return finish(it) }
 
     val leftProjection = lazyResult.left as? Expression.Proj
@@ -428,22 +292,22 @@ fun Expression.isDefEq(
         return finish(true)
     }
 
-    if (traceDefEq) println("debug defeq phase: full whnf")
+//    if (traceDefEq) println("debug defeq phase: full whnf")
     val leftWhnf = lazyResult.left.whnfCore(localCtxLeft, cheapProjection = false)
     val rightWhnf = lazyResult.right.whnfCore(localCtxRight, cheapProjection = false)
-    if (traceDefEq) {
-        println("debug full left=${leftWhnf.debugShallow()}")
-        println("debug full right=${rightWhnf.debugShallow()}")
-    }
+//    if (traceDefEq) {
+//        println("debug full left=${leftWhnf.debugShallow()}")
+//        println("debug full right=${rightWhnf.debugShallow()}")
+//    }
     if (leftWhnf !== lazyResult.left || rightWhnf !== lazyResult.right) {
         return finish(
             leftWhnf.isDefEq(rightWhnf, localCtxLeft, localCtxRight)
         )
     }
 
-    if (traceDefEq) println("debug defeq phase: congruence")
+//    if (traceDefEq) println("debug defeq phase: congruence")
     val result = leftWhnf.isDefEqWhnf(rightWhnf, localCtxLeft, localCtxRight)
-    if (traceDefEq) println("debug defeq phase: done=$result")
+//    if (traceDefEq) println("debug defeq phase: done=$result")
     env.defEqCache[cacheKey] = result
     return result
 }
@@ -926,14 +790,14 @@ private fun ClosedClosure.closedDefEq(
         )
         if (!visited.add(state)) continue
         fun fail(reason: String, left: ClosedValue? = null, right: ClosedValue? = null): Boolean {
-            if (trace) {
-                println(
-                    "debug closure equality failed: $reason " +
-                            "left=${task.left.expression.debugHead()} right=${task.right.expression.debugHead()} " +
-                            "leftWhnf=${left?.head?.expression?.debugHead()}(${left?.arguments?.size}) " +
-                            "rightWhnf=${right?.head?.expression?.debugHead()}(${right?.arguments?.size})"
-                )
-            }
+//            if (trace) {
+//                println(
+//                    "debug closure equality failed: $reason " +
+//                            "left=${task.left.expression.debugHead()} right=${task.right.expression.debugHead()} " +
+//                            "leftWhnf=${left?.head?.expression?.debugHead()}(${left?.arguments?.size}) " +
+//                            "rightWhnf=${right?.head?.expression?.debugHead()}(${right?.arguments?.size})"
+//                )
+//            }
             return false
         }
         if (
@@ -1217,15 +1081,15 @@ private fun ClosedClosure.closedWhnf(
     val argumentStack = ArrayDeque<ClosedClosure>()
     argumentStack.addAll(this.cachedArguments ?: this.pendingArguments)
     val continuations = mutableListOf<ClosedEvalContinuation>()
-    var steps = 0L
-    var applications = 0L
-    var betaReductions = 0L
-    var deltaReductions = 0L
-    var recursorReductions = 0L
+//    var steps = 0L
+//    var applications = 0L
+//    var betaReductions = 0L
+//    var deltaReductions = 0L
+//    var recursorReductions = 0L
     var currentIsWhnf = false
     var unfoldDefinitions = unfoldDefinitionsAtRoot
-    val deltaCounts = if (debugClosedEvaluation) mutableMapOf<Name, Long>() else null
-    val recursorCounts = if (debugClosedEvaluation) mutableMapOf<Name, Long>() else null
+//    val deltaCounts = if (debugClosedEvaluation) mutableMapOf<Name, Long>() else null
+//    val recursorCounts = if (debugClosedEvaluation) mutableMapOf<Name, Long>() else null
 
     fun fail(reason: String): ClosedValue? {
         if (debugTargetDeclaration) println("debug evaluator stuck: $reason")
@@ -1375,7 +1239,7 @@ private fun ClosedClosure.closedWhnf(
             val lambda = currentExpression as? Expression.Lam
             if (lambda != null && argumentStack.isEmpty()) {
                 if (lambda.typeExpr.rigidTypeIsProp()) argument.isProof = true
-                betaReductions += 1
+//                betaReductions += 1
                 currentExpression = lambda.bodyExpr
                 currentLocals = ClosedEvalEnv.Bind(argument, currentLocals)
             } else {
@@ -1389,19 +1253,19 @@ private fun ClosedClosure.closedWhnf(
     }
 
     while (true) {
-        steps += 1
-        if (trace && steps % 1_000_000L == 0L) {
-            println(
-                "debug evaluator progress: steps=$steps current=${currentExpression.debugHead()} " +
-                        "args=${argumentStack.size} continuations=${continuations.size} " +
-                        "beta=$betaReductions delta=$deltaReductions recursors=$recursorReductions"
-            )
-        }
+//        steps += 1
+//        if (trace && steps % 1_000_000L == 0L) {
+//            println(
+//                "debug evaluator progress: steps=$steps current=${currentExpression.debugHead()} " +
+//                        "args=${argumentStack.size} continuations=${continuations.size} " +
+//                        "beta=$betaReductions delta=$deltaReductions recursors=$recursorReductions"
+//            )
+//        }
         if (currentIsWhnf) {
             currentIsWhnf = false
         } else when (val expression = currentExpression) {
             is Expression.App -> {
-                applications += 1
+//                applications += 1
                 argumentStack.addFirst(ClosedClosure(expression.argExpr, currentLocals))
                 currentExpression = expression.fnExpr
                 continue
@@ -1429,7 +1293,7 @@ private fun ClosedClosure.closedWhnf(
 
             is Expression.Lam -> {
                 if (argumentStack.isNotEmpty()) {
-                    betaReductions += 1
+//                    betaReductions += 1
                     val argument = argumentStack.removeFirst()
                     if (expression.typeExpr.rigidTypeIsProp()) argument.isProof = true
                     currentExpression = expression.bodyExpr
@@ -1499,8 +1363,8 @@ private fun ClosedClosure.closedWhnf(
                         val arguments = argumentStack.toList()
                         val kRule = tryKRule(expression, recursor, arguments)
                         if (kRule != null) {
-                            recursorReductions += 1
-                            incrementCount(recursorCounts, expression.name)
+//                            recursorReductions += 1
+//                            incrementCount(recursorCounts, expression.name)
                             applyRecursorRule(expression, recursor, arguments, kRule, emptyList())
                             continue
                         }
@@ -1535,8 +1399,8 @@ private fun ClosedClosure.closedWhnf(
                 }
 
                 if (unfoldDefinitions) expression.instantiatedValue()?.let { definitionValue ->
-                    deltaReductions += 1
-                    incrementCount(deltaCounts, expression.name)
+//                    deltaReductions += 1
+//                    incrementCount(deltaCounts, expression.name)
                     currentExpression = definitionValue
                     currentLocals = ClosedEvalEnv.Empty
                     continue
@@ -1547,22 +1411,22 @@ private fun ClosedClosure.closedWhnf(
         }
 
         if (continuations.isEmpty()) {
-            if (debugClosedEvaluation) {
-                println(
-                    "closed WHNF: root=${this.expression.ie} steps=$steps apps=$applications " +
-                            "beta=$betaReductions delta=$deltaReductions recursor=$recursorReductions"
-                )
-                if (steps >= 1_000_000) {
-                    println(
-                        "  delta: " + deltaCounts.orEmpty().entries.sortedByDescending { it.value }.take(8)
-                            .joinToString { "${it.key.toStringDetailed()}=${it.value}" }
-                    )
-                    println(
-                        "  recursors: " + recursorCounts.orEmpty().entries.sortedByDescending { it.value }.take(8)
-                            .joinToString { "${it.key.toStringDetailed()}=${it.value}" }
-                    )
-                }
-            }
+//            if (debugClosedEvaluation) {
+//                println(
+//                    "closed WHNF: root=${this.expression.ie} steps=$steps apps=$applications " +
+//                            "beta=$betaReductions delta=$deltaReductions recursor=$recursorReductions"
+//                )
+//                if (steps >= 1_000_000) {
+//                    println(
+//                        "  delta: " + deltaCounts.orEmpty().entries.sortedByDescending { it.value }.take(8)
+//                            .joinToString { "${it.key.toStringDetailed()}=${it.value}" }
+//                    )
+//                    println(
+//                        "  recursors: " + recursorCounts.orEmpty().entries.sortedByDescending { it.value }.take(8)
+//                            .joinToString { "${it.key.toStringDetailed()}=${it.value}" }
+//                    )
+//                }
+//            }
             return ClosedValue(ClosedClosure(currentExpression, currentLocals), argumentStack.toList())
         }
 
@@ -1621,8 +1485,8 @@ private fun ClosedClosure.closedWhnf(
 
             is ClosedEvalContinuation.Recursor -> {
                 unfoldDefinitions = continuation.unfoldDefinitions
-                recursorReductions += 1
-                incrementCount(recursorCounts, continuation.recursorConst.name)
+//                recursorReductions += 1
+//                incrementCount(recursorCounts, continuation.recursorConst.name)
                 val majorNat = terminalNatValue()
                 val rule: Inductive.RecursorVal.RecursorRule
                 val fieldArgs: List<ClosedClosure>
@@ -1674,8 +1538,8 @@ private fun ClosedClosure.closedWhnf(
                         setArgsInOrder(continuation.operands + continuation.extraArgs)
                         currentIsWhnf = true
                     } else {
-                        deltaReductions += 1
-                        incrementCount(deltaCounts, continuation.primitiveConst.name)
+//                        deltaReductions += 1
+//                        incrementCount(deltaCounts, continuation.primitiveConst.name)
                         currentExpression = definitionValue
                         currentLocals = ClosedEvalEnv.Empty
                         setArgsInOrder(continuation.operands + continuation.extraArgs)
@@ -1699,8 +1563,8 @@ private fun ClosedClosure.closedWhnf(
                             setArgsInOrder(continuation.operands + continuation.extraArgs)
                             currentIsWhnf = true
                         } else {
-                            deltaReductions += 1
-                            incrementCount(deltaCounts, continuation.primitiveConst.name)
+//                            deltaReductions += 1
+//                            incrementCount(deltaCounts, continuation.primitiveConst.name)
                             currentExpression = definitionValue
                             currentLocals = ClosedEvalEnv.Empty
                             setArgsInOrder(continuation.operands + continuation.extraArgs)
@@ -2001,12 +1865,12 @@ private fun Expression.lazyDeltaDefEq(
     var iterations = 0
     while (true) {
         iterations += 1
-        if (debugTargetDeclaration && iterations % 10_000 == 0) {
-            println(
-                "debug lazy progress: iterations=$iterations left=${left.debugHead()} " +
-                        "right=${right.debugHead()}"
-            )
-        }
+//        if (debugTargetDeclaration && iterations % 10_000 == 0) {
+//            println(
+//                "debug lazy progress: iterations=$iterations left=${left.debugHead()} " +
+//                        "right=${right.debugHead()}"
+//            )
+//        }
         left.quickIsDefEq(right, localCtxLeft, localCtxRight)?.let {
             return LazyDeltaResult(left, right, it)
         }
@@ -2080,8 +1944,8 @@ private fun Expression.App.isDefEqWhnfSpine(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    val traceSpine = debugTargetDeclaration &&
-            (this.ie == -3489 && other.ie == 2395 || this.ie == 2395 && other.ie == -3489)
+//    val traceSpine = debugTargetDeclaration &&
+//            (this.ie == -3489 && other.ie == 2395 || this.ie == 2395 && other.ie == -3489)
     val leftSpine = this.unfoldApp()
     val rightSpine = other.unfoldApp()
     val leftArgs = leftSpine.second
@@ -2109,22 +1973,22 @@ private fun Expression.App.isDefEqWhnfSpine(
     for (index in leftArgs.indices) {
         val leftArgument = leftArgs[index]
         val rightArgument = rightArgs[index]
-        if (traceSpine) {
-            println(
-                "debug spine argument: index=$index left=${leftArgument.debugShallow()} " +
-                        "right=${rightArgument.debugShallow()}"
-            )
-        }
+//        if (traceSpine) {
+//            println(
+//                "debug spine argument: index=$index left=${leftArgument.debugShallow()} " +
+//                        "right=${rightArgument.debugShallow()}"
+//            )
+//        }
         if (leftArgument !== rightArgument) {
-            if (
-                debugTargetDeclaration &&
-                (leftArgument.debugContainsConstant("Nat.decLe") || rightArgument.debugContainsConstant("Nat.decLe"))
-            ) {
-                println(
-                    "debug Nat.decLe congruence: index=$index left=${leftArgument.debugHead()} " +
-                            "right=${rightArgument.debugHead()}"
-                )
-            }
+//            if (
+//                debugTargetDeclaration &&
+//                (leftArgument.debugContainsConstant("Nat.decLe") || rightArgument.debugContainsConstant("Nat.decLe"))
+//            ) {
+//                println(
+//                    "debug Nat.decLe congruence: index=$index left=${leftArgument.debugHead()} " +
+//                            "right=${rightArgument.debugHead()}"
+//                )
+//            }
             if (functionType == null) {
                 functionType = leftSpine.first.inferType(localCtx = localCtxLeft, validate = false)
                     .whnf(localCtx = localCtxLeft) as? Expression.ForallE
@@ -2140,13 +2004,13 @@ private fun Expression.App.isDefEqWhnfSpine(
             if (domainIsProp) {
                 env.typedCongruenceProofSkips += 1
             } else if (!leftArgument.isDefEq(rightArgument, localCtxLeft, localCtxRight)) {
-                if (debugTargetDeclaration) {
-                    println(
-                        "debug congruence failure: index=$index " +
-                                "leftId=${leftArgument.ie} rightId=${rightArgument.ie} " +
-                                "left=${leftArgument.debugShallow()} right=${rightArgument.debugShallow()}"
-                    )
-                }
+//                if (debugTargetDeclaration) {
+//                    println(
+//                        "debug congruence failure: index=$index " +
+//                                "leftId=${leftArgument.ie} rightId=${rightArgument.ie} " +
+//                                "left=${leftArgument.debugShallow()} right=${rightArgument.debugShallow()}"
+//                    )
+//                }
                 return false
             }
         }
@@ -2477,7 +2341,7 @@ private fun Expression.lazyDeltaStepInfo(): LazyDeltaHeadInfo? = when (this) {
 }
 
 context(env: Environment)
-private fun Expression.asAppSpine(): Pair<Expression, List<Expression>> = when (this) {
+fun Expression.asAppSpine(): Pair<Expression, List<Expression>> = when (this) {
     is Expression.App -> this.unfoldApp()
     else -> this to emptyList()
 }
@@ -2986,21 +2850,21 @@ fun Expression.inferType(
             }
 
             is InferFrame.AppArgument -> {
-                if (debugTargetDeclaration) {
-                    println(
-                        "debug argument type: expected=${frame.expectedType.debugHead()} " +
-                                "inferred=${result.debugHead()} argument=${frame.argument.debugHead()}"
-                    )
-                }
-                if (
-                    debugTargetDeclaration &&
-                    (frame.expectedType.debugContainsConstant("Nat.decLe") || result.debugContainsConstant("Nat.decLe"))
-                ) {
-                    println(
-                        "debug Nat.decLe argument type: expected=${frame.expectedType.debugHead()} " +
-                                "inferred=${result.debugHead()} argument=${frame.argument.debugHead()}"
-                    )
-                }
+//                if (debugTargetDeclaration) {
+//                    println(
+//                        "debug argument type: expected=${frame.expectedType.debugHead()} " +
+//                                "inferred=${result.debugHead()} argument=${frame.argument.debugHead()}"
+//                    )
+//                }
+//                if (
+//                    debugTargetDeclaration &&
+//                    (frame.expectedType.debugContainsConstant("Nat.decLe") || result.debugContainsConstant("Nat.decLe"))
+//                ) {
+//                    println(
+//                        "debug Nat.decLe argument type: expected=${frame.expectedType.debugHead()} " +
+//                                "inferred=${result.debugHead()} argument=${frame.argument.debugHead()}"
+//                    )
+//                }
                 val previousEagerReduction = env.eagerReduction
                 if (frame.argument.isEagerReduceApp()) env.eagerReduction = true
                 val argumentTypeMatches = try {
@@ -3008,67 +2872,67 @@ fun Expression.inferType(
                 } finally {
                     env.eagerReduction = previousEagerReduction
                 }
-                if (debugTargetDeclaration && !argumentTypeMatches) {
-                    println(
-                        "debug mismatch shape: expected=${frame.expectedType.debugShallow()} " +
-                                "inferred=${result.debugShallow()} argument=${frame.argument.debugShallow()}"
-                    )
-                    println("debug application shape: ${frame.expression.debugShallow()}")
-                    val pendingConstants = ArrayDeque<Expression>()
-                    val seenConstants = mutableSetOf<Int>()
-                    pendingConstants.addLast(result)
-                    while (pendingConstants.isNotEmpty()) {
-                        val expression = pendingConstants.removeLast()
-                        if (!seenConstants.add(expression.ie)) continue
-                        when (expression) {
-                            is Expression.App -> {
-                                pendingConstants.addLast(expression.fnExpr)
-                                pendingConstants.addLast(expression.argExpr)
-                            }
-                            is Expression.Const -> if (
-                                expression.name.toStringDetailed() == "AbsoluteValue.IsAdmissible.card"
-                            ) {
-                                println(
-                                    "debug card type=${expression.inferType(validate = false).debugShallow()} " +
-                                            "value=${expression.instantiatedValue()?.debugShallow()}"
-                                )
-                                var cardBody = expression.instantiatedValue()
-                                val cardDomains = mutableListOf<String>()
-                                while (cardBody is Expression.Lam) {
-                                    cardDomains += cardBody.typeExpr.debugShallow()
-                                    cardBody = cardBody.bodyExpr
-                                }
-                                println(
-                                    "debug card body: binders=${cardDomains.size} " +
-                                            "domains=${cardDomains.joinToString()} tail=${cardBody?.debugShallow()}"
-                                )
-                            }
-                            is Expression.ForallE -> {
-                                pendingConstants.addLast(expression.typeExpr)
-                                pendingConstants.addLast(expression.bodyExpr)
-                            }
-                            is Expression.Lam -> {
-                                pendingConstants.addLast(expression.typeExpr)
-                                pendingConstants.addLast(expression.bodyExpr)
-                            }
-                            is Expression.LetE -> {
-                                pendingConstants.addLast(expression.typeExpr)
-                                pendingConstants.addLast(expression.valueExpr)
-                                pendingConstants.addLast(expression.bodyExpr)
-                            }
-                            is Expression.Mdata -> pendingConstants.addLast(expression.expr)
-                            is Expression.Proj -> pendingConstants.addLast(expression.structExpr)
-                            is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
-                        }
-                    }
-                    println(
-                        "debug context values: " + frame.localCtx.indices
-                            .filter { env.localCtxValue(frame.localCtx, it) != null }
-                            .joinToString { index ->
-                                "$index=${env.localCtxValue(frame.localCtx, index)!!.debugShallow()}"
-                            }
-                    )
-                }
+//                if (debugTargetDeclaration && !argumentTypeMatches) {
+//                    println(
+//                        "debug mismatch shape: expected=${frame.expectedType.debugShallow()} " +
+//                                "inferred=${result.debugShallow()} argument=${frame.argument.debugShallow()}"
+//                    )
+//                    println("debug application shape: ${frame.expression.debugShallow()}")
+//                    val pendingConstants = ArrayDeque<Expression>()
+//                    val seenConstants = mutableSetOf<Int>()
+//                    pendingConstants.addLast(result)
+//                    while (pendingConstants.isNotEmpty()) {
+//                        val expression = pendingConstants.removeLast()
+//                        if (!seenConstants.add(expression.ie)) continue
+//                        when (expression) {
+//                            is Expression.App -> {
+//                                pendingConstants.addLast(expression.fnExpr)
+//                                pendingConstants.addLast(expression.argExpr)
+//                            }
+//                            is Expression.Const -> if (
+//                                expression.name.toStringDetailed() == "AbsoluteValue.IsAdmissible.card"
+//                            ) {
+//                                println(
+//                                    "debug card type=${expression.inferType(validate = false).debugShallow()} " +
+//                                            "value=${expression.instantiatedValue()?.debugShallow()}"
+//                                )
+//                                var cardBody = expression.instantiatedValue()
+//                                val cardDomains = mutableListOf<String>()
+//                                while (cardBody is Expression.Lam) {
+//                                    cardDomains += cardBody.typeExpr.debugShallow()
+//                                    cardBody = cardBody.bodyExpr
+//                                }
+//                                println(
+//                                    "debug card body: binders=${cardDomains.size} " +
+//                                            "domains=${cardDomains.joinToString()} tail=${cardBody?.debugShallow()}"
+//                                )
+//                            }
+//                            is Expression.ForallE -> {
+//                                pendingConstants.addLast(expression.typeExpr)
+//                                pendingConstants.addLast(expression.bodyExpr)
+//                            }
+//                            is Expression.Lam -> {
+//                                pendingConstants.addLast(expression.typeExpr)
+//                                pendingConstants.addLast(expression.bodyExpr)
+//                            }
+//                            is Expression.LetE -> {
+//                                pendingConstants.addLast(expression.typeExpr)
+//                                pendingConstants.addLast(expression.valueExpr)
+//                                pendingConstants.addLast(expression.bodyExpr)
+//                            }
+//                            is Expression.Mdata -> pendingConstants.addLast(expression.expr)
+//                            is Expression.Proj -> pendingConstants.addLast(expression.structExpr)
+//                            is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
+//                        }
+//                    }
+//                    println(
+//                        "debug context values: " + frame.localCtx.indices
+//                            .filter { env.localCtxValue(frame.localCtx, it) != null }
+//                            .joinToString { index ->
+//                                "$index=${env.localCtxValue(frame.localCtx, index)!!.debugShallow()}"
+//                            }
+//                    )
+//                }
                 check(argumentTypeMatches) {
                     "Application argument type mismatch in app ${frame.expression.toStringDetailed()}: " +
                             "expected ${frame.expectedType.toStringDetailed()}, got ${result.toStringDetailed()}"
@@ -4224,7 +4088,7 @@ private fun Expression.containsLooseBvarZero(depth: Int = 0): Boolean {
 }
 
 context(env: Environment)
-private fun Expression.maxLooseBVarIndex(): Int {
+fun Expression.maxLooseBVarIndex(): Int {
     env.maxLooseBVarIndexCache[this.ie]?.let { return it }
 
     fun Int.descendBinder(): Int = if (this < 0) -1 else this - 1
