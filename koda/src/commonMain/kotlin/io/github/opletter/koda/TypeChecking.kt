@@ -58,19 +58,19 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             }
             return@forEachIndexed
         }
-        val shouldTimeDeclaration = data is Declaration && debugTimingRanges.any { index in it }
-        debugTargetDeclaration = index == debugTargetIndex && data is Declaration
+//        val shouldTimeDeclaration = data is Declaration && debugTimingRanges.any { index in it }
+//        debugTargetDeclaration = index == debugTargetIndex && data is Declaration
 //        if (debugTargetDeclaration && data is Declaration) {
 //            debugDeclarationShape(data)
 //        }
-        val itemStart = env.clock.elapsedNow()
-        if (env.shouldLog || shouldTimeDeclaration) {
-            println("started: ${env.clock.elapsedNow()}")
-            val dataName = (data as? NamedDecl)?.name?.toStringDetailed() ?: data::class.simpleName
-            println("i: index=$index")
-            println("$dataName $data")
-            println("---")
-        }
+//        val itemStart = env.clock.elapsedNow()
+//        if (env.shouldLog || shouldTimeDeclaration) {
+//            println("started: ${env.clock.elapsedNow()}")
+//            val dataName = (data as? NamedDecl)?.name?.toStringDetailed() ?: data::class.simpleName
+//            println("i: index=$index")
+//            println("$dataName $data")
+//            println("---")
+//        }
         when (data) {
             is Name -> {
                 data.registerInto(env)
@@ -94,7 +94,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 check(data.levelParams.toSet().size == data.levelParams.size) { "Duplicate universe parameters in $data" }
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
 //                println("found type: ${data.typeExpr.toStringDetailed()}")
-                val debugStart = env.clock.elapsedNow()
+//                val debugStart = env.clock.elapsedNow()
                 try {
                     val declaredTypeSortLevel = data.typeExpr.inferSort()
                     when (data) {
@@ -130,9 +130,9 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                     )
                     throw error
                 }
-                if (shouldTimeDeclaration) {
-                    println("i: checked declaration at index=$index start=$debugStart end=${env.clock.elapsedNow()}")
-                }
+//                if (shouldTimeDeclaration) {
+//                    println("i: checked declaration at index=$index start=$debugStart end=${env.clock.elapsedNow()}")
+//                }
 
                 env.declTypeByName[data.name] = data.typeExpr
                 env.counter++
@@ -152,27 +152,27 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             )
         }
         if (data is Declaration || data is Inductive) {
-            val declarationStats = if (data is Declaration) """
-                defEqCalls=${env.defEqCalls} defEqCache=${env.defEqCache.size}
-                inferCache=${env.inferTypeCacheNoLevelSubst.size}
-                whnfCache=${env.whnfCacheNoLevelSubst.size + env.whnfCacheWithCtxNoLevelSubst.size}
-                proofIrrelevance=${env.proofIrrelevanceSuccesses}/${env.proofIrrelevanceAttempts}
-                typedProofSkips=${env.typedCongruenceProofSkips}
-            """.trimIndent().replace('\n', ' ') else null
+//            val declarationStats = if (data is Declaration) """
+//                defEqCalls=${env.defEqCalls} defEqCache=${env.defEqCache.size}
+//                inferCache=${env.inferTypeCacheNoLevelSubst.size}
+//                whnfCache=${env.whnfCacheNoLevelSubst.size + env.whnfCacheWithCtxNoLevelSubst.size}
+//                proofIrrelevance=${env.proofIrrelevanceSuccesses}/${env.proofIrrelevanceAttempts}
+//                typedProofSkips=${env.typedCongruenceProofSkips}
+//            """.trimIndent().replace('\n', ' ') else null
             env.clearCustom()
-            if (data is Declaration) {
-                val declarationElapsed = env.clock.elapsedNow() - itemStart
-                if (declarationElapsed.inWholeMilliseconds >= 1_000) {
-                    println(
-                        "slow declaration: name=${data.name.toStringDetailed()} index=$index " +
-                                "elapsed=$declarationElapsed ${checkNotNull(declarationStats)}"
-                    )
-                }
-            }
+//            if (data is Declaration) {
+//                val declarationElapsed = env.clock.elapsedNow() - itemStart
+//                if (declarationElapsed.inWholeMilliseconds >= 1_000) {
+//                    println(
+//                        "slow declaration: name=${data.name.toStringDetailed()} index=$index " +
+//                                "elapsed=$declarationElapsed ${checkNotNull(declarationStats)}"
+//                    )
+//                }
+//            }
         }
-        if (env.shouldLog) {
-            println("ended: ${env.clock.elapsedNow()}")
-        }
+//        if (env.shouldLog) {
+//            println("ended: ${env.clock.elapsedNow()}")
+//        }
 //        println("apple: ${env.levels.size} // ${env.expressions.size} // ${env.declarations.size} // ${env.names.size}")
     }
 }
@@ -469,9 +469,9 @@ private fun Expression.tryClosedBoolTrueDefEq(other: Expression, localCtx: List<
     if (!other.isBoolTrueConst() || this.maxLooseBVarIndex() >= 0 && !env.eagerReduction) return null
     val start = env.clock.elapsedNow()
     return this.closedBoolValue(localCtx).also { result ->
-        if (debugClosedEvaluation || debugTargetDeclaration) {
-            println("closed Bool evaluation: expr=${this.ie} result=$result elapsed=${env.clock.elapsedNow() - start}")
-        }
+//        if (debugClosedEvaluation || debugTargetDeclaration) {
+//            println("closed Bool evaluation: expr=${this.ie} result=$result elapsed=${env.clock.elapsedNow() - start}")
+//        }
     }
 }
 
