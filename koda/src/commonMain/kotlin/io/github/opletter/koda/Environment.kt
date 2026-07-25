@@ -186,7 +186,6 @@ class Environment {
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
     val expressions: IntObjectStore<Expression> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
-    val levelNormalizationCache: MutableMap<Int, Level> = mutableMapOf()
 
     val clock = TimeSource.Monotonic.markNow()
 
@@ -198,11 +197,10 @@ class Environment {
     val applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
     val unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
     val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
-    val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
+    val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
     val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
-    val defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
     val inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
     private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
@@ -381,7 +379,6 @@ class Environment {
         levels.clearNegative()
         nextLevelIndex = 0
         customLevelIntern.clear()
-        levelNormalizationCache.clear()
         expressions.clearNegative()
         nextExprIndex = -100
         customExprIntern.clear()
@@ -393,7 +390,6 @@ class Environment {
         unfoldedDefinitionCache.clear()
         maxLooseBVarIndexCache.clearNegative()
         defEqCache.clear()
-        defEqAppFailures.clear()
         inferTypeCacheNoLevelSubst.clear()
         localCtxIntern.clear()
         nextLocalCtxId = 1

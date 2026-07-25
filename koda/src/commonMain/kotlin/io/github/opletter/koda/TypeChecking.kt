@@ -2125,13 +2125,7 @@ private fun Expression.tryRegularDefinitionCongruence(
         !leftHead.levels.indices.all { leftHead.levels[it].isEqual(rightHead.levels[it]) }
     ) return null
 
-    val failureKey = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
-    if (failureKey in env.defEqAppFailures) return null
-    if (leftApp.tryConstantApplicationCongruence(rightApp, localCtxLeft, localCtxRight) == true) {
-        return true
-    }
-    env.defEqAppFailures += failureKey
-    return null
+    return leftApp.tryConstantApplicationCongruence(rightApp, localCtxLeft, localCtxRight).takeIf { it == true }
 }
 
 context(env: Environment)
@@ -2175,7 +2169,9 @@ private fun Expression.Const.projectionReductionInfo(): ProjectionReductionInfo?
         )
     }
 
-    env.projectionReductionInfoByNameIndex[nameIndex] = result
+    if (result != null) {
+        env.projectionReductionInfoByNameIndex[nameIndex] = result
+    }
     return result
 }
 
