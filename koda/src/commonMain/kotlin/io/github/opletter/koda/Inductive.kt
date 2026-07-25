@@ -253,7 +253,7 @@ private fun walkForalls(
     var currentLocalCtx: List<Expression> = emptyList()
 
     repeat(expectedBinders) { binderIndex ->
-        val current = if (reduceExpr) currentExpr.reduce() else currentExpr
+        val current = if (reduceExpr) currentExpr.whnf() else currentExpr
         val forall = current as? Expression.ForallE
             ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
 
@@ -262,7 +262,7 @@ private fun walkForalls(
         currentExpr = forall.bodyExpr
     }
 
-    return if (reduceExpr) currentExpr.reduce() else currentExpr
+    return if (reduceExpr) currentExpr.whnf() else currentExpr
 }
 
 context(env: Environment)
@@ -275,13 +275,13 @@ private fun collectForallBinders(
     val binders = mutableListOf<Expression.ForallE>()
     var currentExpr = expr
     repeat(expectedBinders) { binderIndex ->
-        val current = if (reduceExpr) currentExpr.reduce() else currentExpr
+        val current = if (reduceExpr) currentExpr.whnf() else currentExpr
         val forall = current as? Expression.ForallE
             ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
         binders += forall
         currentExpr = forall.bodyExpr
     }
-    return binders to if (reduceExpr) currentExpr.reduce() else currentExpr
+    return binders to if (reduceExpr) currentExpr.whnf() else currentExpr
 }
 
 context(env: Environment)
@@ -393,7 +393,7 @@ private fun checkRecursorRuleType(
         Expression.Const(_name = constructorNameIndex, us = majorBinderTypeConst.levels.map { it.il }, ie = it)
     }
     val majorExpr = constructorExpr.applyArgs(paramArgs + fieldArgs)
-    val majorType = majorExpr.inferType(localCtx = ruleLocalCtx).reduce()
+    val majorType = majorExpr.inferType(localCtx = ruleLocalCtx).whnf()
     val [majorTypeHead, majorTypeArgs] = majorType.unfoldApp()
     val majorTypeConst = majorTypeHead as? Expression.Const
         ?: error("Expected constructor result type for ${constructor.name}, got ${majorType.toStringDetailed()}")
@@ -412,7 +412,7 @@ private fun checkRecursorRuleType(
     val expectedResultType = recursorExpr
         .applyArgs(prefixArgs + majorTypeArgs.drop(constructor.numParams) + listOf(majorExpr))
         .inferType(localCtx = ruleLocalCtx)
-        .reduce()
+        .whnf()
 
     check(ruleResultType.isDefEq(expectedResultType, ruleLocalCtx, ruleLocalCtx)) {
         "Recursor rule for ${constructor.name} has wrong result type: expected ${expectedResultType.toStringDetailed()}, got ${ruleResultType.toStringDetailed()}"
@@ -488,7 +488,3 @@ private fun Expression.hasNegativeOccurrenceOf(targetNames: Set<Name>, polarity:
         is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
     }
 }
-
-context(env: Environment)
-private fun Expression.hasNegativeOccurrenceOf(targetName: Name, polarity: Int = 1): Boolean =
-    this.hasNegativeOccurrenceOf(setOf(targetName), polarity)

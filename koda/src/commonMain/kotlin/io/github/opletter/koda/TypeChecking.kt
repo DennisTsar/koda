@@ -449,38 +449,6 @@ fun Expression.isDefEq(
 }
 
 context(env: Environment)
-private fun Expression.tryClosedSpineDefEq(
-    other: Expression,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
-): Boolean {
-    if (this.maxLooseBVarIndex() < 0 && other.maxLooseBVarIndex() < 0) return false
-    val leftHead = this.asAppSpine().first as? Expression.Const ?: return false
-    val rightHead = other.asAppSpine().first as? Expression.Const ?: return false
-    if (leftHead.name != rightHead.name) return false
-    return this.tryEvalDefEq(other, localCtxLeft, localCtxRight)
-}
-
-context(env: Environment)
-private fun Expression.tryEvalDefEq(
-    other: Expression,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
-): Boolean {
-    val leftLocals = localCtxLeft.closedEvalEnv()
-    return ClosedClosure(this, leftLocals).closedDefEq(
-        ClosedClosure(other, localCtxRight.closedEvalEnv()),
-        expectedType = ClosedExpectedType.Closure(
-            ClosedClosure(
-                this.inferType(localCtx = localCtxLeft, validate = false),
-                leftLocals,
-            )
-        ),
-        trace = debugTargetDeclaration,
-    )
-}
-
-context(env: Environment)
 private fun List<Expression>.closedEvalEnv(): ClosedEvalEnv {
     var locals: ClosedEvalEnv = ClosedEvalEnv.Empty
     for (index in indices.reversed()) {
@@ -494,24 +462,6 @@ private fun List<Expression>.closedEvalEnv(): ClosedEvalEnv {
         locals = ClosedEvalEnv.Bind(closure, locals)
     }
     return locals
-}
-
-context(env: Environment)
-private fun Expression.tryBetaToRigidDefEq(other: Expression, localCtx: List<Expression>): Boolean {
-    val rigid = other as? Expression.Const ?: return false
-    if (rigid.instantiatedValue() != null) return false
-    val reducibleHead = this.asAppSpine().first
-    if (
-        reducibleHead !is Expression.Lam && reducibleHead !is Expression.LetE &&
-        (reducibleHead !is Expression.Const || reducibleHead.instantiatedValue() == null)
-    ) return false
-    val value = ClosedClosure(this, localCtx.closedEvalEnv()).closedWhnf(trace = debugTargetDeclaration)
-    value ?: return false
-    if (value.arguments.isNotEmpty()) return false
-    val head = value.head.expression as? Expression.Const ?: return false
-    return head.name == rigid.name &&
-            head.levels.size == rigid.levels.size &&
-            head.levels.indices.all { index -> head.levels[index].isEqual(rigid.levels[index]) }
 }
 
 context(env: Environment)
@@ -3248,11 +3198,6 @@ fun Expression.inferType(
     }
 }
 
-context(env: Environment)
-fun Expression.reduce(
-    levelSubst: Map<Int, Level> = emptyMap(),
-    localCtx: List<Expression> = emptyList(),
-): Expression = this.whnf(levelSubst, localCtx)
 
 context(env: Environment)
 fun Expression.whnf(
@@ -4381,11 +4326,6 @@ private fun Expression.hasNoUnboundBvars(localCtxSize: Int, depth: Int = 0): Boo
         is Expression.Proj -> this.structExpr.hasNoUnboundBvars(localCtxSize, depth)
         is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> true
     }
-}
-
-context(env: Environment)
-private fun Expression.dropOuterBinder(): Expression {
-    return this.dropOuterBinders(1)
 }
 
 context(env: Environment)
