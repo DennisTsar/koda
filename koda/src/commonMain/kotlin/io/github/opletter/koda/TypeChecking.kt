@@ -235,12 +235,14 @@ fun Expression.isDefEq(
 //    if (traceDefEq) println("debug defeq phase: start")
     if (this === other) return true
     val cacheKey = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
+    if (env.defEqEquivalences.areEquivalent(cacheKey)) return true
     env.defEqCache[cacheKey]?.let { cached ->
         env.defEqCacheHits += 1
         return cached
     }
     fun finish(value: Boolean): Boolean {
         env.defEqCache[cacheKey] = value
+        if (value) env.defEqEquivalences.addEquivalent(cacheKey)
         return value
     }
 
@@ -257,6 +259,7 @@ fun Expression.isDefEq(
     other.tryClosedBoolTrueDefEq(this, localCtxRight)?.let { return finish(it) }
 //    if (traceDefEq) println("debug defeq phase: structural")
     this.tryStructuralDefEq(other)?.let { return finish(it) }
+    if (this.tryKnownDefEqCongruence(other, localCtxLeft, localCtxRight)) return finish(true)
 
 //    if (traceDefEq) println("debug defeq phase: cheap whnf")
     val leftCore = this.whnfCore(localCtxLeft, cheapProjection = true)
@@ -264,6 +267,7 @@ fun Expression.isDefEq(
 //    if (traceDefEq) println("debug defeq phase: core quick")
     leftCore.quickIsDefEq(rightCore, localCtxLeft, localCtxRight)?.let { return finish(it) }
     leftCore.tryStructuralDefEq(rightCore)?.let { return finish(it) }
+    if (leftCore.tryKnownDefEqCongruence(rightCore, localCtxLeft, localCtxRight)) return finish(true)
     if (leftCore.tryProofIrrelevanceDefEqNoLog(rightCore, localCtxLeft, localCtxRight)) {
         return finish(true)
     }
@@ -304,8 +308,7 @@ fun Expression.isDefEq(
 //    if (traceDefEq) println("debug defeq phase: congruence")
     val result = leftWhnf.isDefEqWhnf(rightWhnf, localCtxLeft, localCtxRight)
 //    if (traceDefEq) println("debug defeq phase: done=$result")
-    env.defEqCache[cacheKey] = result
-    return result
+    return finish(result)
 }
 
 context(env: Environment)
@@ -1666,6 +1669,44 @@ private fun Expression.defEqCacheKey(
     } else {
         DefEqCacheKey(other.ie, this.ie, rightCtxId, leftCtxId)
     }
+}
+
+context(env: Environment)
+private fun Expression.tryKnownDefEqCongruence(
+    other: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean {
+    if (this === other) return true
+    val key = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
+    if (env.defEqEquivalences.areEquivalent(key)) return true
+
+    val result = when (this) {
+        is Expression.App -> other is Expression.App &&
+                this.fnExpr.tryKnownDefEqCongruence(other.fnExpr, localCtxLeft, localCtxRight) &&
+                this.argExpr.tryKnownDefEqCongruence(other.argExpr, localCtxLeft, localCtxRight)
+
+        is Expression.Bvar -> other is Expression.Bvar && this.bvar == other.bvar
+        is Expression.Const -> other is Expression.Const &&
+                this.name == other.name &&
+                this.levels.size == other.levels.size &&
+                this.levels.indices.all { index -> this.levels[index].isEqual(other.levels[index]) }
+
+        is Expression.Mdata -> other is Expression.Mdata &&
+                this.expr.tryKnownDefEqCongruence(other.expr, localCtxLeft, localCtxRight)
+
+        is Expression.NatVal -> other is Expression.NatVal && this.natVal == other.natVal
+        is Expression.Proj -> other is Expression.Proj &&
+                this.typeNameExpr == other.typeNameExpr &&
+                this.projIndex == other.projIndex &&
+                this.structExpr.tryKnownDefEqCongruence(other.structExpr, localCtxLeft, localCtxRight)
+
+        is Expression.Sort -> other is Expression.Sort && this.level.isEqual(other.level)
+        is Expression.StrVal -> other is Expression.StrVal && this.strVal == other.strVal
+        is Expression.ForallE, is Expression.Lam, is Expression.LetE -> false
+    }
+    if (result) env.defEqEquivalences.addEquivalent(key)
+    return result
 }
 
 context(env: Environment)
@@ -4402,6 +4443,45 @@ private class BinderRewriteCache {
     }
 }
 
+private class BinderRewriteStack {
+    private var expressions: Array<Expression?> = arrayOfNulls(64)
+    private var depths = IntArray(64)
+    private var rebuilds = BooleanArray(64)
+    private var cacheKeys = LongArray(64)
+    private var size = 0
+
+    fun add(expr: Expression, depth: Int, rebuild: Boolean = false, cacheKey: Long = 0L) {
+        if (size == expressions.size) {
+            expressions = expressions.copyOf(size * 2)
+            depths = depths.copyOf(size * 2)
+            rebuilds = rebuilds.copyOf(size * 2)
+            cacheKeys = cacheKeys.copyOf(size * 2)
+        }
+        expressions[size] = expr
+        depths[size] = depth
+        rebuilds[size] = rebuild
+        cacheKeys[size] = cacheKey
+        size++
+    }
+
+    fun removeLastIndex(): Int {
+        check(size > 0)
+        size--
+        return size
+    }
+
+    fun expressionAt(index: Int): Expression = expressions[index]!!
+    fun depthAt(index: Int): Int = depths[index]
+    fun rebuildAt(index: Int): Boolean = rebuilds[index]
+    fun cacheKeyAt(index: Int): Long = cacheKeys[index]
+
+    fun release(index: Int) {
+        expressions[index] = null
+    }
+
+    fun isNotEmpty(): Boolean = size > 0
+}
+
 context(env: Environment)
 private fun Expression.rewriteBinders(
     depth: Int = 0,
@@ -4411,75 +4491,103 @@ private fun Expression.rewriteBinders(
     fun cacheKey(expr: Expression, currentDepth: Int): Long =
         (currentDepth.toLong() shl 32) xor (expr.ie.toLong() and 0xffffffffL)
 
-    data class Frame(val expr: Expression, val currentDepth: Int, val visited: Boolean)
-
-    val stack = ArrayDeque<Frame>()
-    stack.add(Frame(this, depth, false))
+    val stack = BinderRewriteStack()
+    val results = ArrayDeque<Expression>()
+    stack.add(this, depth)
     while (stack.isNotEmpty()) {
-        val (expr, currentDepth, visited) = stack.removeLast()
-        val key = cacheKey(expr, currentDepth)
-        if (cache[key] != null) continue
-        if (expr.maxLooseBVarIndex() < currentDepth) {
-            cache[key] = expr
-            continue
-        }
-        if (!visited) {
-            stack.add(Frame(expr, currentDepth, true))
+        val frameIndex = stack.removeLastIndex()
+        val expr = stack.expressionAt(frameIndex)
+        val currentDepth = stack.depthAt(frameIndex)
+        val rebuild = stack.rebuildAt(frameIndex)
+        val rebuildCacheKey = stack.cacheKeyAt(frameIndex)
+        stack.release(frameIndex)
+        if (!rebuild) {
+            val key = cacheKey(expr, currentDepth)
+            val cached = cache[key]
+            if (cached != null) {
+                results.add(cached)
+                continue
+            }
+            if (expr.maxLooseBVarIndex() < currentDepth) {
+                cache[key] = expr
+                results.add(expr)
+                continue
+            }
             when (expr) {
                 is Expression.App -> {
-                    stack.add(Frame(expr.fnExpr, currentDepth, false))
-                    stack.add(Frame(expr.argExpr, currentDepth, false))
+                    stack.add(expr, currentDepth, rebuild = true, cacheKey = key)
+                    stack.add(expr.argExpr, currentDepth)
+                    stack.add(expr.fnExpr, currentDepth)
                 }
 
                 is Expression.ForallE -> {
-                    stack.add(Frame(expr.typeExpr, currentDepth, false))
-                    stack.add(Frame(expr.bodyExpr, currentDepth + 1, false))
+                    stack.add(expr, currentDepth, rebuild = true, cacheKey = key)
+                    stack.add(expr.bodyExpr, currentDepth + 1)
+                    stack.add(expr.typeExpr, currentDepth)
                 }
 
                 is Expression.Lam -> {
-                    stack.add(Frame(expr.typeExpr, currentDepth, false))
-                    stack.add(Frame(expr.bodyExpr, currentDepth + 1, false))
+                    stack.add(expr, currentDepth, rebuild = true, cacheKey = key)
+                    stack.add(expr.bodyExpr, currentDepth + 1)
+                    stack.add(expr.typeExpr, currentDepth)
                 }
 
                 is Expression.LetE -> {
-                    stack.add(Frame(expr.typeExpr, currentDepth, false))
-                    stack.add(Frame(expr.valueExpr, currentDepth, false))
-                    stack.add(Frame(expr.bodyExpr, currentDepth + 1, false))
+                    stack.add(expr, currentDepth, rebuild = true, cacheKey = key)
+                    stack.add(expr.bodyExpr, currentDepth + 1)
+                    stack.add(expr.valueExpr, currentDepth)
+                    stack.add(expr.typeExpr, currentDepth)
                 }
 
-                is Expression.Mdata -> stack.add(Frame(expr.expr, currentDepth, false))
-                is Expression.Proj -> stack.add(Frame(expr.structExpr, currentDepth, false))
-                else -> {}
+                is Expression.Mdata -> {
+                    stack.add(expr, currentDepth, rebuild = true, cacheKey = key)
+                    stack.add(expr.expr, currentDepth)
+                }
+
+                is Expression.Proj -> {
+                    stack.add(expr, currentDepth, rebuild = true, cacheKey = key)
+                    stack.add(expr.structExpr, currentDepth)
+                }
+
+                is Expression.Bvar -> {
+                    val result = rewriteBvar(expr, currentDepth)
+                    cache[key] = result
+                    results.add(result)
+                }
+
+                else -> {
+                    cache[key] = expr
+                    results.add(expr)
+                }
             }
             continue
         }
         val result = when (expr) {
-            is Expression.Bvar -> rewriteBvar(expr, currentDepth)
             is Expression.App -> {
-                val newFn = cache[cacheKey(expr.fnExpr, currentDepth)] ?: expr.fnExpr
-                val newArg = cache[cacheKey(expr.argExpr, currentDepth)] ?: expr.argExpr
+                val newArg = results.removeLast()
+                val newFn = results.removeLast()
                 if (newFn === expr.fnExpr && newArg === expr.argExpr) expr
                 else env.addCustomExpr { expr.copy(fn = newFn.ie, arg = newArg.ie, ie = it) }
             }
 
             is Expression.ForallE -> {
-                val newType = cache[cacheKey(expr.typeExpr, currentDepth)] ?: expr.typeExpr
-                val newBody = cache[cacheKey(expr.bodyExpr, currentDepth + 1)] ?: expr.bodyExpr
+                val newBody = results.removeLast()
+                val newType = results.removeLast()
                 if (newType === expr.typeExpr && newBody === expr.bodyExpr) expr
                 else env.addCustomExpr { expr.copy(type = newType.ie, body = newBody.ie, ie = it) }
             }
 
             is Expression.Lam -> {
-                val newType = cache[cacheKey(expr.typeExpr, currentDepth)] ?: expr.typeExpr
-                val newBody = cache[cacheKey(expr.bodyExpr, currentDepth + 1)] ?: expr.bodyExpr
+                val newBody = results.removeLast()
+                val newType = results.removeLast()
                 if (newType === expr.typeExpr && newBody === expr.bodyExpr) expr
                 else env.addCustomExpr { expr.copy(type = newType.ie, body = newBody.ie, ie = it) }
             }
 
             is Expression.LetE -> {
-                val newType = cache[cacheKey(expr.typeExpr, currentDepth)] ?: expr.typeExpr
-                val newValue = cache[cacheKey(expr.valueExpr, currentDepth)] ?: expr.valueExpr
-                val newBody = cache[cacheKey(expr.bodyExpr, currentDepth + 1)] ?: expr.bodyExpr
+                val newBody = results.removeLast()
+                val newValue = results.removeLast()
+                val newType = results.removeLast()
                 if (newType === expr.typeExpr && newValue === expr.valueExpr && newBody === expr.bodyExpr) expr
                 else env.addCustomExpr {
                     expr.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it)
@@ -4487,12 +4595,12 @@ private fun Expression.rewriteBinders(
             }
 
             is Expression.Mdata -> {
-                val newExpr = cache[cacheKey(expr.expr, currentDepth)] ?: expr.expr
+                val newExpr = results.removeLast()
                 if (newExpr === expr.expr) expr else env.addCustomExpr { expr.copy(_expr = newExpr.ie, ie = it) }
             }
 
             is Expression.Proj -> {
-                val newStruct = cache[cacheKey(expr.structExpr, currentDepth)] ?: expr.structExpr
+                val newStruct = results.removeLast()
                 if (newStruct === expr.structExpr) expr else env.addCustomExpr {
                     expr.copy(
                         struct = newStruct.ie,
@@ -4501,11 +4609,13 @@ private fun Expression.rewriteBinders(
                 }
             }
 
-            else -> expr
+            else -> error("Unexpected binder rewrite rebuild frame for $expr")
         }
-        cache[key] = result
+        cache[rebuildCacheKey] = result
+        results.add(result)
     }
-    return cache[cacheKey(this, depth)] ?: this
+    check(results.size == 1)
+    return results.removeLast()
 }
 
 context(env: Environment)
