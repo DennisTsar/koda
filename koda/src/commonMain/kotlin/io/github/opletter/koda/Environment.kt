@@ -9,117 +9,6 @@ data class DefEqCacheKey(
     val rightCtxId: Int,
 )
 
-class DefEqEquivalenceManager {
-    private var keys = LongArray(16)
-    private var nodeRefs = IntArray(16)
-    private var parents = IntArray(16)
-    private var ranks = ByteArray(16)
-    private var nodeCount = 0
-    private var entryCount = 0
-
-    fun areEquivalent(key: DefEqCacheKey): Boolean {
-        val leftNode = findNode(contextualKey(key.leftExprId, key.leftCtxId))
-        if (leftNode < 0) return false
-        val rightNode = findNode(contextualKey(key.rightExprId, key.rightCtxId))
-        return rightNode >= 0 && findRoot(leftNode) == findRoot(rightNode)
-    }
-
-    fun addEquivalent(key: DefEqCacheKey) {
-        val leftNode = getOrCreateNode(contextualKey(key.leftExprId, key.leftCtxId))
-        val rightNode = getOrCreateNode(contextualKey(key.rightExprId, key.rightCtxId))
-        union(leftNode, rightNode)
-    }
-
-    private fun contextualKey(exprId: Int, ctxId: Int): Long =
-        (exprId.toLong() shl 32) xor (ctxId.toLong() and 0xffffffffL)
-
-    private fun startIndex(key: Long): Int {
-        var hash = key
-        hash = hash xor (hash ushr 33)
-        hash *= -49064778989728563L
-        hash = hash xor (hash ushr 33)
-        return hash.toInt() and (keys.size - 1)
-    }
-
-    private fun findNode(key: Long): Int {
-        var index = startIndex(key)
-        while (true) {
-            val nodeRef = nodeRefs[index]
-            if (nodeRef == 0) return -1
-            if (keys[index] == key) return nodeRef - 1
-            index = (index + 1) and (keys.size - 1)
-        }
-    }
-
-    private fun getOrCreateNode(key: Long): Int {
-        if ((entryCount + 1) * 10 >= keys.size * 7) resizeTable()
-        var index = startIndex(key)
-        while (true) {
-            val nodeRef = nodeRefs[index]
-            if (nodeRef == 0) {
-                val node = createNode()
-                keys[index] = key
-                nodeRefs[index] = node + 1
-                entryCount++
-                return node
-            }
-            if (keys[index] == key) return nodeRef - 1
-            index = (index + 1) and (keys.size - 1)
-        }
-    }
-
-    private fun createNode(): Int {
-        if (nodeCount == parents.size) {
-            parents = parents.copyOf(nodeCount * 2)
-            ranks = ranks.copyOf(nodeCount * 2)
-        }
-        val node = nodeCount++
-        parents[node] = node
-        return node
-    }
-
-    private fun findRoot(node: Int): Int {
-        var root = node
-        while (parents[root] != root) root = parents[root]
-        var current = node
-        while (parents[current] != current) {
-            val next = parents[current]
-            parents[current] = root
-            current = next
-        }
-        return root
-    }
-
-    private fun union(leftNode: Int, rightNode: Int) {
-        val leftRoot = findRoot(leftNode)
-        val rightRoot = findRoot(rightNode)
-        if (leftRoot == rightRoot) return
-        when {
-            ranks[leftRoot] < ranks[rightRoot] -> parents[leftRoot] = rightRoot
-            ranks[leftRoot] > ranks[rightRoot] -> parents[rightRoot] = leftRoot
-            else -> {
-                parents[rightRoot] = leftRoot
-                ranks[leftRoot] = (ranks[leftRoot] + 1).toByte()
-            }
-        }
-    }
-
-    private fun resizeTable() {
-        val oldKeys = keys
-        val oldNodeRefs = nodeRefs
-        keys = LongArray(oldKeys.size * 2)
-        nodeRefs = IntArray(oldNodeRefs.size * 2)
-        oldNodeRefs.forEachIndexed { oldIndex, nodeRef ->
-            if (nodeRef == 0) return@forEachIndexed
-            val key = oldKeys[oldIndex]
-            var index = startIndex(key)
-            while (nodeRefs[index] != 0) index = (index + 1) and (keys.size - 1)
-            keys[index] = key
-            nodeRefs[index] = nodeRef
-        }
-    }
-}
-
 data class LocalCtxStepKey(
     val headTypeExprId: Int,
     val headValueExprId: Int?,
@@ -231,51 +120,23 @@ class NameIndexStore {
 }
 
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
-    private companion object {
-        const val CHUNK_SHIFT = 16
-        const val CHUNK_SIZE = 1 shl CHUNK_SHIFT
-        const val CHUNK_MASK = CHUNK_SIZE - 1
-    }
-
-    private val nonNegativeChunks = mutableListOf<Array<Any?>>()
-    private var nonNegativeSize = 0
-    private val negativeChunks = mutableListOf<Array<Any?>>()
-    private var negativeSize = 0
-    val nonNegativeLimit get() = nonNegativeSize
-    val negativeLimit get() = negativeSize
+    private val nonNegative: MutableList<T?> = mutableListOf()
+    private val negative: MutableMap<Int, T> = mutableMapOf()
 
     init {
         initialEntries.forEach { pair -> this[pair.first] = pair.second }
     }
 
     private fun ensureNonNegativeSize(size: Int) {
-        if (nonNegativeSize >= size) return
-        ensureChunkCount(nonNegativeChunks, size)
-        nonNegativeSize = size
+        if (nonNegative.size >= size) return
+        repeat(size - nonNegative.size) { nonNegative.add(null) }
     }
 
-    private fun ensureNegativeSize(size: Int) {
-        if (negativeSize >= size) return
-        ensureChunkCount(negativeChunks, size)
-        negativeSize = size
-    }
-
-    private fun ensureChunkCount(chunks: MutableList<Array<Any?>>, size: Int) {
-        val requiredChunks = ((size - 1) ushr CHUNK_SHIFT) + 1
-        while (chunks.size < requiredChunks) chunks.add(arrayOfNulls(CHUNK_SIZE))
-    }
-
-    private fun negativePosition(index: Int): Int = -index - 1
-
-    @Suppress("UNCHECKED_CAST")
     operator fun get(index: Int): T? {
         return if (index >= 0) {
-            if (index >= nonNegativeSize) null
-            else nonNegativeChunks[index ushr CHUNK_SHIFT][index and CHUNK_MASK] as T?
+            nonNegative.getOrNull(index)
         } else {
-            val position = negativePosition(index)
-            if (position >= negativeSize) null
-            else negativeChunks[position ushr CHUNK_SHIFT][position and CHUNK_MASK] as T?
+            negative[index]
         }
     }
 
@@ -284,11 +145,9 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     operator fun set(index: Int, value: T) {
         if (index >= 0) {
             ensureNonNegativeSize(index + 1)
-            nonNegativeChunks[index ushr CHUNK_SHIFT][index and CHUNK_MASK] = value
+            nonNegative[index] = value
         } else {
-            val position = negativePosition(index)
-            ensureNegativeSize(position + 1)
-            negativeChunks[position ushr CHUNK_SHIFT][position and CHUNK_MASK] = value
+            negative[index] = value
         }
     }
 
@@ -297,167 +156,22 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     }
 
     fun clearNegative() {
-        negativeChunks.clear()
-        negativeSize = 0
+        negative.clear()
     }
 
     val values: Sequence<T>
         get() = sequence {
-            for (index in 0 until nonNegativeSize) {
-                val value = this@IntObjectStore[index]
-                if (value != null) yield(value)
-            }
-            for (position in 0 until negativeSize) {
-                val value = this@IntObjectStore[-position - 1]
-                if (value != null) yield(value)
-            }
+            nonNegative.forEach { value -> if (value != null) yield(value) }
+            negative.values.forEach { value -> yield(value) }
         }
 
     fun toList(): List<Pair<Int, T>> {
         val items = mutableListOf<Pair<Int, T>>()
-        for (index in 0 until nonNegativeSize) {
-            val value = this[index]
+        nonNegative.forEachIndexed { index, value ->
             if (value != null) items += index to value
         }
-        for (position in negativeSize - 1 downTo 0) {
-            val value = this[-position - 1] ?: continue
-            items += -(position + 1) to value
-        }
-        return items
-    }
-}
-
-private class ChunkedIntStore {
-    private companion object {
-        const val CHUNK_SHIFT = 16
-        const val CHUNK_SIZE = 1 shl CHUNK_SHIFT
-        const val CHUNK_MASK = CHUNK_SIZE - 1
-    }
-
-    private val chunks = mutableListOf<IntArray>()
-    var size: Int = 0
-        private set
-
-    operator fun get(index: Int): Int {
-        if (index < 0 || index >= size) return 0
-        return chunks[index ushr CHUNK_SHIFT][index and CHUNK_MASK]
-    }
-
-    operator fun set(index: Int, value: Int) {
-        check(index >= 0)
-        if (index >= size) {
-            val requiredChunks = (index ushr CHUNK_SHIFT) + 1
-            while (chunks.size < requiredChunks) chunks.add(IntArray(CHUNK_SIZE))
-            size = index + 1
-        }
-        chunks[index ushr CHUNK_SHIFT][index and CHUNK_MASK] = value
-    }
-}
-
-private class SourceAppCache {
-    private var keys = IntArray(16)
-    private var values: Array<Expression.App?> = arrayOfNulls(16)
-    private var size = 0
-
-    fun getOrPut(index: Int, create: () -> Expression.App): Expression.App {
-        val encodedKey = index + 1
-        var slot = findSlot(encodedKey)
-        values[slot]?.let { return it }
-        if ((size + 1) * 10 >= keys.size * 7) {
-            resize()
-            slot = findSlot(encodedKey)
-        }
-        val value = create()
-        keys[slot] = encodedKey
-        values[slot] = value
-        size++
-        return value
-    }
-
-    private fun findSlot(encodedKey: Int): Int {
-        val mask = keys.lastIndex
-        var slot = (encodedKey xor (encodedKey ushr 16)) and mask
-        while (true) {
-            val existing = keys[slot]
-            if (existing == 0 || existing == encodedKey) return slot
-            slot = (slot + 1) and mask
-        }
-    }
-
-    private fun resize() {
-        val oldKeys = keys
-        val oldValues = values
-        keys = IntArray(oldKeys.size * 2)
-        values = arrayOfNulls(oldValues.size * 2)
-        size = 0
-        oldValues.forEachIndexed { index, value ->
-            if (value == null) return@forEachIndexed
-            val encodedKey = oldKeys[index]
-            val slot = findSlot(encodedKey)
-            keys[slot] = encodedKey
-            values[slot] = value
-            size++
-        }
-    }
-}
-
-class ExpressionStore {
-    private val objects = IntObjectStore<Expression>()
-    private val sourceAppFns = ChunkedIntStore()
-    private val sourceAppArgs = ChunkedIntStore()
-    private var sourceAppCache = SourceAppCache()
-
-    operator fun get(index: Int): Expression? {
-        objects[index]?.let { return it }
-        if (index < 0) return null
-        val encodedFn = sourceAppFns[index]
-        if (encodedFn == 0) return null
-        return sourceAppCache.getOrPut(index) {
-            Expression.App(encodedFn - 1, sourceAppArgs[index], index)
-        }
-    }
-
-    operator fun get(index: Int?): Expression? = index?.let { this[it] }
-
-    operator fun set(index: Int, value: Expression) {
-        if (index >= 0 && value is Expression.App) {
-            sourceAppFns[index] = value.fnIndex + 1
-            sourceAppArgs[index] = value.argIndex
-        } else {
-            objects[index] = value
-        }
-    }
-
-    operator fun contains(index: Int): Boolean = this[index] != null
-
-    fun clearNegative() {
-        objects.clearNegative()
-        sourceAppCache = SourceAppCache()
-    }
-
-    val values: Sequence<Expression>
-        get() = sequence {
-            val limit = maxOf(objects.nonNegativeLimit, sourceAppFns.size)
-            for (index in 0 until limit) {
-                val value = this@ExpressionStore[index]
-                if (value != null) yield(value)
-            }
-            for (position in 0 until objects.negativeLimit) {
-                val value = this@ExpressionStore[-position - 1]
-                if (value != null) yield(value)
-            }
-        }
-
-    fun toList(): List<Pair<Int, Expression>> {
-        val items = mutableListOf<Pair<Int, Expression>>()
-        val limit = maxOf(objects.nonNegativeLimit, sourceAppFns.size)
-        for (index in 0 until limit) {
-            val value = this[index]
-            if (value != null) items += index to value
-        }
-        for (position in objects.negativeLimit - 1 downTo 0) {
-            val value = this[-position - 1] ?: continue
-            items += -(position + 1) to value
+        negative.entries.sortedBy { it.key }.forEach { entry ->
+            items += entry.toPair()
         }
         return items
     }
@@ -470,28 +184,27 @@ class Environment {
     val levelParamByNameIndex: MutableMap<Int, Level.Param> = mutableMapOf()
     val constructorByName: MutableMap<Name, Inductive.ConstructorVal> = mutableMapOf()
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
-    val expressions = ExpressionStore()
+    val expressions: IntObjectStore<Expression> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
-    var levelNormalizationCache: MutableMap<Int, Level> = mutableMapOf()
+    val levelNormalizationCache: MutableMap<Int, Level> = mutableMapOf()
 
     val clock = TimeSource.Monotonic.markNow()
 
     val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
-    var whnfCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
-    var whnfCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
-    var natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
-    var liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
-    var applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
-    var unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
+    val whnfCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
+    val whnfCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
+    val natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
+    val liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    val applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    val unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
     val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
-    var defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
-    var defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
-    var defEqEquivalences = DefEqEquivalenceManager()
-    var inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
-    private var localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
+    val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
+    val defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
+    val inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
+    private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
     var defEqCalls: Long = 0
     var defEqCacheHits: Long = 0
@@ -500,8 +213,8 @@ class Environment {
     var proofIrrelevanceSuccesses: Long = 0
     var typedCongruenceProofSkips: Long = 0
     var eagerReduction = false
-    private var customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
-    private var customExprIntern = ExpressionInterner()
+    private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
+    private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
     private var nextLevelIndex: Int = 0
 
     private sealed interface LevelKey {
@@ -509,6 +222,27 @@ class Environment {
         data class Max(val leftIl: Int, val rightIl: Int) : LevelKey
         data class Imax(val leftIl: Int, val rightIl: Int) : LevelKey
         data class Param(val name: Name) : LevelKey
+    }
+
+    private sealed interface ExprKey {
+        data class Bvar(val bvar: Int) : ExprKey
+        data class Sort(val levelIl: Int) : ExprKey
+        data class Const(val name: Name, val levelIls: List<Int>) : ExprKey
+        data class App(val fnIe: Int, val argIe: Int) : ExprKey
+        data class ForallE(val name: Name, val typeIe: Int, val bodyIe: Int, val binderInfo: BinderInfo) : ExprKey
+        data class Lam(val name: Name, val typeIe: Int, val bodyIe: Int, val binderInfo: BinderInfo) : ExprKey
+        data class LetE(
+            val name: Name,
+            val typeIe: Int,
+            val valueIe: Int,
+            val bodyIe: Int,
+            val nonDep: Boolean,
+        ) : ExprKey
+
+        data class Mdata(val data: Any, val exprIe: Int) : ExprKey
+        data class Proj(val typeName: Name, val idx: Int, val structIe: Int) : ExprKey
+        data class NatVal(val natVal: NatValue) : ExprKey
+        data class StrVal(val strVal: String) : ExprKey
     }
 
     private fun Level.toLevelKey(): LevelKey = with(this@Environment) {
@@ -521,150 +255,25 @@ class Environment {
         }
     }
 
-    private inner class ExpressionInterner {
-        private var hashes = IntArray(16)
-        private var expressions = arrayOfNulls<Expression>(16)
-        private var size = 0
+    private fun Expression.toExprKey(): ExprKey? = when (this) {
+        is Expression.Bvar -> ExprKey.Bvar(this.bvar)
+        is Expression.Sort -> ExprKey.Sort(this.level.il)
+        is Expression.Const -> ExprKey.Const(this.name, this.levels.map { it.il })
+        is Expression.App -> ExprKey.App(this.fnExpr.ie, this.argExpr.ie)
+        is Expression.ForallE -> ExprKey.ForallE(this.name, this.typeExpr.ie, this.bodyExpr.ie, this.binderInfo)
+        is Expression.Lam -> ExprKey.Lam(this.name, this.typeExpr.ie, this.bodyExpr.ie, this.binderInfo)
+        is Expression.LetE -> ExprKey.LetE(
+            this.name,
+            this.typeExpr.ie,
+            this.valueExpr.ie,
+            this.bodyExpr.ie,
+            this.nondep
+        )
 
-        fun intern(candidate: Expression): Expression {
-            val hash = structuralHash(candidate)
-            var slot = findSlot(candidate, hash)
-            expressions[slot]?.let { return it }
-
-            if ((size + 1) * 10 >= expressions.size * 7) {
-                resize()
-                slot = findSlot(candidate, hash)
-            }
-            hashes[slot] = hash
-            expressions[slot] = candidate
-            size++
-            return candidate
-        }
-
-        private fun findSlot(candidate: Expression, hash: Int): Int {
-            val mask = expressions.lastIndex
-            var slot = spreadHash(hash) and mask
-            while (true) {
-                val existing = expressions[slot] ?: return slot
-                if (hashes[slot] == hash && structurallyEqual(candidate, existing)) return slot
-                slot = (slot + 1) and mask
-            }
-        }
-
-        private fun resize() {
-            val oldHashes = hashes
-            val oldExpressions = expressions
-            hashes = IntArray(oldHashes.size * 2)
-            expressions = arrayOfNulls(oldExpressions.size * 2)
-            val mask = expressions.lastIndex
-            oldExpressions.forEachIndexed { index, expression ->
-                if (expression == null) return@forEachIndexed
-                val hash = oldHashes[index]
-                var slot = spreadHash(hash) and mask
-                while (expressions[slot] != null) slot = (slot + 1) and mask
-                hashes[slot] = hash
-                expressions[slot] = expression
-            }
-        }
-
-        private fun spreadHash(hash: Int): Int = hash xor (hash ushr 16)
-
-        private fun mix(hash: Int, value: Int): Int = hash * 31 + value
-
-        private fun structuralHash(expr: Expression): Int = with(this@Environment) {
-            when (expr) {
-                is Expression.Bvar -> mix(1, expr.bvar)
-                is Expression.Sort -> mix(2, expr.level.il)
-                is Expression.Const -> {
-                    val levels = expr.levels
-                    var hash = mix(mix(3, expr.name.hashCode()), levels.size)
-                    levels.forEach { level -> hash = mix(hash, level.il) }
-                    hash
-                }
-
-                is Expression.App -> mix(mix(4, expr.fnExpr.ie), expr.argExpr.ie)
-                is Expression.ForallE -> {
-                    var hash = mix(5, expr.name.hashCode())
-                    hash = mix(hash, expr.typeExpr.ie)
-                    hash = mix(hash, expr.bodyExpr.ie)
-                    mix(hash, expr.binderInfo.hashCode())
-                }
-
-                is Expression.Lam -> {
-                    var hash = mix(6, expr.name.hashCode())
-                    hash = mix(hash, expr.typeExpr.ie)
-                    hash = mix(hash, expr.bodyExpr.ie)
-                    mix(hash, expr.binderInfo.hashCode())
-                }
-
-                is Expression.LetE -> {
-                    var hash = mix(7, expr.name.hashCode())
-                    hash = mix(hash, expr.typeExpr.ie)
-                    hash = mix(hash, expr.valueExpr.ie)
-                    hash = mix(hash, expr.bodyExpr.ie)
-                    mix(hash, expr.nondep.hashCode())
-                }
-
-                is Expression.Mdata -> mix(mix(8, expr.data.hashCode()), expr.expr.ie)
-                is Expression.Proj -> {
-                    var hash = mix(9, expr.typeNameExpr.hashCode())
-                    hash = mix(hash, expr.projIndex)
-                    mix(hash, expr.structExpr.ie)
-                }
-
-                is Expression.NatVal -> mix(10, expr.natVal.hashCode())
-                is Expression.StrVal -> mix(11, expr.strVal.hashCode())
-            }
-        }
-
-        private fun structurallyEqual(left: Expression, right: Expression): Boolean = with(this@Environment) {
-            when (left) {
-                is Expression.Bvar -> right is Expression.Bvar && left.bvar == right.bvar
-                is Expression.Sort -> right is Expression.Sort && left.level.il == right.level.il
-                is Expression.Const -> {
-                    if (right !is Expression.Const || left.name != right.name) return@with false
-                    val leftLevels = left.levels
-                    val rightLevels = right.levels
-                    leftLevels.size == rightLevels.size &&
-                            leftLevels.indices.all { index -> leftLevels[index].il == rightLevels[index].il }
-                }
-
-                is Expression.App -> right is Expression.App &&
-                        left.fnExpr.ie == right.fnExpr.ie &&
-                        left.argExpr.ie == right.argExpr.ie
-
-                is Expression.ForallE -> right is Expression.ForallE &&
-                        left.name == right.name &&
-                        left.typeExpr.ie == right.typeExpr.ie &&
-                        left.bodyExpr.ie == right.bodyExpr.ie &&
-                        left.binderInfo == right.binderInfo
-
-                is Expression.Lam -> right is Expression.Lam &&
-                        left.name == right.name &&
-                        left.typeExpr.ie == right.typeExpr.ie &&
-                        left.bodyExpr.ie == right.bodyExpr.ie &&
-                        left.binderInfo == right.binderInfo
-
-                is Expression.LetE -> right is Expression.LetE &&
-                        left.name == right.name &&
-                        left.typeExpr.ie == right.typeExpr.ie &&
-                        left.valueExpr.ie == right.valueExpr.ie &&
-                        left.bodyExpr.ie == right.bodyExpr.ie &&
-                        left.nondep == right.nondep
-
-                is Expression.Mdata -> right is Expression.Mdata &&
-                        left.data == right.data &&
-                        left.expr.ie == right.expr.ie
-
-                is Expression.Proj -> right is Expression.Proj &&
-                        left.typeNameExpr == right.typeNameExpr &&
-                        left.projIndex == right.projIndex &&
-                        left.structExpr.ie == right.structExpr.ie
-
-                is Expression.NatVal -> right is Expression.NatVal && left.natVal == right.natVal
-                is Expression.StrVal -> right is Expression.StrVal && left.strVal == right.strVal
-            }
-        }
+        is Expression.Mdata -> ExprKey.Mdata(this.data, this.expr.ie)
+        is Expression.Proj -> ExprKey.Proj(this.typeNameExpr, this.projIndex, this.structExpr.ie)
+        is Expression.NatVal -> ExprKey.NatVal(this.natVal)
+        is Expression.StrVal -> ExprKey.StrVal(this.strVal)
     }
 
     fun addCustomLevel(levelConstructor: (Int) -> Level): Level {
@@ -729,10 +338,15 @@ class Environment {
     fun addCustomExpr(exprConstructor: (Int) -> Expression): Expression {
         val candidateIndex = nextExprIndex - 1
         val newExpr = exprConstructor(candidateIndex)
-        val internedExpr = customExprIntern.intern(newExpr)
-        if (internedExpr !== newExpr) return internedExpr
+        val internKey = newExpr.toExprKey()
+        if (internKey != null) {
+            customExprIntern[internKey]?.let { return it }
+        }
         nextExprIndex = candidateIndex
         expressions[nextExprIndex] = newExpr
+        if (internKey != null) {
+            customExprIntern[internKey] = newExpr
+        }
         return newExpr
     }
 
@@ -766,23 +380,22 @@ class Environment {
     fun clearCustom() {
         levels.clearNegative()
         nextLevelIndex = 0
-        customLevelIntern = mutableMapOf()
-        levelNormalizationCache = mutableMapOf()
+        customLevelIntern.clear()
+        levelNormalizationCache.clear()
         expressions.clearNegative()
         nextExprIndex = -100
-        customExprIntern = ExpressionInterner()
-        whnfCacheNoLevelSubst = mutableMapOf()
-        whnfCacheWithCtxNoLevelSubst = mutableMapOf()
-        natLiteralCacheNoLevelSubst = mutableMapOf()
-        liftCache = mutableMapOf()
-        applySubstSingleCache = mutableMapOf()
-        unfoldedDefinitionCache = mutableMapOf()
+        customExprIntern.clear()
+        whnfCacheNoLevelSubst.clear()
+        whnfCacheWithCtxNoLevelSubst.clear()
+        natLiteralCacheNoLevelSubst.clear()
+        liftCache.clear()
+        applySubstSingleCache.clear()
+        unfoldedDefinitionCache.clear()
         maxLooseBVarIndexCache.clearNegative()
-        defEqCache = mutableMapOf()
-        defEqAppFailures = mutableSetOf()
-        defEqEquivalences = DefEqEquivalenceManager()
-        inferTypeCacheNoLevelSubst = mutableMapOf()
-        localCtxIntern = mutableMapOf()
+        defEqCache.clear()
+        defEqAppFailures.clear()
+        inferTypeCacheNoLevelSubst.clear()
+        localCtxIntern.clear()
         nextLocalCtxId = 1
         defEqCalls = 0
         defEqCacheHits = 0
