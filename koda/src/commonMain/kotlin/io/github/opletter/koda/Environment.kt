@@ -61,6 +61,8 @@ data class ReduceCacheKey(
 
 data class ExprPairKey(val firstExprId: Int, val second: Int)
 
+internal data class SubstitutionCacheKey(val expressionId: Int, val substitutionIds: List<Int>)
+
 data class ProjectionReductionInfo(
     val inductiveNameIndex: Int,
     val fieldIndex: Int,
@@ -196,6 +198,7 @@ class Environment {
     val natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
     val liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
     val applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    internal val applySubstMultiCache: MutableMap<SubstitutionCacheKey, Expression> = mutableMapOf()
     val unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
     val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
@@ -203,6 +206,7 @@ class Environment {
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
     val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
     val defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
+    internal val defEqEquivalences = DefEqEquivalenceManager()
     val inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
     private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
@@ -390,10 +394,12 @@ class Environment {
         natLiteralCacheNoLevelSubst.clear()
         liftCache.clear()
         applySubstSingleCache.clear()
+        applySubstMultiCache.clear()
         unfoldedDefinitionCache.clear()
         maxLooseBVarIndexCache.clearNegative()
         defEqCache.clear()
         defEqAppFailures.clear()
+        defEqEquivalences.clear()
         inferTypeCacheNoLevelSubst.clear()
         localCtxIntern.clear()
         nextLocalCtxId = 1

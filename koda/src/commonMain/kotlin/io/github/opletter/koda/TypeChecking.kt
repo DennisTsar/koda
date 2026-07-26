@@ -2,7 +2,58 @@ package io.github.opletter.koda
 
 private var debugClosedEvaluation = false
 private var debugTargetDeclaration = false
-private const val debugTargetIndex = -1//21_000_000///51_500_000
+private const val debugTargetIndex = -1//61_000_000//73_000_000//63_646_419///51_500_000
+
+internal class DefEqEquivalenceManager {
+    private val parents = mutableMapOf<Long, Long>()
+    private val ranks = mutableMapOf<Long, Int>()
+
+    fun areEquivalent(key: DefEqCacheKey): Boolean {
+        val left = contextualKey(key.leftExprId, key.leftCtxId)
+        val right = contextualKey(key.rightExprId, key.rightCtxId)
+        if (left == right) return true
+        val leftRoot = find(left, create = false) ?: return false
+        val rightRoot = find(right, create = false) ?: return false
+        return leftRoot == rightRoot
+    }
+
+    fun addEquivalent(key: DefEqCacheKey) {
+        val leftRoot = find(contextualKey(key.leftExprId, key.leftCtxId), create = true)!!
+        val rightRoot = find(contextualKey(key.rightExprId, key.rightCtxId), create = true)!!
+        if (leftRoot == rightRoot) return
+
+        val leftRank = ranks[leftRoot] ?: 0
+        val rightRank = ranks[rightRoot] ?: 0
+        when {
+            leftRank < rightRank -> parents[leftRoot] = rightRoot
+            leftRank > rightRank -> parents[rightRoot] = leftRoot
+            else -> {
+                parents[rightRoot] = leftRoot
+                ranks[leftRoot] = leftRank + 1
+            }
+        }
+    }
+
+    fun clear() {
+        parents.clear()
+        ranks.clear()
+    }
+
+    private fun find(node: Long, create: Boolean): Long? {
+        var root = parents[node] ?: if (create) node.also { parents[it] = it } else return null
+        while (parents[root] != root) root = parents[root]!!
+        var current = node
+        while (current != root) {
+            val next = parents[current]!!
+            parents[current] = root
+            current = next
+        }
+        return root
+    }
+
+    private fun contextualKey(exprId: Int, ctxId: Int): Long =
+        (exprId.toLong() shl 32) xor (ctxId.toLong() and 0xffffffffL)
+}
 
 internal data class StructureEtaRecursorInfo(
     val inductiveDeclIndex: Int,
@@ -152,7 +203,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             )
         }
         if (data is Declaration || data is Inductive) {
-            env.clearCustom()
             if (data is Declaration) {
                 val declarationElapsed = env.clock.elapsedNow() - itemStart
                 if (declarationElapsed.inWholeMilliseconds >= 1_000) {
@@ -169,6 +219,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                     )
                 }
             }
+            env.clearCustom()
         }
 //        if (env.shouldLog) {
 //            println("ended: ${env.clock.elapsedNow()}")
@@ -4359,10 +4410,23 @@ fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
 
 context(env: Environment)
 fun Expression.applySubst(subst: List<Expression>): Expression {
-    if (subst.isEmpty() || this.maxLooseBVarIndex() < 0) return this
+    if (subst.isEmpty()) return this
     val singleSubstKey = subst.singleOrNull()?.let { ExprPairKey(this.ie, it.ie) }
     if (singleSubstKey != null) {
         env.applySubstSingleCache[singleSubstKey]?.let { return it }
+    }
+    val multiSubstKey = if (subst.size > 1) {
+        SubstitutionCacheKey(this.ie, subst.map { it.ie })
+    } else {
+        null
+    }
+    if (multiSubstKey != null) {
+        env.applySubstMultiCache[multiSubstKey]?.let { return it }
+    }
+    if (this.maxLooseBVarIndex() < 0) {
+        if (singleSubstKey != null) env.applySubstSingleCache[singleSubstKey] = this
+        if (multiSubstKey != null) env.applySubstMultiCache[multiSubstKey] = this
+        return this
     }
     val liftedSubstCache = mutableMapOf<Long, Expression>()
     fun getLiftedSubst(index: Int, depth: Int): Expression {
@@ -4386,6 +4450,7 @@ fun Expression.applySubst(subst: List<Expression>): Expression {
         }
     }
     if (singleSubstKey != null) env.applySubstSingleCache[singleSubstKey] = result
+    if (multiSubstKey != null) env.applySubstMultiCache[multiSubstKey] = result
     return result
 }
 
