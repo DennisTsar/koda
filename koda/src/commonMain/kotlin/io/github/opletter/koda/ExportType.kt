@@ -198,6 +198,9 @@ sealed class Expression : ExportType {
     @SerialName("app")
     data class App(private val fn: Int, private val arg: Int, override val ie: Int) :
         Expression() { // TODO: why are these documented as <number> and not <integer>
+        internal val fnIndex get() = fn
+        internal val argIndex get() = arg
+
         context(env: Environment)
         val fnExpr get() = env.expressions[fn] ?: error("Expression $fn not found")
 
