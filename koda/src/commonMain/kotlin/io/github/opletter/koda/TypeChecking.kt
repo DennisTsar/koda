@@ -11,166 +11,18 @@ internal data class StructureEtaRecursorInfo(
     val rule: Inductive.RecursorVal.RecursorRule,
 )
 
-context(env: Environment)
-private fun loadForParallelChecking(data: Sequence<ExportType>): List<IndexedValue<ExportType>> {
-    val checks = mutableListOf<IndexedValue<ExportType>>()
-    data.forEachIndexed { index, item ->
-        when (item) {
-            is Name -> item.registerInto(env)
-            is Level -> item.registerInto(env)
-            is Expression -> {
-                item.requireLoadedReferences()
-                item.registerInto(env)
-            }
-
-            is Declaration -> {
-                item.requireLoadedReferences()
-                checks += IndexedValue(index, item)
-            }
-
-            is Inductive -> {
-                item.requireLoadedReferences()
-                checks += IndexedValue(index, item)
-            }
-
-            is Meta -> {}
-        }
-    }
-    return checks
-}
-
-context(env: Environment)
-private fun Expression.requireLoadedReferences() {
-    when (this) {
-        is Expression.Bvar, is Expression.NatVal, is Expression.StrVal -> {}
-        is Expression.Sort -> level
-        is Expression.Const -> {
-            name
-            levels
-        }
-
-        is Expression.App -> {
-            fnExpr
-            argExpr
-        }
-
-        is Expression.ForallE -> {
-            name
-            typeExpr
-            bodyExpr
-        }
-
-        is Expression.Lam -> {
-            name
-            typeExpr
-            bodyExpr
-        }
-
-        is Expression.LetE -> {
-            name
-            typeExpr
-            valueExpr
-            bodyExpr
-        }
-
-        is Expression.Mdata -> expr
-        is Expression.Proj -> {
-            typeNameExpr
-            structExpr
-        }
-    }
-}
-
-context(env: Environment)
-private fun Declaration.requireLoadedReferences() {
-    name
-    levelParams
-    typeExpr
-    when (this) {
-        is Declaration.Def -> {
-            valueExpr
-            allNames
-        }
-
-        is Declaration.Opaque -> {
-            valueExpr
-            allNames
-        }
-
-        is Declaration.Thm -> {
-            valueExpr
-            allNames
-        }
-
-        is Declaration.Axiom, is Declaration.Quot -> {}
-    }
-}
-
-context(env: Environment)
-private fun Inductive.requireLoadedReferences() {
-    (types + ctors + recs).forEach { declaration ->
-        declaration.name
-        declaration.levelParams
-        declaration.typeExpr
-    }
-    recs.forEach { recursor ->
-        recursor.rules.forEach { rule ->
-            rule.ctorName
-            rule.rhsExpr
-        }
-    }
-}
-
-context(env: Environment)
-private fun registerPriorDeclarations(checks: List<IndexedValue<ExportType>>, end: Int) {
-    for (position in 0 until end) {
-        when (val data = checks[position].value) {
-            is Declaration -> {
-                data.registerInto(env)
-                env.declTypeByName[data.name] = data.typeExpr
-            }
-
-            is Inductive -> {
-                data.registerInto(env)
-                (data.types + data.ctors + data.recs).forEach { declaration ->
-                    env.declTypeByName[declaration.name] = declaration.typeExpr
-                }
-            }
-
-            else -> error("Unexpected parallel check item")
-        }
-    }
-}
-
 fun typeCheck(data: Sequence<ExportType>) {
-    val loaded = Environment()
-    val checks = context(loaded) { loadForParallelChecking(data) }
-    if (checks.size < 20_000) {
-        val env = loaded.forkForParallelCheck()
-        context(env) {
-            _typeCheckIndexed(checks.asSequence())
-        }
-        return
-    }
-
-    runParallelRanges(checks.size) { start, end ->
-        val env = loaded.forkForParallelCheck()
-        context(env) {
-            registerPriorDeclarations(checks, start)
-            _typeCheckIndexed(checks.subList(start, end).asSequence())
-        }
+    val env = Environment()
+//    typeCheck(data, env = env)
+    context(env) {
+        _typeCheck(data)
     }
 }
 
 context(env: Environment)
 fun _typeCheck(rawData: Sequence<ExportType>) {
-    _typeCheckIndexed(rawData.mapIndexed { index, value -> IndexedValue(index, value) })
-}
-
-context(env: Environment)
-private fun _typeCheckIndexed(rawData: Sequence<IndexedValue<ExportType>>) {
     val debugTimingRanges = emptyList<IntRange>()
-    rawData.forEach { [index, data] ->
+    rawData.forEachIndexed { index, data ->
         debugTargetDeclaration = index == debugTargetIndex && data is Declaration
         //i: progress = 1000000 13.462160800s
         //i: progress = 1100000 24.175118s
@@ -204,7 +56,7 @@ private fun _typeCheckIndexed(rawData: Sequence<IndexedValue<ExportType>>) {
 
                 is Meta -> {}
             }
-            return@forEach
+            return@forEachIndexed
         }
 //        val shouldTimeDeclaration = data is Declaration && debugTimingRanges.any { index in it }
 //        debugTargetDeclaration = index == debugTargetIndex && data is Declaration
