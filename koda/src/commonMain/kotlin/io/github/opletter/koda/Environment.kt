@@ -9,6 +9,117 @@ data class DefEqCacheKey(
     val rightCtxId: Int,
 )
 
+class DefEqEquivalenceManager {
+    private var keys = LongArray(16)
+    private var nodeRefs = IntArray(16)
+    private var parents = IntArray(16)
+    private var ranks = ByteArray(16)
+    private var nodeCount = 0
+    private var entryCount = 0
+
+    fun areEquivalent(key: DefEqCacheKey): Boolean {
+        val leftNode = findNode(contextualKey(key.leftExprId, key.leftCtxId))
+        if (leftNode < 0) return false
+        val rightNode = findNode(contextualKey(key.rightExprId, key.rightCtxId))
+        return rightNode >= 0 && findRoot(leftNode) == findRoot(rightNode)
+    }
+
+    fun addEquivalent(key: DefEqCacheKey) {
+        val leftNode = getOrCreateNode(contextualKey(key.leftExprId, key.leftCtxId))
+        val rightNode = getOrCreateNode(contextualKey(key.rightExprId, key.rightCtxId))
+        union(leftNode, rightNode)
+    }
+
+    private fun contextualKey(exprId: Int, ctxId: Int): Long =
+        (exprId.toLong() shl 32) xor (ctxId.toLong() and 0xffffffffL)
+
+    private fun startIndex(key: Long): Int {
+        var hash = key
+        hash = hash xor (hash ushr 33)
+        hash *= -49064778989728563L
+        hash = hash xor (hash ushr 33)
+        return hash.toInt() and (keys.size - 1)
+    }
+
+    private fun findNode(key: Long): Int {
+        var index = startIndex(key)
+        while (true) {
+            val nodeRef = nodeRefs[index]
+            if (nodeRef == 0) return -1
+            if (keys[index] == key) return nodeRef - 1
+            index = (index + 1) and (keys.size - 1)
+        }
+    }
+
+    private fun getOrCreateNode(key: Long): Int {
+        if ((entryCount + 1) * 10 >= keys.size * 7) resizeTable()
+        var index = startIndex(key)
+        while (true) {
+            val nodeRef = nodeRefs[index]
+            if (nodeRef == 0) {
+                val node = createNode()
+                keys[index] = key
+                nodeRefs[index] = node + 1
+                entryCount++
+                return node
+            }
+            if (keys[index] == key) return nodeRef - 1
+            index = (index + 1) and (keys.size - 1)
+        }
+    }
+
+    private fun createNode(): Int {
+        if (nodeCount == parents.size) {
+            parents = parents.copyOf(nodeCount * 2)
+            ranks = ranks.copyOf(nodeCount * 2)
+        }
+        val node = nodeCount++
+        parents[node] = node
+        return node
+    }
+
+    private fun findRoot(node: Int): Int {
+        var root = node
+        while (parents[root] != root) root = parents[root]
+        var current = node
+        while (parents[current] != current) {
+            val next = parents[current]
+            parents[current] = root
+            current = next
+        }
+        return root
+    }
+
+    private fun union(leftNode: Int, rightNode: Int) {
+        val leftRoot = findRoot(leftNode)
+        val rightRoot = findRoot(rightNode)
+        if (leftRoot == rightRoot) return
+        when {
+            ranks[leftRoot] < ranks[rightRoot] -> parents[leftRoot] = rightRoot
+            ranks[leftRoot] > ranks[rightRoot] -> parents[rightRoot] = leftRoot
+            else -> {
+                parents[rightRoot] = leftRoot
+                ranks[leftRoot] = (ranks[leftRoot] + 1).toByte()
+            }
+        }
+    }
+
+    private fun resizeTable() {
+        val oldKeys = keys
+        val oldNodeRefs = nodeRefs
+        keys = LongArray(oldKeys.size * 2)
+        nodeRefs = IntArray(oldNodeRefs.size * 2)
+        oldNodeRefs.forEachIndexed { oldIndex, nodeRef ->
+            if (nodeRef == 0) return@forEachIndexed
+            val key = oldKeys[oldIndex]
+            var index = startIndex(key)
+            while (nodeRefs[index] != 0) index = (index + 1) and (keys.size - 1)
+            keys[index] = key
+            nodeRefs[index] = nodeRef
+        }
+    }
+}
+
 data class LocalCtxStepKey(
     val headTypeExprId: Int,
     val headValueExprId: Int?,
@@ -60,8 +171,6 @@ data class ReduceCacheKey(
 )
 
 data class ExprPairKey(val firstExprId: Int, val second: Int)
-
-internal data class SubstitutionCacheKey(val expressionId: Int, val substitutionIds: List<Int>)
 
 data class ProjectionReductionInfo(
     val inductiveNameIndex: Int,
@@ -123,7 +232,7 @@ class NameIndexStore {
 
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     private val nonNegative: MutableList<T?> = mutableListOf()
-    private val negative: MutableMap<Int, T> = mutableMapOf()
+    private var negative: MutableList<T?> = mutableListOf()
 
     init {
         initialEntries.forEach { pair -> this[pair.first] = pair.second }
@@ -134,11 +243,18 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
         repeat(size - nonNegative.size) { nonNegative.add(null) }
     }
 
+    private fun ensureNegativeSize(size: Int) {
+        if (negative.size >= size) return
+        repeat(size - negative.size) { negative.add(null) }
+    }
+
+    private fun negativePosition(index: Int): Int = -index - 1
+
     operator fun get(index: Int): T? {
         return if (index >= 0) {
             nonNegative.getOrNull(index)
         } else {
-            negative[index]
+            negative.getOrNull(negativePosition(index))
         }
     }
 
@@ -149,7 +265,9 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
             ensureNonNegativeSize(index + 1)
             nonNegative[index] = value
         } else {
-            negative[index] = value
+            val position = negativePosition(index)
+            ensureNegativeSize(position + 1)
+            negative[position] = value
         }
     }
 
@@ -158,13 +276,13 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     }
 
     fun clearNegative() {
-        negative.clear()
+        negative = mutableListOf()
     }
 
     val values: Sequence<T>
         get() = sequence {
             nonNegative.forEach { value -> if (value != null) yield(value) }
-            negative.values.forEach { value -> yield(value) }
+            negative.forEach { value -> if (value != null) yield(value) }
         }
 
     fun toList(): List<Pair<Int, T>> {
@@ -172,8 +290,9 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
         nonNegative.forEachIndexed { index, value ->
             if (value != null) items += index to value
         }
-        negative.entries.sortedBy { it.key }.forEach { entry ->
-            items += entry.toPair()
+        for (position in negative.indices.reversed()) {
+            val value = negative[position] ?: continue
+            items += -(position + 1) to value
         }
         return items
     }
@@ -188,27 +307,26 @@ class Environment {
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
     val expressions: IntObjectStore<Expression> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
-    val levelNormalizationCache: MutableMap<Int, Level> = mutableMapOf()
+    var levelNormalizationCache: MutableMap<Int, Level> = mutableMapOf()
 
     val clock = TimeSource.Monotonic.markNow()
 
     val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
-    val whnfCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
-    val whnfCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
-    val natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
-    val liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
-    val applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
-    internal val applySubstMultiCache: MutableMap<SubstitutionCacheKey, Expression> = mutableMapOf()
-    val unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
+    var whnfCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
+    var whnfCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
+    var natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
+    var liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    var applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    var unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
     val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
-    val defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
-    val defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
-    internal val defEqEquivalences = DefEqEquivalenceManager()
-    val inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
-    private val localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
+    var defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
+    var defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
+    var defEqEquivalences = DefEqEquivalenceManager()
+    var inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
+    private var localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
     var defEqCalls: Long = 0
     var defEqCacheHits: Long = 0
@@ -217,8 +335,8 @@ class Environment {
     var proofIrrelevanceSuccesses: Long = 0
     var typedCongruenceProofSkips: Long = 0
     var eagerReduction = false
-    private val customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
-    private val customExprIntern: MutableMap<ExprKey, Expression> = mutableMapOf()
+    private var customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
+    private var customExprIntern = ExpressionInterner()
     private var nextLevelIndex: Int = 0
 
     private sealed interface LevelKey {
@@ -226,27 +344,6 @@ class Environment {
         data class Max(val leftIl: Int, val rightIl: Int) : LevelKey
         data class Imax(val leftIl: Int, val rightIl: Int) : LevelKey
         data class Param(val name: Name) : LevelKey
-    }
-
-    private sealed interface ExprKey {
-        data class Bvar(val bvar: Int) : ExprKey
-        data class Sort(val levelIl: Int) : ExprKey
-        data class Const(val name: Name, val levelIls: List<Int>) : ExprKey
-        data class App(val fnIe: Int, val argIe: Int) : ExprKey
-        data class ForallE(val name: Name, val typeIe: Int, val bodyIe: Int, val binderInfo: BinderInfo) : ExprKey
-        data class Lam(val name: Name, val typeIe: Int, val bodyIe: Int, val binderInfo: BinderInfo) : ExprKey
-        data class LetE(
-            val name: Name,
-            val typeIe: Int,
-            val valueIe: Int,
-            val bodyIe: Int,
-            val nonDep: Boolean,
-        ) : ExprKey
-
-        data class Mdata(val data: Any, val exprIe: Int) : ExprKey
-        data class Proj(val typeName: Name, val idx: Int, val structIe: Int) : ExprKey
-        data class NatVal(val natVal: NatValue) : ExprKey
-        data class StrVal(val strVal: String) : ExprKey
     }
 
     private fun Level.toLevelKey(): LevelKey = with(this@Environment) {
@@ -259,25 +356,150 @@ class Environment {
         }
     }
 
-    private fun Expression.toExprKey(): ExprKey? = when (this) {
-        is Expression.Bvar -> ExprKey.Bvar(this.bvar)
-        is Expression.Sort -> ExprKey.Sort(this.level.il)
-        is Expression.Const -> ExprKey.Const(this.name, this.levels.map { it.il })
-        is Expression.App -> ExprKey.App(this.fnExpr.ie, this.argExpr.ie)
-        is Expression.ForallE -> ExprKey.ForallE(this.name, this.typeExpr.ie, this.bodyExpr.ie, this.binderInfo)
-        is Expression.Lam -> ExprKey.Lam(this.name, this.typeExpr.ie, this.bodyExpr.ie, this.binderInfo)
-        is Expression.LetE -> ExprKey.LetE(
-            this.name,
-            this.typeExpr.ie,
-            this.valueExpr.ie,
-            this.bodyExpr.ie,
-            this.nondep
-        )
+    private inner class ExpressionInterner {
+        private var hashes = IntArray(16)
+        private var expressions = arrayOfNulls<Expression>(16)
+        private var size = 0
 
-        is Expression.Mdata -> ExprKey.Mdata(this.data, this.expr.ie)
-        is Expression.Proj -> ExprKey.Proj(this.typeNameExpr, this.projIndex, this.structExpr.ie)
-        is Expression.NatVal -> ExprKey.NatVal(this.natVal)
-        is Expression.StrVal -> ExprKey.StrVal(this.strVal)
+        fun intern(candidate: Expression): Expression {
+            val hash = structuralHash(candidate)
+            var slot = findSlot(candidate, hash)
+            expressions[slot]?.let { return it }
+
+            if ((size + 1) * 10 >= expressions.size * 7) {
+                resize()
+                slot = findSlot(candidate, hash)
+            }
+            hashes[slot] = hash
+            expressions[slot] = candidate
+            size++
+            return candidate
+        }
+
+        private fun findSlot(candidate: Expression, hash: Int): Int {
+            val mask = expressions.lastIndex
+            var slot = spreadHash(hash) and mask
+            while (true) {
+                val existing = expressions[slot] ?: return slot
+                if (hashes[slot] == hash && structurallyEqual(candidate, existing)) return slot
+                slot = (slot + 1) and mask
+            }
+        }
+
+        private fun resize() {
+            val oldHashes = hashes
+            val oldExpressions = expressions
+            hashes = IntArray(oldHashes.size * 2)
+            expressions = arrayOfNulls(oldExpressions.size * 2)
+            val mask = expressions.lastIndex
+            oldExpressions.forEachIndexed { index, expression ->
+                if (expression == null) return@forEachIndexed
+                val hash = oldHashes[index]
+                var slot = spreadHash(hash) and mask
+                while (expressions[slot] != null) slot = (slot + 1) and mask
+                hashes[slot] = hash
+                expressions[slot] = expression
+            }
+        }
+
+        private fun spreadHash(hash: Int): Int = hash xor (hash ushr 16)
+
+        private fun mix(hash: Int, value: Int): Int = hash * 31 + value
+
+        private fun structuralHash(expr: Expression): Int = with(this@Environment) {
+            when (expr) {
+                is Expression.Bvar -> mix(1, expr.bvar)
+                is Expression.Sort -> mix(2, expr.level.il)
+                is Expression.Const -> {
+                    val levels = expr.levels
+                    var hash = mix(mix(3, expr.name.hashCode()), levels.size)
+                    levels.forEach { level -> hash = mix(hash, level.il) }
+                    hash
+                }
+
+                is Expression.App -> mix(mix(4, expr.fnExpr.ie), expr.argExpr.ie)
+                is Expression.ForallE -> {
+                    var hash = mix(5, expr.name.hashCode())
+                    hash = mix(hash, expr.typeExpr.ie)
+                    hash = mix(hash, expr.bodyExpr.ie)
+                    mix(hash, expr.binderInfo.hashCode())
+                }
+
+                is Expression.Lam -> {
+                    var hash = mix(6, expr.name.hashCode())
+                    hash = mix(hash, expr.typeExpr.ie)
+                    hash = mix(hash, expr.bodyExpr.ie)
+                    mix(hash, expr.binderInfo.hashCode())
+                }
+
+                is Expression.LetE -> {
+                    var hash = mix(7, expr.name.hashCode())
+                    hash = mix(hash, expr.typeExpr.ie)
+                    hash = mix(hash, expr.valueExpr.ie)
+                    hash = mix(hash, expr.bodyExpr.ie)
+                    mix(hash, expr.nondep.hashCode())
+                }
+
+                is Expression.Mdata -> mix(mix(8, expr.data.hashCode()), expr.expr.ie)
+                is Expression.Proj -> {
+                    var hash = mix(9, expr.typeNameExpr.hashCode())
+                    hash = mix(hash, expr.projIndex)
+                    mix(hash, expr.structExpr.ie)
+                }
+
+                is Expression.NatVal -> mix(10, expr.natVal.hashCode())
+                is Expression.StrVal -> mix(11, expr.strVal.hashCode())
+            }
+        }
+
+        private fun structurallyEqual(left: Expression, right: Expression): Boolean = with(this@Environment) {
+            when (left) {
+                is Expression.Bvar -> right is Expression.Bvar && left.bvar == right.bvar
+                is Expression.Sort -> right is Expression.Sort && left.level.il == right.level.il
+                is Expression.Const -> {
+                    if (right !is Expression.Const || left.name != right.name) return@with false
+                    val leftLevels = left.levels
+                    val rightLevels = right.levels
+                    leftLevels.size == rightLevels.size &&
+                            leftLevels.indices.all { index -> leftLevels[index].il == rightLevels[index].il }
+                }
+
+                is Expression.App -> right is Expression.App &&
+                        left.fnExpr.ie == right.fnExpr.ie &&
+                        left.argExpr.ie == right.argExpr.ie
+
+                is Expression.ForallE -> right is Expression.ForallE &&
+                        left.name == right.name &&
+                        left.typeExpr.ie == right.typeExpr.ie &&
+                        left.bodyExpr.ie == right.bodyExpr.ie &&
+                        left.binderInfo == right.binderInfo
+
+                is Expression.Lam -> right is Expression.Lam &&
+                        left.name == right.name &&
+                        left.typeExpr.ie == right.typeExpr.ie &&
+                        left.bodyExpr.ie == right.bodyExpr.ie &&
+                        left.binderInfo == right.binderInfo
+
+                is Expression.LetE -> right is Expression.LetE &&
+                        left.name == right.name &&
+                        left.typeExpr.ie == right.typeExpr.ie &&
+                        left.valueExpr.ie == right.valueExpr.ie &&
+                        left.bodyExpr.ie == right.bodyExpr.ie &&
+                        left.nondep == right.nondep
+
+                is Expression.Mdata -> right is Expression.Mdata &&
+                        left.data == right.data &&
+                        left.expr.ie == right.expr.ie
+
+                is Expression.Proj -> right is Expression.Proj &&
+                        left.typeNameExpr == right.typeNameExpr &&
+                        left.projIndex == right.projIndex &&
+                        left.structExpr.ie == right.structExpr.ie
+
+                is Expression.NatVal -> right is Expression.NatVal && left.natVal == right.natVal
+                is Expression.StrVal -> right is Expression.StrVal && left.strVal == right.strVal
+            }
+        }
     }
 
     fun addCustomLevel(levelConstructor: (Int) -> Level): Level {
@@ -342,15 +564,10 @@ class Environment {
     fun addCustomExpr(exprConstructor: (Int) -> Expression): Expression {
         val candidateIndex = nextExprIndex - 1
         val newExpr = exprConstructor(candidateIndex)
-        val internKey = newExpr.toExprKey()
-        if (internKey != null) {
-            customExprIntern[internKey]?.let { return it }
-        }
+        val internedExpr = customExprIntern.intern(newExpr)
+        if (internedExpr !== newExpr) return internedExpr
         nextExprIndex = candidateIndex
         expressions[nextExprIndex] = newExpr
-        if (internKey != null) {
-            customExprIntern[internKey] = newExpr
-        }
         return newExpr
     }
 
@@ -384,24 +601,23 @@ class Environment {
     fun clearCustom() {
         levels.clearNegative()
         nextLevelIndex = 0
-        customLevelIntern.clear()
-        levelNormalizationCache.clear()
+        customLevelIntern = mutableMapOf()
+        levelNormalizationCache = mutableMapOf()
         expressions.clearNegative()
         nextExprIndex = -100
-        customExprIntern.clear()
-        whnfCacheNoLevelSubst.clear()
-        whnfCacheWithCtxNoLevelSubst.clear()
-        natLiteralCacheNoLevelSubst.clear()
-        liftCache.clear()
-        applySubstSingleCache.clear()
-        applySubstMultiCache.clear()
-        unfoldedDefinitionCache.clear()
+        customExprIntern = ExpressionInterner()
+        whnfCacheNoLevelSubst = mutableMapOf()
+        whnfCacheWithCtxNoLevelSubst = mutableMapOf()
+        natLiteralCacheNoLevelSubst = mutableMapOf()
+        liftCache = mutableMapOf()
+        applySubstSingleCache = mutableMapOf()
+        unfoldedDefinitionCache = mutableMapOf()
         maxLooseBVarIndexCache.clearNegative()
-        defEqCache.clear()
-        defEqAppFailures.clear()
-        defEqEquivalences.clear()
-        inferTypeCacheNoLevelSubst.clear()
-        localCtxIntern.clear()
+        defEqCache = mutableMapOf()
+        defEqAppFailures = mutableSetOf()
+        defEqEquivalences = DefEqEquivalenceManager()
+        inferTypeCacheNoLevelSubst = mutableMapOf()
+        localCtxIntern = mutableMapOf()
         nextLocalCtxId = 1
         defEqCalls = 0
         defEqCacheHits = 0

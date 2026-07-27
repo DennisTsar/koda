@@ -108,12 +108,12 @@ fun checkInductive(data: Inductive) {
             "Recursor ${recursor.name.toStringDetailed()} must be in one of the mutual inductive namespaces ${blockNames.map { it.toStringDetailed() }}"
         }
         if (recName.str == "rec") {
-            recNamedRecCountByInductive[recParent] = recNamedRecCountByInductive.getOrDefault(recParent, 0) + 1
+            recNamedRecCountByInductive[recParent] = recNamedRecCountByInductive.getOrElse(recParent, { 0 }) + 1
         }
         env.declTypeByName[recursor.name] = recursor.typeExpr
     }
     inductives.forEach { inductive ->
-        val recNamedRecCount = recNamedRecCountByInductive.getOrDefault(inductive.name, 0)
+        val recNamedRecCount = recNamedRecCountByInductive.getOrElse(inductive.name, { 0 })
         check(recNamedRecCount == 1) {
             "Inductive ${inductive.name.toStringDetailed()} must declare exactly one recursor named ${inductive.name.toStringDetailed()}.rec, got $recNamedRecCount"
         }
