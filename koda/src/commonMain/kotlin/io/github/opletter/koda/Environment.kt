@@ -230,9 +230,13 @@ class NameIndexStore {
     }
 }
 
-class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
-    private val nonNegative: MutableList<T?> = mutableListOf()
+class IntObjectStore<T> private constructor(
+    private val nonNegative: MutableList<T?>,
+    initialEntries: List<Pair<Int, T>>,
+) {
     private var negative: MutableList<T?> = mutableListOf()
+
+    constructor(initialEntries: List<Pair<Int, T>> = emptyList()) : this(mutableListOf(), initialEntries)
 
     init {
         initialEntries.forEach { pair -> this[pair.first] = pair.second }
@@ -279,6 +283,8 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
         negative = mutableListOf()
     }
 
+    fun forkWithSharedNonNegative(): IntObjectStore<T> = IntObjectStore(nonNegative, emptyList())
+
     val values: Sequence<T>
         get() = sequence {
             nonNegative.forEach { value -> if (value != null) yield(value) }
@@ -298,15 +304,22 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     }
 }
 
-class Environment {
-    val names: IntObjectStore<Name> = IntObjectStore(listOf(0 to Name.Str(0, "", 0)))
-    val nameIndices: NameIndexStore = NameIndexStore().also { it[Name.Str(0, "", 0)] = 0 }
+class Environment private constructor(private val loaded: Environment?) {
+    constructor() : this(null)
+
+    val names: IntObjectStore<Name> =
+        loaded?.names ?: IntObjectStore(listOf(0 to Name.Str(0, "", 0)))
+    val nameIndices: NameIndexStore =
+        loaded?.nameIndices ?: NameIndexStore().also { it[Name.Str(0, "", 0)] = 0 }
     val declarations: IntObjectStore<NamedDecl> = IntObjectStore()
-    val levelParamByNameIndex: MutableMap<Int, Level.Param> = mutableMapOf()
+    val levelParamByNameIndex: MutableMap<Int, Level.Param> =
+        loaded?.levelParamByNameIndex ?: mutableMapOf()
     val constructorByName: MutableMap<Name, Inductive.ConstructorVal> = mutableMapOf()
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
-    val expressions: IntObjectStore<Expression> = IntObjectStore()
-    val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
+    val expressions: IntObjectStore<Expression> =
+        loaded?.expressions?.forkWithSharedNonNegative() ?: IntObjectStore()
+    val levels: IntObjectStore<Level> =
+        loaded?.levels?.forkWithSharedNonNegative() ?: IntObjectStore(listOf(0 to Level.Zero))
     var levelNormalizationCache: MutableMap<Int, Level> = mutableMapOf()
 
     val clock = TimeSource.Monotonic.markNow()
@@ -631,6 +644,8 @@ class Environment {
     var shouldLog = false
 
     var counter = 0
+
+    internal fun forkForParallelCheck(): Environment = Environment(this)
 
     override fun toString(): String {
         return "Names:\n${names.toList().joinToString("\n")}\n\n" +
