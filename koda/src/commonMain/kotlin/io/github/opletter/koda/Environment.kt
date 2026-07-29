@@ -133,7 +133,6 @@ private class LocalContext(
     val internId: Int,
 ) : AbstractList<Expression>() {
     override val size: Int = tail.size + 1
-    val hasValues: Boolean = headValue != null || (tail as? LocalContext)?.hasValues == true
 
     override fun get(index: Int): Expression {
         if (index !in indices) throw IndexOutOfBoundsException("Index $index out of bounds for context of size $size")
@@ -323,7 +322,6 @@ class Environment {
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
-    internal val semanticRuntime = SemanticRuntime()
     var defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
     var defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
     var defEqEquivalences = DefEqEquivalenceManager()
@@ -590,9 +588,6 @@ class Environment {
         return (localCtx as? LocalContext)?.valueAt(index)
     }
 
-    fun localCtxHasValues(localCtx: List<Expression>): Boolean =
-        (localCtx as? LocalContext)?.hasValues == true
-
     fun localCtxId(localCtx: List<Expression>): Int {
         if (localCtx.isEmpty()) return 0
         if (localCtx is LocalContext) return localCtx.internId
@@ -622,7 +617,6 @@ class Environment {
         defEqAppFailures = mutableSetOf()
         defEqEquivalences = DefEqEquivalenceManager()
         inferTypeCacheNoLevelSubst = mutableMapOf()
-        semanticRuntime.clear()
         localCtxIntern = mutableMapOf()
         nextLocalCtxId = 1
         defEqCalls = 0

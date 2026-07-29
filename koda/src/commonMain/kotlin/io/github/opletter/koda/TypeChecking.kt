@@ -3,7 +3,6 @@ package io.github.opletter.koda
 private var debugClosedEvaluation = false
 private var debugTargetDeclaration = false
 private const val debugTargetIndex = -1//21_000_000///51_500_000
-private const val semanticStepLimit = 1_000_000
 
 internal data class StructureEtaRecursorInfo(
     val inductiveDeclIndex: Int,
@@ -11,35 +10,6 @@ internal data class StructureEtaRecursorInfo(
     val constructorDecl: Inductive.ConstructorVal,
     val rule: Inductive.RecursorVal.RecursorRule,
 )
-
-internal data class ClosedEvalCacheKey(
-    val expressionId: Int,
-    val unfoldDefinitionsAtRoot: Boolean,
-)
-
-internal class SemanticRuntime {
-    internal val instantiatedRecursorRules: MutableMap<ClosedRecursorRuleKey, Expression> = mutableMapOf()
-    internal val looseBvarIndices: MutableMap<Int, List<Int>> = mutableMapOf()
-    internal val closedValues: MutableMap<ClosedEvalCacheKey, ClosedValue> = mutableMapOf()
-    internal val localEnvironments: MutableMap<Int, ClosedEvalEnv> = mutableMapOf()
-    internal val rootEnvironments: MutableMap<Int, ClosedEvalEnv.Root> = mutableMapOf()
-    internal val inferredTypes: MutableMap<InferTypeCacheKey, ClosedClosure> = mutableMapOf()
-    internal val proofArgumentMasks: MutableMap<Long, BooleanArray?> = mutableMapOf()
-    internal var activeConversions: Int = 0
-    internal var remainingSteps: Int = 0
-
-    fun clear() {
-        instantiatedRecursorRules.clear()
-        looseBvarIndices.clear()
-        closedValues.clear()
-        localEnvironments.clear()
-        rootEnvironments.clear()
-        inferredTypes.clear()
-        proofArgumentMasks.clear()
-        activeConversions = 0
-        remainingSteps = 0
-    }
-}
 
 fun typeCheck(data: Sequence<ExportType>) {
     val env = Environment()
@@ -244,131 +214,14 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
 }
 
 context(env: Environment)
-private fun Expression.checkHasType(
-    expectedType: Expression,
-    initialLocalCtx: List<Expression> = emptyList(),
-): Boolean = checkHasType(
-    ClosedClosure(expectedType, initialLocalCtx.closedEvalEnv()),
-    initialLocalCtx,
-)
-
-context(env: Environment)
-private fun Expression.checkHasType(
-    expectedType: ClosedClosure,
-    initialLocalCtx: List<Expression>,
-): Boolean {
-    val plan = openLambdasAgainst(expectedType, initialLocalCtx)
-    if (!plan.valid) return false
-    return plan.body.matchesExpectedType(plan.expectedType, plan.localCtx)
-}
-
-private data class LambdaCheckPlan(
-    val body: Expression,
-    val expectedType: ClosedClosure,
-    val localCtx: List<Expression>,
-    val opened: Boolean,
-    val valid: Boolean,
-)
-
-context(env: Environment)
-private fun Expression.openLambdasAgainst(
-    initialExpectedType: ClosedClosure,
-    initialLocalCtx: List<Expression>,
-): LambdaCheckPlan {
-    var value = this
-    var expected = initialExpectedType
-    var localCtx = initialLocalCtx
-    var opened = false
-    while (true) {
-        if (value is Expression.Mdata) {
-            value = value.expr
-            continue
-        }
-        val lambda = value as? Expression.Lam ?: break
-        opened = true
-        val baseLocals = localCtx.closedEvalEnv()
-        val functionType = expected.inferFunctionType(baseLocals, localCtx, lambda)
-        val pi = functionType.head.expression as Expression.ForallE
-        val expectedDomain = ClosedClosure(pi.typeExpr, functionType.head.locals)
-        requireSort(lambda.typeExpr.inferType(localCtx = localCtx), lambda.typeExpr, localCtx)
-        val actualDomain = ClosedClosure(lambda.typeExpr, baseLocals)
-        val domainMatchesSemantically = expectedDomain.trySemanticDefEq(actualDomain)
-        if (
-            !domainMatchesSemantically &&
-            !expectedDomain.reify(baseLocals).isDefEqWithoutSemantic(
-                lambda.typeExpr,
-                localCtx,
-                localCtx,
-            )
-        ) return LambdaCheckPlan(value, expected, localCtx, opened, false)
-        val neutral = ClosedClosure(
-            Expression.Bvar(-localCtx.size - 1, Int.MIN_VALUE),
-            ClosedEvalEnv.Empty,
-        ).also { it.semanticType = expectedDomain }
-        expected = ClosedClosure(
-            pi.bodyExpr,
-            ClosedEvalEnv.Bind(neutral, functionType.head.locals),
-        )
-        localCtx = env.consLocalCtx(lambda.typeExpr, localCtx)
-        value = lambda.bodyExpr
+private fun Expression.checkHasType(expectedType: Expression): Boolean {
+    val inferredValueType = this.inferType()
+    if (env.shouldLog) println("inferred type of value: ${inferredValueType/*.toStringDetailed()*/}")
+    if (env.shouldLog) {
+        println("expected type detailed: ${expectedType.toStringDetailed()}")
+        println("inferred type detailed: ${inferredValueType.toStringDetailed()}")
     }
-    return LambdaCheckPlan(value, expected, localCtx, opened, true)
-}
-
-context(env: Environment)
-private fun Expression.matchesExpectedType(
-    expected: ClosedClosure,
-    localCtx: List<Expression>,
-): Boolean = inferTypeCore(localCtx = localCtx).matchesExpectedType(expected, localCtx)
-
-context(env: Environment)
-private fun InferredTypeResult.matchesExpectedType(
-    expected: ClosedClosure,
-    localCtx: List<Expression>,
-): Boolean {
-    val baseLocals = localCtx.closedEvalEnv()
-    if (env.shouldLog) println("expected type detailed: ${expected.reify(baseLocals).toStringDetailed()}")
-    return when (this) {
-        is InferredTypeResult.Syntax -> {
-            if (env.shouldLog) println("inferred type of value: $expression")
-            if (env.shouldLog) println("inferred type detailed: ${expression.toStringDetailed()}")
-            val semanticMatch = expected.trySemanticDefEq(ClosedClosure(expression, baseLocals))
-            if (semanticMatch) true else {
-                val expectedSyntax = expected.reify(baseLocals)
-                expectedSyntax.isDefEqWithoutSemantic(expression, localCtx, localCtx)
-            }
-        }
-
-        is InferredTypeResult.Semantic -> {
-            if (env.shouldLog) {
-                val inferredExpression = closure.reify(baseLocals)
-                println("inferred type of value: $inferredExpression")
-                println("inferred type detailed: ${inferredExpression.toStringDetailed()}")
-            }
-            val semanticMatch = expected.trySemanticDefEq(closure)
-            if (semanticMatch) {
-                true
-            } else {
-                val expectedSyntax = expected.reify(baseLocals)
-                val inferredSyntax = closure.reify(baseLocals)
-                expectedSyntax.isDefEqWithoutSemantic(inferredSyntax, localCtx, localCtx)
-            }
-        }
-    }
-}
-
-context(env: Environment)
-private fun Expression.isDefEqWithoutSemantic(
-    other: Expression,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
-): Boolean {
-    env.semanticRuntime.activeConversions += 1
-    return try {
-        isDefEq(other, localCtxLeft, localCtxRight)
-    } finally {
-        env.semanticRuntime.activeConversions -= 1
-    }
+    return expectedType.isDefEq(inferredValueType)
 }
 
 context(env: Environment)
@@ -418,9 +271,7 @@ fun Expression.isDefEq(
     if (leftCore.tryProofIrrelevanceDefEqNoLog(rightCore, localCtxLeft, localCtxRight)) {
         return finish(true)
     }
-    if (leftCore.trySemanticDefEq(rightCore, localCtxLeft, localCtxRight)) {
-        return finish(true)
-    }
+
 //    if (traceDefEq) println("debug defeq phase: lazy delta")
     val lazyResult = leftCore.lazyDeltaDefEq(rightCore, localCtxLeft, localCtxRight)
 //    if (traceDefEq) {
@@ -462,188 +313,18 @@ fun Expression.isDefEq(
 
 context(env: Environment)
 private fun List<Expression>.closedEvalEnv(): ClosedEvalEnv {
-    if (isEmpty()) return ClosedEvalEnv.Empty
-    if (!env.localCtxHasValues(this)) {
-        return env.semanticRuntime.rootEnvironments.getOrPut(env.localCtxId(this)) {
-            ClosedEvalEnv.Root(this)
+    var locals: ClosedEvalEnv = ClosedEvalEnv.Empty
+    for (index in indices.reversed()) {
+        val value = env.localCtxValue(this, index)
+        val isProof = this[index].rigidTypeIsProp()
+        val closure = if (value == null) {
+            ClosedClosure(Expression.Bvar(index, Int.MIN_VALUE), ClosedEvalEnv.Empty, isProof)
+        } else {
+            ClosedClosure(value, locals, isProof)
         }
+        locals = ClosedEvalEnv.Bind(closure, locals)
     }
-    return env.semanticRuntime.localEnvironments.getOrPut(env.localCtxId(this)) {
-        var locals: ClosedEvalEnv = ClosedEvalEnv.Empty
-        for (index in indices.reversed()) {
-            val value = env.localCtxValue(this, index)
-            val bindingType = ClosedClosure(this[index], locals)
-            val closure = (if (value == null) {
-                ClosedClosure(Expression.Bvar(index - size, Int.MIN_VALUE), ClosedEvalEnv.Empty)
-            } else {
-                ClosedClosure(value, locals)
-            }).also { it.semanticType = bindingType }
-            locals = ClosedEvalEnv.Bind(closure, locals)
-        }
-        locals
-    }
-}
-
-context(env: Environment)
-private fun Expression.trySemanticDefEq(
-    other: Expression,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
-): Boolean {
-    if (env.semanticRuntime.activeConversions != 0) return false
-    env.semanticRuntime.activeConversions += 1
-    env.semanticRuntime.remainingSteps = semanticStepLimit
-    return try {
-        ClosedClosure(this, localCtxLeft.closedEvalEnv()).closedDefEq(
-            ClosedClosure(other, localCtxRight.closedEvalEnv()),
-            nextNeutral = -maxOf(localCtxLeft.size, localCtxRight.size) - 1,
-        )
-    } finally {
-        env.semanticRuntime.remainingSteps = 0
-        env.semanticRuntime.activeConversions -= 1
-    }
-}
-
-context(env: Environment)
-private fun ClosedClosure.trySemanticWhnf(): ClosedValue? {
-    if (env.semanticRuntime.activeConversions != 0) return null
-    env.semanticRuntime.activeConversions += 1
-    env.semanticRuntime.remainingSteps = semanticStepLimit
-    return try {
-        closedWhnf()
-    } finally {
-        env.semanticRuntime.remainingSteps = 0
-        env.semanticRuntime.activeConversions -= 1
-    }
-}
-
-context(env: Environment)
-private fun ClosedClosure.trySemanticDefEq(other: ClosedClosure): Boolean {
-    if (
-        expression === other.expression &&
-        pendingArguments.size == other.pendingArguments.size &&
-        pendingArguments.indices.all { pendingArguments[it] === other.pendingArguments[it] } &&
-        (locals === other.locals || expression.maxLooseBVarIndex() < 0)
-    ) {
-        return true
-    }
-    if (env.semanticRuntime.activeConversions != 0) return false
-    env.semanticRuntime.activeConversions += 1
-    env.semanticRuntime.remainingSteps = semanticStepLimit
-    return try {
-        closedDefEq(
-            other,
-            nextNeutral = -maxOf(locals.semanticDepth(), other.locals.semanticDepth()) - 1,
-            trace = debugTargetDeclaration,
-        )
-    } finally {
-        env.semanticRuntime.remainingSteps = 0
-        env.semanticRuntime.activeConversions -= 1
-    }
-}
-
-private fun ClosedEvalEnv.semanticDepth(): Int {
-    var depth = 0
-    var current = this
-    while (current is ClosedEvalEnv.Bind) {
-        depth += 1
-        current = current.tail
-    }
-    if (current is ClosedEvalEnv.Root) depth += current.depth
-    return depth
-}
-
-context(env: Environment)
-private fun ClosedEvalEnv.Root.localIsProof(index: Int): Boolean {
-    if (index !in localCtx.indices) return false
-    when (proofStatus[index].toInt()) {
-        1 -> return false
-        2 -> return true
-    }
-    proofStatus[index] = 1
-    val binderType = localCtx[index].lift(index + 1)
-    val isProof = binderType
-        .inferSort(localCtx = localCtx, validate = false)
-        .isLessOrEqual(Level.Zero)
-    proofStatus[index] = if (isProof) 2 else 1
-    return isProof
-}
-
-context(env: Environment)
-private fun ClosedClosure.reify(baseLocals: ClosedEvalEnv): Expression {
-    val reified = mutableMapOf<ClosedClosure, Expression>()
-    fun reifyClosure(closure: ClosedClosure): Expression {
-        reified[closure]?.let { return it }
-        var currentLocals = closure.locals
-        val requiredBindings = when (val expression = closure.expression) {
-            is Expression.Bvar -> if (expression.ie == Int.MIN_VALUE) 0
-            else expression.maxLooseBVarIndex() + 1
-
-            is Expression.NatVal -> if (expression.ie == Int.MIN_VALUE) 0
-            else expression.maxLooseBVarIndex() + 1
-
-            else -> expression.maxLooseBVarIndex() + 1
-        }
-        val substitutions = ArrayList<Expression>(requiredBindings)
-        while (
-            substitutions.size < requiredBindings &&
-            currentLocals is ClosedEvalEnv.Bind &&
-            currentLocals !== baseLocals
-        ) {
-            substitutions += reifyClosure(currentLocals.value)
-            currentLocals = currentLocals.tail
-        }
-        if (
-            substitutions.size < requiredBindings &&
-            currentLocals is ClosedEvalEnv.Root &&
-            currentLocals !== baseLocals
-        ) {
-            val targetDepth = baseLocals.semanticDepth()
-            val sourceDepth = currentLocals.depth
-            repeat(minOf(requiredBindings - substitutions.size, sourceDepth)) { index ->
-                substitutions += env.addCustomExpr {
-                    Expression.Bvar(targetDepth - sourceDepth + index, it)
-                }
-            }
-        }
-        var result = closure.expression.applySubst(substitutions)
-        if (result.ie == Int.MIN_VALUE) {
-            result = when (val transient = result) {
-                is Expression.Bvar -> env.addCustomExpr {
-                    transient.copy(
-                        bvar = transient.bvar + baseLocals.semanticDepth(),
-                        ie = it,
-                    )
-                }
-
-                is Expression.NatVal -> env.addCustomExpr { transient.copy(ie = it) }
-                else -> error("Unexpected transient semantic expression: ${transient::class.simpleName}")
-            }
-        }
-        val arguments = closure.cachedArguments ?: closure.pendingArguments
-        if (arguments.isNotEmpty()) {
-            result = result.applyArgs(arguments.map(::reifyClosure))
-        }
-        reified[closure] = result
-        return result
-    }
-    return reifyClosure(this)
-}
-
-context(env: Environment)
-private fun ClosedClosure.inferFunctionType(
-    baseLocals: ClosedEvalEnv,
-    localCtx: List<Expression>,
-    subject: Expression,
-): ClosedValue {
-    val semantic = trySemanticWhnf()
-    if (semantic != null && semantic.arguments.isEmpty() && semantic.head.expression is Expression.ForallE) {
-        return semantic
-    }
-    val syntax = reify(baseLocals).whnf(localCtx = localCtx)
-    val forall = syntax as? Expression.ForallE
-        ?: error("Expected function type for app ${subject.toStringDetailed()}, got ${syntax.toStringDetailed()}")
-    return ClosedValue(forall, baseLocals, false, ClosedArgs.Empty)
+    return locals
 }
 
 context(env: Environment)
@@ -675,253 +356,28 @@ private fun Expression.isBoolTrueConst(): Boolean {
     return boolName.pre == 0 && boolName.str == "Bool"
 }
 
-internal sealed interface ClosedEvalEnv {
+private sealed interface ClosedEvalEnv {
     data object Empty : ClosedEvalEnv
-    class Root(val localCtx: List<Expression>) : ClosedEvalEnv {
-        val depth: Int get() = localCtx.size
-        val proofStatus = ByteArray(depth)
-    }
     class Bind(val value: ClosedClosure, val tail: ClosedEvalEnv) : ClosedEvalEnv
 }
 
-internal sealed class ClosedArgs(
-    val size: Int,
-) : Iterable<ClosedClosure> {
-    abstract operator fun get(index: Int): ClosedClosure
-
-    val indices: IntRange get() = 0 until size
-
-    fun isEmpty(): Boolean = size == 0
-
-    fun isNotEmpty(): Boolean = size != 0
-
-    fun getOrNull(index: Int): ClosedClosure? =
-        if (index in indices) get(index) else null
-
-    override fun iterator(): Iterator<ClosedClosure> = object : Iterator<ClosedClosure> {
-        private var index = 0
-
-        override fun hasNext(): Boolean = index < size
-
-        override fun next(): ClosedClosure {
-            if (!hasNext()) throw NoSuchElementException()
-            return get(index++)
-        }
-    }
-
-    data object Empty : ClosedArgs(0) {
-        override fun get(index: Int): ClosedClosure = throw IndexOutOfBoundsException(index.toString())
-    }
-
-    private class One(val value: ClosedClosure) : ClosedArgs(1) {
-        override fun get(index: Int): ClosedClosure =
-            if (index == 0) value else throw IndexOutOfBoundsException(index.toString())
-    }
-
-    private class Cons(
-        val value: ClosedClosure,
-        val tail: ClosedArgs,
-    ) : ClosedArgs(tail.size + 1) {
-        override fun get(index: Int): ClosedClosure {
-            checkElementIndex(index, size)
-            if (index == 0) return value
-            return getAt(tail, index - 1)
-        }
-    }
-
-    private class Snoc(
-        val init: ClosedArgs,
-        val value: ClosedClosure,
-    ) : ClosedArgs(init.size + 1) {
-        override fun get(index: Int): ClosedClosure {
-            checkElementIndex(index, size)
-            if (index == init.size) return value
-            return getAt(init, index)
-        }
-    }
-
-    private class Node(
-        val left: ClosedArgs,
-        val right: ClosedArgs,
-    ) : ClosedArgs(left.size + right.size) {
-        override fun get(index: Int): ClosedClosure {
-            checkElementIndex(index, size)
-            return getAt(this, index)
-        }
-    }
-
-    private class Slice(
-        val base: ClosedArgs,
-        val offset: Int,
-        size: Int,
-    ) : ClosedArgs(size) {
-        override fun get(index: Int): ClosedClosure {
-            checkElementIndex(index, size)
-            return getAt(base, offset + index)
-        }
-    }
-
-    fun prepend(value: ClosedClosure): ClosedArgs = Cons(value, this)
-
-    fun append(value: ClosedClosure): ClosedArgs = Snoc(this, value)
-
-    fun concat(other: ClosedArgs): ClosedArgs = concat(this, other)
-
-    fun takeArgs(count: Int): ClosedArgs {
-        require(count in 0..size)
-        if (count == 0) return Empty
-        if (count == size) return this
-        return when (this) {
-            is Slice -> Slice(base, offset, count)
-            else -> Slice(this, 0, count)
-        }
-    }
-
-    fun dropArgs(count: Int): ClosedArgs {
-        require(count in 0..size)
-        if (count == 0) return this
-        if (count == size) return Empty
-        var current = this
-        var remaining = count
-        while (remaining > 0 && current is Cons) {
-            current = current.tail
-            remaining -= 1
-        }
-        if (remaining == 0) return current
-        return when (this) {
-            is Slice -> Slice(base, offset + count, size - count)
-            else -> Slice(this, count, size - count)
-        }
-    }
-
-    companion object {
-        fun fromList(values: List<ClosedClosure>): ClosedArgs {
-            fun build(from: Int, until: Int): ClosedArgs {
-                if (from == until) return Empty
-                if (from + 1 == until) return One(values[from])
-                val middle = (from + until) ushr 1
-                return Node(build(from, middle), build(middle, until))
-            }
-            return build(0, values.size)
-        }
-
-        private fun concat(left: ClosedArgs, right: ClosedArgs): ClosedArgs {
-            if (left === Empty) return right
-            if (right === Empty) return left
-            return Node(left, right)
-        }
-
-        private fun getAt(root: ClosedArgs, index: Int): ClosedClosure {
-            var current = root
-            var remaining = index
-            while (true) {
-                when (current) {
-                    is Cons -> {
-                        if (remaining == 0) return current.value
-                        remaining -= 1
-                        current = current.tail
-                    }
-
-                    is Snoc -> {
-                        if (remaining == current.init.size) return current.value
-                        current = current.init
-                    }
-
-                    is Node -> {
-                        if (remaining < current.left.size) {
-                            current = current.left
-                        } else {
-                            remaining -= current.left.size
-                            current = current.right
-                        }
-                    }
-
-                    is Slice -> {
-                        remaining += current.offset
-                        current = current.base
-                    }
-
-                    is One -> return current.value
-                    Empty -> throw IndexOutOfBoundsException(index.toString())
-                }
-            }
-        }
-
-        private fun checkElementIndex(index: Int, size: Int) {
-            if (index !in 0 until size) throw IndexOutOfBoundsException("index=$index size=$size")
-        }
-    }
-}
-
-internal open class ClosedClosure(
+private class ClosedClosure(
     var expression: Expression,
     var locals: ClosedEvalEnv,
     var isProof: Boolean = false,
-    val pendingArguments: ClosedArgs = ClosedArgs.Empty,
+    val pendingArguments: List<ClosedClosure> = emptyList(),
 ) {
-    var cachedArguments: ClosedArgs? = null
-    var cachedValue: ClosedValue? = null
-    var semanticType: ClosedClosure? = null
+    var cachedArguments: List<ClosedClosure>? = null
 }
 
-private fun ClosedClosure.withSemanticType(type: ClosedClosure): ClosedClosure {
-    if (semanticType == null) semanticType = type
-    return this
-}
-
-internal class ClosedValue(
-    expression: Expression,
-    locals: ClosedEvalEnv,
-    isProof: Boolean,
-    val arguments: ClosedArgs,
-    semanticType: ClosedClosure? = null,
-    val projection: ClosedProjection? = null,
-) : ClosedClosure(expression, locals, isProof, pendingArguments = arguments) {
-    val head: ClosedClosure get() = this
-
-    init {
-        this.semanticType = semanticType
-    }
-}
-
-internal class ClosedProjection(
-    val descriptor: Expression.Proj,
-    val structure: ClosedValue,
+private data class ClosedValue(
+    val head: ClosedClosure,
+    val arguments: List<ClosedClosure>,
 )
-
-private fun ClosedValue.asClosure(arguments: ClosedArgs = this.arguments): ClosedClosure {
-    if (projection == null) {
-        return ClosedClosure(
-            head.expression,
-            head.locals,
-            head.isProof,
-            pendingArguments = arguments,
-        ).also { it.semanticType = head.semanticType }
-    }
-    return ClosedClosure(
-        head.expression,
-        head.locals,
-        head.isProof,
-    ).also {
-        it.semanticType = head.semanticType
-        it.cachedValue = if (arguments === this.arguments) this else {
-            ClosedValue(
-                head.expression,
-                head.locals,
-                head.isProof,
-                arguments,
-                head.semanticType,
-                projection,
-            )
-        }
-    }
-}
 
 private data class ClosedLocalLookup(
     val closure: ClosedClosure?,
     val neutralIndex: Int,
-    val isProof: Boolean = false,
-    val semanticType: ClosedClosure? = null,
 )
 
 private data class ClosedDefEqTask(
@@ -930,12 +386,6 @@ private data class ClosedDefEqTask(
     val nextNeutral: Int,
     val sameTypeKnown: Boolean,
     val expectedType: ClosedExpectedType? = null,
-    val fallback: ClosedDefEqFallback? = null,
-)
-
-private class ClosedDefEqFallback(
-    val alternative: ClosedDefEqTask,
-    val outer: ClosedDefEqFallback?,
 )
 
 private sealed interface ClosedExpectedType {
@@ -943,27 +393,24 @@ private sealed interface ClosedExpectedType {
 
     data class ConstantArgument(
         val head: Expression.Const,
-        val arguments: ClosedArgs,
+        val arguments: List<ClosedClosure>,
         val index: Int,
-        val isProof: Boolean? = null,
     ) : ClosedExpectedType
 }
 
 private data class ClosedDefEqState(
     val leftExpressionId: Int,
     val leftLocals: ClosedEvalEnv,
-    val leftArguments: ClosedArgs,
+    val leftArguments: List<ClosedClosure>,
     val rightExpressionId: Int,
     val rightLocals: ClosedEvalEnv,
-    val rightArguments: ClosedArgs,
-    val leftCachedValue: ClosedValue?,
-    val rightCachedValue: ClosedValue?,
+    val rightArguments: List<ClosedClosure>,
     val nextNeutral: Int,
     val sameTypeKnown: Boolean,
-    val fallback: ClosedDefEqFallback?,
+    val expectedType: ClosedExpectedType?,
 )
 
-internal data class ClosedRecursorRuleKey(
+private data class ClosedRecursorRuleKey(
     val recursorName: Name,
     val levelIds: List<Int>,
     val ruleExprId: Int,
@@ -976,21 +423,20 @@ private enum class ClosedNatPrimitive(val arity: Int) {
 private sealed interface ClosedEvalContinuation {
     data class Force(
         val closure: ClosedClosure,
-        val outerArgs: ClosedArgs,
+        val outerArgs: List<ClosedClosure>,
     ) : ClosedEvalContinuation
 
     data class Projection(
         val projection: Expression.Proj,
         val locals: ClosedEvalEnv,
-        val outerArgs: ClosedArgs,
+        val outerArgs: List<ClosedClosure>,
         val unfoldDefinitions: Boolean,
-        val semanticType: ClosedClosure?,
     ) : ClosedEvalContinuation
 
     data class Quotient(
         val quotConst: Expression.Const,
         val quotient: Declaration.Quot,
-        val arguments: ClosedArgs,
+        val arguments: List<ClosedClosure>,
         val arity: Int,
         val unfoldDefinitions: Boolean,
     ) : ClosedEvalContinuation
@@ -998,15 +444,15 @@ private sealed interface ClosedEvalContinuation {
     data class Recursor(
         val recursorConst: Expression.Const,
         val recursor: Inductive.RecursorVal,
-        val recursorArgs: ClosedArgs,
+        val recursorArgs: List<ClosedClosure>,
         val unfoldDefinitions: Boolean,
     ) : ClosedEvalContinuation
 
     data class NatOperand(
         val primitiveConst: Expression.Const,
         val primitive: ClosedNatPrimitive,
-        val operands: ClosedArgs,
-        val extraArgs: ClosedArgs,
+        val operands: List<ClosedClosure>,
+        val extraArgs: List<ClosedClosure>,
         val values: List<NatValue>,
         val operandIndex: Int,
     ) : ClosedEvalContinuation
@@ -1032,32 +478,19 @@ private fun ClosedClosure.closedDefEq(
 ): Boolean {
     val pending = ArrayDeque<ClosedDefEqTask>()
     val visited = mutableSetOf<ClosedDefEqState>()
-    val instantiatedRecursorRules = env.semanticRuntime.instantiatedRecursorRules
-    val looseBvarIndices = env.semanticRuntime.looseBvarIndices
-    val resolvedExpectedTypes = mutableMapOf<ClosedExpectedType, ClosedClosure?>()
-    val expectedTypePropCache = mutableMapOf<ClosedExpectedType, Boolean>()
+    val instantiatedRecursorRules = mutableMapOf<ClosedRecursorRuleKey, Expression>()
+    val looseBvarIndices = mutableMapOf<Int, List<Int>>()
+    val proofArgumentMasks = mutableMapOf<Pair<Int, Int>, BooleanArray?>()
 
-    fun bindingAt(locals: ClosedEvalEnv, index: Int): ClosedLocalLookup {
+    fun bindingAt(locals: ClosedEvalEnv, index: Int): ClosedClosure? {
         var current = locals
         var remaining = index
         while (current is ClosedEvalEnv.Bind) {
-            if (remaining == 0) {
-                return ClosedLocalLookup(
-                    current.value,
-                    0,
-                    semanticType = current.value.semanticType,
-                )
-            }
+            if (remaining == 0) return current.value
             remaining -= 1
             current = current.tail
         }
-        val isProof = current is ClosedEvalEnv.Root &&
-                current.localIsProof(remaining)
-        val semanticType = (current as? ClosedEvalEnv.Root)?.localCtx?.getOrNull(remaining)?.let { type ->
-            ClosedClosure(type.lift(remaining + 1), current)
-        }
-        if (current is ClosedEvalEnv.Root) remaining -= current.depth
-        return ClosedLocalLookup(null, remaining, isProof, semanticType)
+        return null
     }
 
     fun closuresObviouslyEqual(left: ClosedClosure, right: ClosedClosure): Boolean {
@@ -1065,7 +498,6 @@ private fun ClosedClosure.closedDefEq(
         if (left === right) return true
         if (
             left.expression === right.expression && left.locals === right.locals &&
-            left.cachedValue === right.cachedValue &&
             left.pendingArguments.size == right.pendingArguments.size &&
             left.pendingArguments.indices.all { left.pendingArguments[it] === right.pendingArguments[it] }
         ) return true
@@ -1118,47 +550,22 @@ private fun ClosedClosure.closedDefEq(
         left: ClosedEvalEnv,
         right: ClosedEvalEnv,
         nextNeutral: Int,
-        fallback: ClosedDefEqFallback?,
     ): Boolean {
         for (index in referencedLooseBvars(expression)) {
-            val leftLookup = bindingAt(left, index)
-            val rightLookup = bindingAt(right, index)
-            if (leftLookup.closure == null && rightLookup.closure == null) {
-                if (leftLookup.neutralIndex != rightLookup.neutralIndex) return false
-                continue
-            }
-            val leftBinding = leftLookup.closure ?: ClosedClosure(
-                Expression.Bvar(leftLookup.neutralIndex, Int.MIN_VALUE),
-                ClosedEvalEnv.Empty,
-                leftLookup.isProof,
-            ).also { it.semanticType = leftLookup.semanticType }
-            val rightBinding = rightLookup.closure ?: ClosedClosure(
-                Expression.Bvar(rightLookup.neutralIndex, Int.MIN_VALUE),
-                ClosedEvalEnv.Empty,
-                rightLookup.isProof,
-            ).also { it.semanticType = rightLookup.semanticType }
+            val leftBinding = bindingAt(left, index) ?: return false
+            val rightBinding = bindingAt(right, index) ?: return false
             if (!closuresObviouslyEqual(leftBinding, rightBinding)) {
-                pending.addLast(
-                    ClosedDefEqTask(
-                        leftBinding,
-                        rightBinding,
-                        nextNeutral,
-                        true,
-                        (leftBinding.semanticType ?: rightBinding.semanticType)
-                            ?.let(ClosedExpectedType::Closure),
-                        fallback,
-                    )
-                )
+                pending.addLast(ClosedDefEqTask(leftBinding, rightBinding, nextNeutral, true))
             }
         }
         return true
     }
 
-    fun proofArgumentMask(head: Expression.Const, arity: Int): BooleanArray? {
-        val key = (head.ie.toLong() shl 32) xor (arity.toLong() and 0xffffffffL)
-        val proofArgumentMasks = env.semanticRuntime.proofArgumentMasks
+    fun proofArgumentMask(head: ClosedClosure, arity: Int): BooleanArray? {
+        if (head.expression !is Expression.Const) return null
+        val key = head.expression.ie to arity
         if (proofArgumentMasks.containsKey(key)) return proofArgumentMasks[key]
-        var type = head.inferType(validate = false)
+        var type = head.expression.inferType(validate = false)
         var localCtx = emptyList<Expression>()
         val result = BooleanArray(arity)
         for (index in 0 until arity) {
@@ -1192,14 +599,13 @@ private fun ClosedClosure.closedDefEq(
         return inductiveIndex to constructor
     }
 
-    fun projectClosedValue(
-        value: ClosedValue,
-        inductiveIndex: Int,
-        fieldIndex: Int,
-        structureType: ClosedClosure? = null,
-    ): ClosedClosure {
-        val valueClosure = value.asClosure()
-        structureType?.let(valueClosure::withSemanticType)
+    fun projectClosedValue(value: ClosedValue, inductiveIndex: Int, fieldIndex: Int): ClosedClosure {
+        val valueClosure = ClosedClosure(
+            value.head.expression,
+            value.head.locals,
+            value.head.isProof,
+            pendingArguments = value.arguments,
+        )
         val valueRef = env.addCustomExpr { Expression.Bvar(0, it) }
         val projection = env.addCustomExpr {
             Expression.Proj(typeName = inductiveIndex, idx = fieldIndex, struct = valueRef.ie, ie = it)
@@ -1210,105 +616,25 @@ private fun ClosedClosure.closedDefEq(
         )
     }
 
-    fun constructorStructureType(
-        value: ClosedValue,
-        inductiveIndex: Int,
-        constructor: Inductive.ConstructorVal,
-    ): ClosedClosure {
-        val constructorConst = value.head.expression as Expression.Const
-        val inductiveConst = env.addCustomExpr {
-            Expression.Const(
-                inductiveIndex,
-                constructorConst.levels.map { level -> level.il },
-                it,
-            )
-        }
-        return ClosedClosure(
-            inductiveConst,
-            ClosedEvalEnv.Empty,
-            pendingArguments = value.arguments.takeArgs(constructor.numParams),
-        )
-    }
-
-    fun resolveExpectedType(expectedType: ClosedExpectedType?): ClosedClosure? {
-        if (expectedType == null) return null
-        if (resolvedExpectedTypes.containsKey(expectedType)) return resolvedExpectedTypes[expectedType]
-        val result = when (expectedType) {
-            is ClosedExpectedType.Closure -> expectedType.value
-            is ClosedExpectedType.ConstantArgument -> run {
-                var type = ClosedClosure(expectedType.head.inferType(validate = false), ClosedEvalEnv.Empty)
-                for (index in 0..expectedType.index) {
-                    val typeValue = type.closedWhnf(instantiatedRecursorRules, trace) ?: return@run null
-                    if (typeValue.arguments.isNotEmpty()) return@run null
-                    val forall = typeValue.head.expression as? Expression.ForallE ?: return@run null
-                    if (index == expectedType.index) {
-                        return@run ClosedClosure(forall.typeExpr, typeValue.head.locals)
-                    }
-                    val argument = expectedType.arguments.getOrNull(index) ?: return@run null
-                    type = ClosedClosure(
-                        forall.bodyExpr,
-                        ClosedEvalEnv.Bind(
-                            argument.withSemanticType(ClosedClosure(forall.typeExpr, typeValue.head.locals)),
-                            typeValue.head.locals,
-                        ),
-                    )
+    fun resolveExpectedType(expectedType: ClosedExpectedType?): ClosedClosure? = when (expectedType) {
+        null -> null
+        is ClosedExpectedType.Closure -> expectedType.value
+        is ClosedExpectedType.ConstantArgument -> {
+            var type = ClosedClosure(expectedType.head.inferType(validate = false), ClosedEvalEnv.Empty)
+            for (index in 0..expectedType.index) {
+                val typeValue = type.closedWhnf(instantiatedRecursorRules, trace) ?: return null
+                if (typeValue.arguments.isNotEmpty()) return null
+                val forall = typeValue.head.expression as? Expression.ForallE ?: return null
+                if (index == expectedType.index) {
+                    return ClosedClosure(forall.typeExpr, typeValue.head.locals)
                 }
-                null
+                val argument = expectedType.arguments.getOrNull(index) ?: return null
+                type = ClosedClosure(
+                    forall.bodyExpr,
+                    ClosedEvalEnv.Bind(argument, typeValue.head.locals),
+                )
             }
-        }
-        resolvedExpectedTypes[expectedType] = result
-        return result
-    }
-
-    fun closureTypeIsProp(closure: ClosedClosure): Boolean {
-        val value = closure.closedWhnf(
-            instantiatedRecursorRules,
-            trace,
-            unfoldDefinitionsAtRoot = false,
-        ) ?: return false
-        val constant = value.head.expression as? Expression.Const ?: return false
-        var type = ClosedClosure(constant.inferType(validate = false), ClosedEvalEnv.Empty)
-        for (argument in value.arguments) {
-            val typeValue = type.closedWhnf(instantiatedRecursorRules, trace) ?: return false
-            if (typeValue.arguments.isNotEmpty()) return false
-            val pi = typeValue.head.expression as? Expression.ForallE ?: return false
-            type = ClosedClosure(
-                pi.bodyExpr,
-                ClosedEvalEnv.Bind(
-                    argument.withSemanticType(ClosedClosure(pi.typeExpr, typeValue.head.locals)),
-                    typeValue.head.locals,
-                ),
-            )
-        }
-        val result = type.closedWhnf(instantiatedRecursorRules, trace) ?: return false
-        val sort = result.head.expression as? Expression.Sort ?: return false
-        return result.arguments.isEmpty() && sort.level.isLessOrEqual(Level.Zero)
-    }
-
-    fun expectedTypeIsProp(expectedType: ClosedExpectedType?): Boolean {
-        if (expectedType == null) return false
-        if (expectedType is ClosedExpectedType.ConstantArgument) {
-            expectedType.isProof?.let { return it }
-            val arity = maxOf(expectedType.arguments.size, expectedType.index + 1)
-            proofArgumentMask(expectedType.head, arity)?.let { return it[expectedType.index] }
-        }
-        return expectedTypePropCache.getOrPut(expectedType) {
-            val expected = resolveExpectedType(expectedType) ?: return@getOrPut false
-            val bvar = expected.expression as? Expression.Bvar
-                ?: return@getOrPut closureTypeIsProp(expected)
-            var index = bvar.bvar
-            var locals = expected.locals
-            while (locals is ClosedEvalEnv.Bind) {
-                if (index == 0) return@getOrPut closureTypeIsProp(locals.value)
-                index -= 1
-                locals = locals.tail
-            }
-            val root = locals as? ClosedEvalEnv.Root ?: return@getOrPut false
-            val binderType = root.localCtx.getOrNull(index)?.lift(index + 1)
-                ?: return@getOrPut false
-            val sort = binderType.whnf(localCtx = root.localCtx) as? Expression.Sort
-                ?: return@getOrPut false
-            sort.level.isLessOrEqual(Level.Zero)
+            null
         }
     }
 
@@ -1326,29 +652,6 @@ private fun ClosedClosure.closedDefEq(
                 ClosedEvalEnv.Bind(neutral, typeValue.head.locals),
             )
         )
-    }
-
-    fun argumentExpectedType(value: ClosedValue, argumentIndex: Int): ClosedExpectedType? {
-        var type = value.head.semanticType ?: return null
-        for (index in 0..argumentIndex) {
-            val typeValue = type.closedWhnf(instantiatedRecursorRules, trace) ?: return null
-            if (typeValue.arguments.isNotEmpty()) return null
-            val forall = typeValue.head.expression as? Expression.ForallE ?: return null
-            if (index == argumentIndex) {
-                return ClosedExpectedType.Closure(
-                    ClosedClosure(forall.typeExpr, typeValue.head.locals)
-                )
-            }
-            val argument = value.arguments.getOrNull(index) ?: return null
-            type = ClosedClosure(
-                forall.bodyExpr,
-                ClosedEvalEnv.Bind(
-                    argument.withSemanticType(ClosedClosure(forall.typeExpr, typeValue.head.locals)),
-                    typeValue.head.locals,
-                ),
-            )
-        }
-        return null
     }
 
     fun enclosingStructureType(expectedType: ClosedExpectedType?): ClosedExpectedType? {
@@ -1370,7 +673,7 @@ private fun ClosedClosure.closedDefEq(
             ClosedClosure(
                 inductiveConst,
                 ClosedEvalEnv.Empty,
-                pendingArguments = argumentType.arguments.takeArgs(constructor.numParams),
+                pendingArguments = argumentType.arguments.take(constructor.numParams),
             )
         )
     }
@@ -1417,39 +720,10 @@ private fun ClosedClosure.closedDefEq(
             ?: return null
         var right = rightRoot.closedWhnf(instantiatedRecursorRules, trace, unfoldDefinitionsAtRoot = false)
             ?: return null
-        var forcedLeftIota = false
-        var forcedRightIota = false
-
-        fun ClosedValue.canForceIota(): Boolean {
-            val declaration = (head.expression as? Expression.Const)?.decl
-            return declaration is Inductive.RecursorVal ||
-                    declaration is Declaration.Quot &&
-                    (declaration.kind == Declaration.Quot.Kind.Lift ||
-                            declaration.kind == Declaration.Quot.Kind.Ind)
-        }
-
-        fun ClosedValue.forceIota(): ClosedValue? =
-            asClosure().closedWhnf(instantiatedRecursorRules, trace)
-
-        while (true) {
-            while (!headsCanBeCompared(left, right)) {
+        while (!headsCanBeCompared(left, right)) {
             val leftStep = deltaStep(left)
             val rightStep = deltaStep(right)
-                if (leftStep == null && rightStep == null) {
-                    var forcedIota = false
-                    if (!forcedLeftIota && left.canForceIota()) {
-                        forcedLeftIota = true
-                        left = left.forceIota() ?: return null
-                        forcedIota = true
-                    }
-                    if (!forcedRightIota && right.canForceIota()) {
-                        forcedRightIota = true
-                        right = right.forceIota() ?: return null
-                        forcedIota = true
-                    }
-                    if (forcedIota) continue
-                    break
-                }
+            if (leftStep == null && rightStep == null) break
 
             val unfoldLeft: Boolean
             val unfoldRight: Boolean
@@ -1493,33 +767,15 @@ private fun ClosedClosure.closedDefEq(
                     unfoldDefinitionsAtRoot = false,
                 ) ?: return null
             }
-            }
-
-            return left to right
         }
+        return left to right
     }
 
-    pending.addLast(
-        ClosedDefEqTask(this, other, nextNeutral, expectedType != null, expectedType)
-    )
+    pending.addLast(ClosedDefEqTask(this, other, nextNeutral, expectedType != null, expectedType))
     while (pending.isNotEmpty()) {
-        if (
-            env.semanticRuntime.activeConversions != 0 &&
-            env.semanticRuntime.remainingSteps-- <= 0
-        ) {
-            if (trace) println("closed conversion declined: step limit")
-            return false
-        }
         val task = pending.removeLast()
         if (task.left.isProof && task.right.isProof) continue
-        val sameClosureRepresentation =
-            task.left.expression === task.right.expression &&
-                    task.left.cachedValue === task.right.cachedValue &&
-                    task.left.pendingArguments.size == task.right.pendingArguments.size &&
-                    task.left.pendingArguments.indices.all {
-                        task.left.pendingArguments[it] === task.right.pendingArguments[it]
-                    }
-        if (sameClosureRepresentation && task.left.locals === task.right.locals) continue
+        if (resolveExpectedType(task.expectedType)?.expression?.rigidTypeIsProp() == true) continue
         val state = ClosedDefEqState(
             task.left.expression.ie,
             task.left.locals,
@@ -1527,86 +783,63 @@ private fun ClosedClosure.closedDefEq(
             task.right.expression.ie,
             task.right.locals,
             task.right.pendingArguments,
-            task.left.cachedValue,
-            task.right.cachedValue,
             task.nextNeutral,
             task.sameTypeKnown,
-            task.fallback,
+            task.expectedType,
         )
         if (!visited.add(state)) continue
-        fun recover(): Boolean {
-            val fallback = task.fallback ?: return false
-            fun ClosedDefEqFallback?.contains(target: ClosedDefEqFallback): Boolean {
-                var current = this
-                while (current != null) {
-                    if (current === target) return true
-                    current = current.outer
-                }
-                return false
-            }
-            while (pending.lastOrNull()?.fallback.contains(fallback)) pending.removeLast()
-            visited.clear()
-            pending.addLast(fallback.alternative)
-            return true
+        fun fail(reason: String, left: ClosedValue? = null, right: ClosedValue? = null): Boolean {
+//            if (trace) {
+//                println(
+//                    "debug closure equality failed: $reason " +
+//                            "left=${task.left.expression.debugHead()} right=${task.right.expression.debugHead()} " +
+//                            "leftWhnf=${left?.head?.expression?.debugHead()}(${left?.arguments?.size}) " +
+//                            "rightWhnf=${right?.head?.expression?.debugHead()}(${right?.arguments?.size})"
+//                )
+//            }
+            return false
         }
-        if (task.sameTypeKnown && expectedTypeIsProp(task.expectedType)) continue
-        if (sameClosureRepresentation) {
+        if (
+            task.left.expression === task.right.expression &&
+            task.left.pendingArguments.size == task.right.pendingArguments.size &&
+            task.left.pendingArguments.indices.all {
+                task.left.pendingArguments[it] === task.right.pendingArguments[it]
+            }
+        ) {
+            if (task.left.locals === task.right.locals) continue
             if (
                 enqueueEnvironmentAgreement(
                     task.left.expression,
                     task.left.locals,
                     task.right.locals,
                     task.nextNeutral,
-                    task.fallback,
                 )
-            ) continue else {
-                if (recover()) continue
-                return false
-            }
+            ) continue else return fail("missing environment binding")
         }
-        val comparison = unfoldForComparison(task.left, task.right)
-        if (comparison == null) {
-            if (recover()) continue
-            return false
-        }
-        val left = comparison.first
-        val right = comparison.second
-        if (task.sameTypeKnown && (left.head.isProof || right.head.isProof)) continue
+        val [left, right] = unfoldForComparison(task.left, task.right)
+            ?: return fail("closure reduction stuck")
 
-        val leftProjection = left.projection?.descriptor
-            ?: left.head.expression as? Expression.Proj
-        val rightProjection = right.projection?.descriptor
-            ?: right.head.expression as? Expression.Proj
+        val leftProjection = left.head.expression as? Expression.Proj
+        val rightProjection = right.head.expression as? Expression.Proj
         if (leftProjection != null && rightProjection != null) {
-            if (left.arguments.size != right.arguments.size) {
-                if (recover()) continue
-                return false
-            }
+            if (left.arguments.size != right.arguments.size) return fail("projection arity", left, right)
             if (
                 leftProjection.typeNameExpr != rightProjection.typeNameExpr ||
                 leftProjection.projIndex != rightProjection.projIndex
-            ) {
-                if (recover()) continue
-                return false
-            }
-            val structureExpectedType = enclosingStructureType(task.expectedType)
+            ) return fail("projection heads", left, right)
             pending.addLast(
                 ClosedDefEqTask(
-                    left.projection?.structure?.asClosure()
-                        ?: ClosedClosure(leftProjection.structExpr, left.head.locals),
-                    right.projection?.structure?.asClosure()
-                        ?: ClosedClosure(rightProjection.structExpr, right.head.locals),
+                    ClosedClosure(leftProjection.structExpr, left.head.locals),
+                    ClosedClosure(rightProjection.structExpr, right.head.locals),
                     task.nextNeutral,
                     true,
-                    structureExpectedType,
-                    task.fallback,
+                    enclosingStructureType(task.expectedType),
                 )
             )
             for (index in left.arguments.indices) {
                 pending.addLast(
                     ClosedDefEqTask(
                         left.arguments[index], right.arguments[index], task.nextNeutral, true,
-                        fallback = task.fallback,
                     )
                 )
             }
@@ -1621,12 +854,11 @@ private fun ClosedClosure.closedDefEq(
             if (leftEta != null && rightEta == null && !rightIsAnyConstructor) {
                 val [inductiveIndex, constructor] = leftEta
                 val constructorConst = left.head.expression as Expression.Const
-                val structureType = constructorStructureType(left, inductiveIndex, constructor)
                 for (fieldIndex in 0 until constructor.numFields) {
                     pending.addLast(
                         ClosedDefEqTask(
                             left.arguments[constructor.numParams + fieldIndex],
-                            projectClosedValue(right, inductiveIndex, fieldIndex, structureType),
+                            projectClosedValue(right, inductiveIndex, fieldIndex),
                             task.nextNeutral,
                             true,
                             ClosedExpectedType.ConstantArgument(
@@ -1634,7 +866,6 @@ private fun ClosedClosure.closedDefEq(
                                 left.arguments,
                                 constructor.numParams + fieldIndex,
                             ),
-                            task.fallback,
                         )
                     )
                 }
@@ -1643,11 +874,10 @@ private fun ClosedClosure.closedDefEq(
             if (rightEta != null && leftEta == null && !leftIsAnyConstructor) {
                 val [inductiveIndex, constructor] = rightEta
                 val constructorConst = right.head.expression as Expression.Const
-                val structureType = constructorStructureType(right, inductiveIndex, constructor)
                 for (fieldIndex in 0 until constructor.numFields) {
                     pending.addLast(
                         ClosedDefEqTask(
-                            projectClosedValue(left, inductiveIndex, fieldIndex, structureType),
+                            projectClosedValue(left, inductiveIndex, fieldIndex),
                             right.arguments[constructor.numParams + fieldIndex],
                             task.nextNeutral,
                             true,
@@ -1656,13 +886,11 @@ private fun ClosedClosure.closedDefEq(
                                 right.arguments,
                                 constructor.numParams + fieldIndex,
                             ),
-                            task.fallback,
                         )
                     )
                 }
                 continue
             }
-
         }
 
         val leftLambda = left.head.expression as? Expression.Lam
@@ -1672,13 +900,8 @@ private fun ClosedClosure.closedDefEq(
             val neutral = ClosedClosure(
                 Expression.Bvar(task.nextNeutral, Int.MIN_VALUE),
                 ClosedEvalEnv.Empty,
-            ).also {
-                it.semanticType = if (leftLambda != null) {
-                    ClosedClosure(leftLambda.typeExpr, left.head.locals)
-                } else {
-                    ClosedClosure(checkNotNull(rightLambda).typeExpr, right.head.locals)
-                }
-            }
+                neutralDomain.rigidTypeIsProp(),
+            )
             fun applyNeutral(value: ClosedValue, lambda: Expression.Lam?): ClosedClosure {
                 if (lambda != null) {
                     return ClosedClosure(
@@ -1686,7 +909,11 @@ private fun ClosedClosure.closedDefEq(
                         ClosedEvalEnv.Bind(neutral, value.head.locals),
                     )
                 }
-                return value.asClosure(value.arguments.append(neutral))
+                return ClosedClosure(
+                    value.head.expression,
+                    value.head.locals,
+                    pendingArguments = value.arguments + neutral,
+                )
             }
             pending.addLast(
                 ClosedDefEqTask(
@@ -1695,7 +922,6 @@ private fun ClosedClosure.closedDefEq(
                     task.nextNeutral - 1,
                     true,
                     applyExpectedFunctionType(task.expectedType, neutral),
-                    task.fallback,
                 )
             )
             if (leftLambda != null && rightLambda != null) {
@@ -1705,7 +931,6 @@ private fun ClosedClosure.closedDefEq(
                         ClosedClosure(rightLambda.typeExpr, right.head.locals),
                         task.nextNeutral,
                         true,
-                        fallback = task.fallback,
                     )
                 )
             }
@@ -1721,12 +946,13 @@ private fun ClosedClosure.closedDefEq(
                 val neutral = ClosedClosure(
                     Expression.Bvar(task.nextNeutral, Int.MIN_VALUE),
                     ClosedEvalEnv.Empty,
-                ).also {
-                    it.semanticType = ClosedClosure(forall.typeExpr, typeValue.head.locals)
-                }
-
-                fun applyNeutral(value: ClosedValue): ClosedClosure =
-                    value.asClosure(value.arguments.append(neutral))
+                    forall.typeExpr.rigidTypeIsProp(),
+                )
+                fun applyNeutral(value: ClosedValue): ClosedClosure = ClosedClosure(
+                    value.head.expression,
+                    value.head.locals,
+                    pendingArguments = value.arguments + neutral,
+                )
                 pending.addLast(
                     ClosedDefEqTask(
                         applyNeutral(left),
@@ -1739,11 +965,39 @@ private fun ClosedClosure.closedDefEq(
                                 ClosedEvalEnv.Bind(neutral, typeValue.head.locals),
                             )
                         ),
-                        task.fallback,
                     )
                 )
                 continue
             }
+        }
+
+        if (left.arguments.size != right.arguments.size) return fail("spine arity", left, right)
+
+        val leftForall = left.head.expression as? Expression.ForallE
+        val rightForall = right.head.expression as? Expression.ForallE
+        if (leftForall != null && rightForall != null && left.arguments.isEmpty()) {
+            val neutral = ClosedClosure(
+                Expression.Bvar(task.nextNeutral, Int.MIN_VALUE),
+                ClosedEvalEnv.Empty,
+                leftForall.typeExpr.rigidTypeIsProp() && rightForall.typeExpr.rigidTypeIsProp(),
+            )
+            pending.addLast(
+                ClosedDefEqTask(
+                    ClosedClosure(leftForall.bodyExpr, ClosedEvalEnv.Bind(neutral, left.head.locals)),
+                    ClosedClosure(rightForall.bodyExpr, ClosedEvalEnv.Bind(neutral, right.head.locals)),
+                    task.nextNeutral - 1,
+                    true,
+                )
+            )
+            pending.addLast(
+                ClosedDefEqTask(
+                    ClosedClosure(leftForall.typeExpr, left.head.locals),
+                    ClosedClosure(rightForall.typeExpr, right.head.locals),
+                    task.nextNeutral,
+                    true,
+                )
+            )
+            continue
         }
 
         fun ClosedValue.natValueOrNull(): NatValue? {
@@ -1754,90 +1008,10 @@ private fun ClosedClosure.closedDefEq(
             }
         }
 
-        fun ClosedValue.natPredecessorOrNull(): ClosedClosure? {
-            val literal = natValueOrNull()
-            if (literal != null) {
-                if (literal.isZero()) return null
-                return ClosedClosure(
-                    Expression.NatVal(literal - NatValue.ONE, Int.MIN_VALUE),
-                    ClosedEvalEnv.Empty,
-                )
-            }
-            val constant = head.expression as? Expression.Const ?: return null
-            if (
-                constant.levels.isNotEmpty() ||
-                constant.name.toStringDetailed() != "Nat.succ" ||
-                arguments.size != 1
-            ) return null
-            return arguments[0]
-        }
-
         val leftNat = left.natValueOrNull()
         val rightNat = right.natValueOrNull()
         if (leftNat != null || rightNat != null) {
-            if (leftNat != null && rightNat != null) {
-                if (leftNat != rightNat) {
-                    if (recover()) continue
-                    return false
-                }
-                continue
-            }
-            val leftPred = left.natPredecessorOrNull()
-            val rightPred = right.natPredecessorOrNull()
-            if (leftPred == null || rightPred == null) {
-                if (recover()) continue
-                return false
-            }
-            pending.addLast(
-                ClosedDefEqTask(
-                    leftPred,
-                    rightPred,
-                    task.nextNeutral,
-                    true,
-                    fallback = task.fallback,
-                )
-            )
-            continue
-        }
-
-        if (left.arguments.size != right.arguments.size) {
-            if (recover()) continue
-            return false
-        }
-
-        val leftForall = left.head.expression as? Expression.ForallE
-        val rightForall = right.head.expression as? Expression.ForallE
-        if (leftForall != null && rightForall != null && left.arguments.isEmpty()) {
-            val neutral = ClosedClosure(
-                Expression.Bvar(task.nextNeutral, Int.MIN_VALUE),
-                ClosedEvalEnv.Empty,
-            ).also {
-                it.semanticType = ClosedClosure(leftForall.typeExpr, left.head.locals)
-            }
-            pending.addLast(
-                ClosedDefEqTask(
-                    ClosedClosure(
-                        leftForall.bodyExpr,
-                        ClosedEvalEnv.Bind(neutral, left.head.locals),
-                    ),
-                    ClosedClosure(
-                        rightForall.bodyExpr,
-                        ClosedEvalEnv.Bind(neutral, right.head.locals),
-                    ),
-                    task.nextNeutral - 1,
-                    true,
-                    fallback = task.fallback,
-                )
-            )
-            pending.addLast(
-                ClosedDefEqTask(
-                    ClosedClosure(leftForall.typeExpr, left.head.locals),
-                    ClosedClosure(rightForall.typeExpr, right.head.locals),
-                    task.nextNeutral,
-                    true,
-                    fallback = task.fallback,
-                )
-            )
+            if (leftNat == null || leftNat != rightNat) return fail("natural literals", left, right)
             continue
         }
 
@@ -1862,97 +1036,13 @@ private fun ClosedClosure.closedDefEq(
 
             else -> false
         }
-        if (!headsMatch) {
-            if (recover()) continue
-            return false
-        }
-        if (leftHead !is Expression.Const && task.sameTypeKnown) {
-            resolveExpectedType(task.expectedType)?.let { type ->
-                if (left.head.semanticType == null) left.head.semanticType = type
-                if (right.head.semanticType == null) right.head.semanticType = type
-            }
-        }
-        var tryCongruenceBeforeDelta = false
-        val deltaAlternative = if (
-            leftHead is Expression.Const &&
-            rightHead is Expression.Const &&
-            left.arguments.isNotEmpty()
-        ) {
-            val leftStep = deltaStep(left)
-            val rightStep = deltaStep(right)
-            if (leftStep == null && rightStep == null) {
-                null
-            } else {
-                tryCongruenceBeforeDelta =
-                    leftStep?.first?.kind == LazyDeltaStepKind.Regular &&
-                            rightStep?.first?.kind == LazyDeltaStepKind.Regular
-                val unfoldLeft: Boolean
-                val unfoldRight: Boolean
-                when {
-                    leftStep == null -> {
-                        unfoldLeft = false
-                        unfoldRight = true
-                    }
-
-                    rightStep == null -> {
-                        unfoldLeft = true
-                        unfoldRight = false
-                    }
-
-                    leftStep.first.kind.priority != rightStep.first.kind.priority -> {
-                        unfoldLeft = leftStep.first.kind.priority > rightStep.first.kind.priority
-                        unfoldRight = !unfoldLeft
-                    }
-
-                    leftStep.first.regularHeight != rightStep.first.regularHeight -> {
-                        unfoldLeft = leftStep.first.regularHeight > rightStep.first.regularHeight
-                        unfoldRight = !unfoldLeft
-                    }
-
-                    else -> {
-                        unfoldLeft = true
-                        unfoldRight = true
-                    }
-                }
-                ClosedDefEqTask(
-                    if (unfoldLeft) leftStep!!.second else left.asClosure(),
-                    if (unfoldRight) rightStep!!.second else right.asClosure(),
-                    task.nextNeutral,
-                    task.sameTypeKnown,
-                    task.expectedType,
-                    task.fallback,
-                )
-            }
-        } else {
-            null
-        }
-        if (deltaAlternative != null && !tryCongruenceBeforeDelta) {
-            pending.addLast(deltaAlternative)
-            continue
-        }
-        val comparisonFallback = if (deltaAlternative == null) {
-            task.fallback
-        } else {
-            ClosedDefEqFallback(
-                deltaAlternative,
-                task.fallback,
-            )
-        }
-        val proofArguments = (leftHead as? Expression.Const)?.takeIf {
-            left.arguments.isNotEmpty()
-        }?.let {
-            proofArgumentMask(it, left.arguments.size)
-        }
+        if (!headsMatch) return fail("neutral heads", left, right)
+        val proofArguments = proofArgumentMask(left.head, left.arguments.size)
         for (index in left.arguments.indices) {
             if (proofArguments?.get(index) == true) continue
             val expectedType = (leftHead as? Expression.Const)?.let { head ->
-                ClosedExpectedType.ConstantArgument(
-                    head,
-                    left.arguments,
-                    index,
-                    isProof = false,
-                )
-            } ?: argumentExpectedType(left, index)
+                ClosedExpectedType.ConstantArgument(head, left.arguments, index)
+            }
             pending.addLast(
                 ClosedDefEqTask(
                     left.arguments[index],
@@ -1960,7 +1050,6 @@ private fun ClosedClosure.closedDefEq(
                     task.nextNeutral,
                     true,
                     expectedType,
-                    comparisonFallback,
                 )
             )
         }
@@ -1976,39 +1065,18 @@ private fun Expression.closedDefEq(other: Expression): Boolean {
     )
 }
 
-private data class ClosedEvalMachineState(
-    val expression: Expression,
-    val locals: ClosedEvalEnv,
-    val arguments: ClosedArgs,
-)
-
 context(env: Environment)
 private fun ClosedClosure.closedWhnf(
-    instantiatedRecursorRules: MutableMap<ClosedRecursorRuleKey, Expression> =
-        env.semanticRuntime.instantiatedRecursorRules,
+    instantiatedRecursorRules: MutableMap<ClosedRecursorRuleKey, Expression> = mutableMapOf(),
     trace: Boolean = false,
     unfoldDefinitionsAtRoot: Boolean = true,
 ): ClosedValue? {
-    cachedValue?.let { return it }
-    val cacheable = (
-            expression.ie >= 0 &&
-                    pendingArguments.isEmpty() &&
-                    cachedArguments == null
-            )
-    val isClosed = cacheable && expression.maxLooseBVarIndex() < 0
-    val closedCacheKey = if (isClosed) {
-        ClosedEvalCacheKey(expression.ie, unfoldDefinitionsAtRoot)
-    } else null
-    closedCacheKey?.let { env.semanticRuntime.closedValues[it] }?.let { return it }
-    val initialArguments = this.cachedArguments ?: this.pendingArguments
-
     var currentExpression = this.expression
-    var currentLocals = if (isClosed) ClosedEvalEnv.Empty else this.locals
-    var currentIsProof = this.isProof
-    var currentSemanticType = this.semanticType
-    var currentProjection: ClosedProjection? = null
-    var argumentStack = initialArguments
+    var currentLocals = this.locals
+    val argumentStack = ArrayDeque<ClosedClosure>()
+    argumentStack.addAll(this.cachedArguments ?: this.pendingArguments)
     val continuations = mutableListOf<ClosedEvalContinuation>()
+//    var steps = 0L
 //    var applications = 0L
 //    var betaReductions = 0L
 //    var deltaReductions = 0L
@@ -2027,6 +1095,19 @@ private fun ClosedClosure.closedWhnf(
         if (counts != null) counts[name] = (counts[name] ?: 0L) + 1L
     }
 
+    fun setArgsInOrder(arguments: List<ClosedClosure>) {
+        argumentStack.clear()
+        argumentStack.addAll(arguments)
+    }
+
+    fun setCurrent(closure: ClosedClosure) {
+        currentExpression = closure.expression
+        currentLocals = closure.locals
+    }
+
+    fun argumentsOf(closure: ClosedClosure): List<ClosedClosure> =
+        closure.cachedArguments ?: closure.pendingArguments
+
     fun lookupLocal(locals: ClosedEvalEnv, index: Int): ClosedLocalLookup {
         var currentLocals = locals
         var remaining = index
@@ -2035,19 +1116,12 @@ private fun ClosedClosure.closedWhnf(
             remaining -= 1
             currentLocals = currentLocals.tail
         }
-        val isProof = currentLocals is ClosedEvalEnv.Root &&
-                currentLocals.localIsProof(remaining)
-        val semanticType = (currentLocals as? ClosedEvalEnv.Root)
-            ?.localCtx?.getOrNull(remaining)?.let { type ->
-                ClosedClosure(type.lift(remaining + 1), currentLocals)
-            }
-        if (currentLocals is ClosedEvalEnv.Root) remaining -= currentLocals.depth
-        return ClosedLocalLookup(null, remaining, isProof, semanticType)
+        return ClosedLocalLookup(null, remaining)
     }
 
-    fun terminalNatValue(expression: Expression, arguments: ClosedArgs): NatValue? {
-        if (arguments.isNotEmpty()) return null
-        return when (expression) {
+    fun terminalNatValue(): NatValue? {
+        if (argumentStack.isNotEmpty()) return null
+        return when (val expression = currentExpression) {
             is Expression.NatVal -> expression.natVal
             else -> if (expression.isNatZeroCtorConst()) NatValue.ZERO else null
         }
@@ -2076,7 +1150,7 @@ private fun ClosedClosure.closedWhnf(
     fun tryKRule(
         recursorConst: Expression.Const,
         recursor: Inductive.RecursorVal,
-        recursorArgs: ClosedArgs,
+        recursorArgs: List<ClosedClosure>,
     ): Inductive.RecursorVal.RecursorRule? {
         fun fail(reason: String): Inductive.RecursorVal.RecursorRule? {
             if (debugClosedEvaluation || trace) {
@@ -2102,12 +1176,10 @@ private fun ClosedClosure.closedWhnf(
         )
         repeat(recursor.numParams) { parameterIndex ->
             val forall = constructorResult.expression as? Expression.ForallE ?: return fail("constructor parameter")
-            val argument = recursorArgs[parameterIndex].withSemanticType(
-                ClosedClosure(forall.typeExpr, constructorResult.locals)
-            )
+            if (forall.typeExpr.rigidTypeIsProp()) recursorArgs[parameterIndex].isProof = true
             constructorResult = ClosedClosure(
                 forall.bodyExpr,
-                ClosedEvalEnv.Bind(argument, constructorResult.locals),
+                ClosedEvalEnv.Bind(recursorArgs[parameterIndex], constructorResult.locals),
             )
         }
 
@@ -2116,7 +1188,7 @@ private fun ClosedClosure.closedWhnf(
         val resultHead = resultType.head.expression as? Expression.Const ?: return fail("constructor result head")
         if (resultHead.name != constructor.inductName) return fail("constructor result inductive")
         val actualTypeArgs = recursorArgs.take(recursor.numParams) +
-                recursorArgs.dropArgs(prefixSize).takeArgs(majorIndex - prefixSize)
+                recursorArgs.subList(prefixSize, majorIndex)
         if (resultType.arguments.size != actualTypeArgs.size) return fail("constructor result arity")
         resultType.arguments.indices.forEach { index ->
             if (
@@ -2140,10 +1212,10 @@ private fun ClosedClosure.closedWhnf(
     fun applyRecursorRule(
         recursorConst: Expression.Const,
         recursor: Inductive.RecursorVal,
-        recursorArgs: ClosedArgs,
+        recursorArgs: List<ClosedClosure>,
         rule: Inductive.RecursorVal.RecursorRule,
         fieldArgs: List<ClosedClosure>,
-    ): ClosedEvalMachineState {
+    ) {
         val prefixSize = recursor.numParams + recursor.numMotives + recursor.numMinors
         val majorIndex = prefixSize + recursor.numIndices
         val cacheKey = ClosedRecursorRuleKey(
@@ -2151,48 +1223,45 @@ private fun ClosedClosure.closedWhnf(
             recursorConst.levels.map { it.il },
             rule.rhsExpr.ie,
         )
-        var resultExpression = instantiatedRecursorRules.getOrPut(cacheKey) {
+        currentExpression = instantiatedRecursorRules.getOrPut(cacheKey) {
             val levelSubst = recursorConst.composeLevelSubst(emptyMap())
             rule.rhsExpr.instantiateLevelParams(levelSubst)
         }
-        var resultLocals: ClosedEvalEnv = ClosedEvalEnv.Empty
-        var resultArguments: ClosedArgs = ClosedArgs.Empty
-        val ruleArguments = recursorArgs.takeArgs(prefixSize)
-            .concat(ClosedArgs.fromList(fieldArgs))
-            .concat(recursorArgs.dropArgs(majorIndex + 1))
-        for (argument in ruleArguments) {
-            val lambda = resultExpression as? Expression.Lam
-            if (lambda != null && resultArguments.isEmpty()) {
-                if (argument.semanticType == null) {
-                    argument.semanticType = ClosedClosure(lambda.typeExpr, resultLocals)
-                }
-                if (
-                    env.semanticRuntime.activeConversions == 0 &&
-                    lambda.typeExpr.rigidTypeIsProp()
-                ) argument.isProof = true
+        currentLocals = ClosedEvalEnv.Empty
+        argumentStack.clear()
+
+        fun applyArgument(argument: ClosedClosure) {
+            val lambda = currentExpression as? Expression.Lam
+            if (lambda != null && argumentStack.isEmpty()) {
+                if (lambda.typeExpr.rigidTypeIsProp()) argument.isProof = true
 //                betaReductions += 1
-                resultExpression = lambda.bodyExpr
-                resultLocals = ClosedEvalEnv.Bind(argument, resultLocals)
+                currentExpression = lambda.bodyExpr
+                currentLocals = ClosedEvalEnv.Bind(argument, currentLocals)
             } else {
-                resultArguments = resultArguments.append(argument)
+                argumentStack.addLast(argument)
             }
         }
-        return ClosedEvalMachineState(resultExpression, resultLocals, resultArguments)
+
+        for (index in 0 until prefixSize) applyArgument(recursorArgs[index])
+        for (argument in fieldArgs) applyArgument(argument)
+        for (index in majorIndex + 1 until recursorArgs.size) applyArgument(recursorArgs[index])
     }
 
     while (true) {
-        if (env.semanticRuntime.activeConversions != 0) {
-            if (env.semanticRuntime.remainingSteps-- <= 0) {
-                return null
-            }
-        }
 //        steps += 1
+//        if (trace && steps % 1_000_000L == 0L) {
+//            println(
+//                "debug evaluator progress: steps=$steps current=${currentExpression.debugHead()} " +
+//                        "args=${argumentStack.size} continuations=${continuations.size} " +
+//                        "beta=$betaReductions delta=$deltaReductions recursors=$recursorReductions"
+//            )
+//        }
         if (currentIsWhnf) {
             currentIsWhnf = false
         } else when (val expression = currentExpression) {
             is Expression.App -> {
 //                applications += 1
-                argumentStack = argumentStack.prepend(ClosedClosure(expression.argExpr, currentLocals))
+                argumentStack.addFirst(ClosedClosure(expression.argExpr, currentLocals))
                 currentExpression = expression.fnExpr
                 continue
             }
@@ -2203,32 +1272,15 @@ private fun ClosedClosure.closedWhnf(
                 if (binding == null) {
                     currentExpression = Expression.Bvar(lookup.neutralIndex, Int.MIN_VALUE)
                     currentLocals = ClosedEvalEnv.Empty
-                    currentIsProof = lookup.isProof
-                    currentSemanticType = lookup.semanticType
                 } else {
-                    val cachedValue = binding.cachedValue
                     val cachedArguments = binding.cachedArguments
-                    if (cachedValue != null) {
-                        currentExpression = cachedValue.head.expression
-                        currentLocals = cachedValue.head.locals
-                        currentIsProof = cachedValue.head.isProof
-                        currentSemanticType = cachedValue.head.semanticType
-                        currentProjection = cachedValue.projection
-                        currentIsWhnf = argumentStack.isEmpty() || cachedValue.projection != null
-                        argumentStack = cachedValue.arguments.concat(argumentStack)
-                    } else if (cachedArguments == null) {
-                        continuations += ClosedEvalContinuation.Force(binding, argumentStack)
-                        currentExpression = binding.expression
-                        currentLocals = binding.locals
-                        currentIsProof = binding.isProof
-                        currentSemanticType = binding.semanticType
-                        argumentStack = binding.pendingArguments
+                    if (cachedArguments == null) {
+                        continuations += ClosedEvalContinuation.Force(binding, argumentStack.toList())
+                        setCurrent(binding)
+                        setArgsInOrder(binding.pendingArguments)
                     } else {
-                        currentExpression = binding.expression
-                        currentLocals = binding.locals
-                        currentIsProof = binding.isProof
-                        currentSemanticType = binding.semanticType
-                        argumentStack = cachedArguments.concat(argumentStack)
+                        setCurrent(binding)
+                        setArgsInOrder(cachedArguments + argumentStack)
                     }
                     continue
                 }
@@ -2237,15 +1289,8 @@ private fun ClosedClosure.closedWhnf(
             is Expression.Lam -> {
                 if (argumentStack.isNotEmpty()) {
 //                    betaReductions += 1
-                    val argument = argumentStack[0]
-                    argumentStack = argumentStack.dropArgs(1)
-                    if (argument.semanticType == null) {
-                        argument.semanticType = ClosedClosure(expression.typeExpr, currentLocals)
-                    }
-                    if (
-                        env.semanticRuntime.activeConversions == 0 &&
-                        expression.typeExpr.rigidTypeIsProp()
-                    ) argument.isProof = true
+                    val argument = argumentStack.removeFirst()
+                    if (expression.typeExpr.rigidTypeIsProp()) argument.isProof = true
                     currentExpression = expression.bodyExpr
                     currentLocals = ClosedEvalEnv.Bind(argument, currentLocals)
                     continue
@@ -2256,11 +1301,8 @@ private fun ClosedClosure.closedWhnf(
                 val value = ClosedClosure(
                     expression.valueExpr,
                     currentLocals,
-                    env.semanticRuntime.activeConversions == 0 &&
-                            expression.typeExpr.rigidTypeIsProp(),
-                ).also {
-                    it.semanticType = ClosedClosure(expression.typeExpr, currentLocals)
-                }
+                    expression.typeExpr.rigidTypeIsProp(),
+                )
                 currentExpression = expression.bodyExpr
                 currentLocals = ClosedEvalEnv.Bind(value, currentLocals)
                 continue
@@ -2275,12 +1317,11 @@ private fun ClosedClosure.closedWhnf(
                 continuations += ClosedEvalContinuation.Projection(
                     expression,
                     currentLocals,
-                    argumentStack,
+                    argumentStack.toList(),
                     unfoldDefinitions,
-                    currentSemanticType,
                 )
                 currentExpression = expression.structExpr
-                argumentStack = ClosedArgs.Empty
+                argumentStack.clear()
                 unfoldDefinitions = true
                 continue
             }
@@ -2288,14 +1329,13 @@ private fun ClosedClosure.closedWhnf(
             is Expression.Const -> {
                 val quotient = expression.decl as? Declaration.Quot
                 if (
-                    unfoldDefinitions &&
                     quotient != null &&
                     (quotient.kind == Declaration.Quot.Kind.Lift ||
                             quotient.kind == Declaration.Quot.Kind.Ind)
                 ) {
                     val arity = quotient.typeExpr.forallBinderCount()
                     if (arity > 0 && argumentStack.size >= arity) {
-                        val arguments = argumentStack
+                        val arguments = argumentStack.toList()
                         continuations += ClosedEvalContinuation.Quotient(
                             expression,
                             quotient,
@@ -2303,60 +1343,24 @@ private fun ClosedClosure.closedWhnf(
                             arity,
                             unfoldDefinitions,
                         )
-                        val major = arguments[arity - 1]
-                        val majorValue = major.cachedValue
-                        if (majorValue == null) {
-                            currentExpression = major.expression
-                            currentLocals = major.locals
-                            currentIsProof = major.isProof
-                            currentSemanticType = major.semanticType
-                            currentProjection = null
-                            argumentStack = major.cachedArguments ?: major.pendingArguments
-                            currentIsWhnf = false
-                        } else {
-                            currentExpression = majorValue.head.expression
-                            currentLocals = majorValue.head.locals
-                            currentIsProof = majorValue.head.isProof
-                            currentSemanticType = majorValue.head.semanticType
-                            currentProjection = majorValue.projection
-                            argumentStack = majorValue.arguments
-                            currentIsWhnf = true
-                        }
+                        setCurrent(arguments[arity - 1])
+                        setArgsInOrder(argumentsOf(arguments[arity - 1]))
                         unfoldDefinitions = true
                         continue
                     }
                 }
 
                 val recursor = expression.decl as? Inductive.RecursorVal
-                if (unfoldDefinitions && recursor != null) {
+                if (recursor != null) {
                     val majorIndex = recursor.numParams + recursor.numMotives +
                             recursor.numMinors + recursor.numIndices
                     if (majorIndex < argumentStack.size) {
-                        val arguments = argumentStack
-                        val major = arguments[majorIndex]
-                        val directMajorConstructor =
-                            (major.expression as? Expression.Const)?.decl is Inductive.ConstructorVal
-                        val previewMajorConstructor = if (recursor.k && !directMajorConstructor) {
-                            major.closedWhnf(
-                                instantiatedRecursorRules,
-                                trace,
-                                unfoldDefinitionsAtRoot = false,
-                            )?.let { value ->
-                                (value.head.expression as? Expression.Const)?.decl is Inductive.ConstructorVal
-                            } == true
-                        } else {
-                            directMajorConstructor
-                        }
-                        val kRule = if (recursor.k && !previewMajorConstructor) {
-                            tryKRule(expression, recursor, arguments)
-                        } else {
-                            null
-                        }
+                        val arguments = argumentStack.toList()
+                        val kRule = tryKRule(expression, recursor, arguments)
                         if (kRule != null) {
-                            val state = applyRecursorRule(expression, recursor, arguments, kRule, emptyList())
-                            currentExpression = state.expression
-                            currentLocals = state.locals
-                            argumentStack = state.arguments
+//                            recursorReductions += 1
+//                            incrementCount(recursorCounts, expression.name)
+                            applyRecursorRule(expression, recursor, arguments, kRule, emptyList())
                             continue
                         }
                         continuations += ClosedEvalContinuation.Recursor(
@@ -2365,24 +1369,8 @@ private fun ClosedClosure.closedWhnf(
                             arguments,
                             unfoldDefinitions,
                         )
-                        val majorValue = major.cachedValue
-                        if (majorValue == null) {
-                            currentExpression = major.expression
-                            currentLocals = major.locals
-                            currentIsProof = major.isProof
-                            currentSemanticType = major.semanticType
-                            currentProjection = null
-                            argumentStack = major.cachedArguments ?: major.pendingArguments
-                            currentIsWhnf = false
-                        } else {
-                            currentExpression = majorValue.head.expression
-                            currentLocals = majorValue.head.locals
-                            currentIsProof = majorValue.head.isProof
-                            currentSemanticType = majorValue.head.semanticType
-                            currentProjection = majorValue.projection
-                            argumentStack = majorValue.arguments
-                            currentIsWhnf = true
-                        }
+                        setCurrent(arguments[majorIndex])
+                        setArgsInOrder(argumentsOf(arguments[majorIndex]))
                         unfoldDefinitions = true
                         continue
                     }
@@ -2390,35 +1378,18 @@ private fun ClosedClosure.closedWhnf(
 
                 val primitive = if (unfoldDefinitions) expression.closedNatPrimitive() else null
                 if (primitive != null && argumentStack.size >= primitive.arity) {
-                    val arguments = argumentStack
-                    val operands = arguments.takeArgs(primitive.arity)
+                    val arguments = argumentStack.toList()
+                    val operands = arguments.take(primitive.arity)
                     continuations += ClosedEvalContinuation.NatOperand(
                         primitiveConst = expression,
                         primitive = primitive,
                         operands = operands,
-                        extraArgs = arguments.dropArgs(primitive.arity),
+                        extraArgs = arguments.drop(primitive.arity),
                         values = emptyList(),
                         operandIndex = 0,
                     )
-                    val operand = operands.first()
-                    val operandValue = operand.cachedValue
-                    if (operandValue == null) {
-                        currentExpression = operand.expression
-                        currentLocals = operand.locals
-                        currentIsProof = operand.isProof
-                        currentSemanticType = operand.semanticType
-                        currentProjection = null
-                        argumentStack = operand.cachedArguments ?: operand.pendingArguments
-                        currentIsWhnf = false
-                    } else {
-                        currentExpression = operandValue.head.expression
-                        currentLocals = operandValue.head.locals
-                        currentIsProof = operandValue.head.isProof
-                        currentSemanticType = operandValue.head.semanticType
-                        currentProjection = operandValue.projection
-                        argumentStack = operandValue.arguments
-                        currentIsWhnf = true
-                    }
+                    setCurrent(operands.first())
+                    setArgsInOrder(argumentsOf(operands.first()))
                     continue
                 }
 
@@ -2451,90 +1422,34 @@ private fun ClosedClosure.closedWhnf(
 //                    )
 //                }
 //            }
-            return ClosedValue(
-                currentExpression,
-                currentLocals,
-                currentIsProof,
-                argumentStack,
-                currentSemanticType,
-                currentProjection,
-            ).also { value ->
-                if (closedCacheKey != null) env.semanticRuntime.closedValues[closedCacheKey] = value
-            }
+            return ClosedValue(ClosedClosure(currentExpression, currentLocals), argumentStack.toList())
         }
 
         when (val continuation = continuations.removeAt(continuations.lastIndex)) {
             is ClosedEvalContinuation.Force -> {
-                val valueArguments = argumentStack
+                val valueArguments = argumentStack.toList()
                 continuation.closure.expression = currentExpression
                 continuation.closure.locals = currentLocals
                 continuation.closure.cachedArguments = valueArguments
-                if (currentProjection != null) {
-                    continuation.closure.cachedValue = ClosedValue(
-                        currentExpression,
-                        currentLocals,
-                        currentIsProof,
-                        valueArguments,
-                        currentSemanticType,
-                        currentProjection,
-                    )
-                }
-                argumentStack = valueArguments.concat(continuation.outerArgs)
+                setArgsInOrder(valueArguments + continuation.outerArgs)
             }
 
             is ClosedEvalContinuation.Projection -> {
                 unfoldDefinitions = continuation.unfoldDefinitions
-                if (currentExpression is Expression.StrVal) {
-                    val constructor = currentExpression.tryStringLitCtor() ?: return fail("string projection")
-                    continuations += continuation
-                    currentExpression = constructor
-                    currentLocals = ClosedEvalEnv.Empty
-                    argumentStack = ClosedArgs.Empty
-                    unfoldDefinitions = true
-                    continue
-                }
                 val head = currentExpression as? Expression.Const
                 val constructor = head?.decl as? Inductive.ConstructorVal
                 if (head == null || constructor == null) {
-                    val structure = ClosedValue(
-                        currentExpression,
-                        currentLocals,
-                        currentIsProof,
-                        argumentStack,
-                        currentSemanticType,
-                        currentProjection,
-                    )
                     currentExpression = continuation.projection
                     currentLocals = continuation.locals
-                    currentSemanticType = continuation.semanticType
-                    currentProjection = ClosedProjection(continuation.projection, structure)
-                    argumentStack = continuation.outerArgs
+                    setArgsInOrder(continuation.outerArgs)
                     currentIsWhnf = true
                     continue
                 }
                 if (constructor.inductName != continuation.projection.typeNameExpr) return fail("projection type")
                 val fieldIndex = constructor.numParams + continuation.projection.projIndex
                 val field = argumentStack.getOrNull(fieldIndex) ?: return fail("projection field")
-                if (field.semanticType == null) field.semanticType = continuation.semanticType
-                val fieldValue = field.cachedValue
-                if (fieldValue == null) {
-                    currentExpression = field.expression
-                    currentLocals = field.locals
-                    currentIsProof = field.isProof
-                    currentSemanticType = field.semanticType
-                    currentProjection = null
-                    argumentStack = (field.cachedArguments ?: field.pendingArguments)
-                        .concat(continuation.outerArgs)
-                    currentIsWhnf = false
-                } else {
-                    currentExpression = fieldValue.head.expression
-                    currentLocals = fieldValue.head.locals
-                    currentIsProof = fieldValue.head.isProof
-                    currentSemanticType = fieldValue.head.semanticType
-                    currentProjection = fieldValue.projection
-                    argumentStack = fieldValue.arguments.concat(continuation.outerArgs)
-                    currentIsWhnf = continuation.outerArgs.isEmpty() || fieldValue.projection != null
-                }
+                setCurrent(field)
+                setArgsInOrder(argumentsOf(field) + continuation.outerArgs)
             }
 
             is ClosedEvalContinuation.Quotient -> {
@@ -2544,8 +1459,7 @@ private fun ClosedClosure.closedWhnf(
                 if (majorHead == null || majorCtor?.kind != Declaration.Quot.Kind.Ctor) {
                     currentExpression = continuation.quotConst
                     currentLocals = ClosedEvalEnv.Empty
-                    currentProjection = null
-                    argumentStack = continuation.arguments
+                    setArgsInOrder(continuation.arguments)
                     currentIsWhnf = true
                     continue
                 }
@@ -2558,34 +1472,17 @@ private fun ClosedClosure.closedWhnf(
                 }
                 val function = continuation.arguments.getOrNull(functionIndex)
                     ?: return fail("quotient function")
-                val extraArguments = ClosedArgs.Empty.append(ctorValue)
-                    .concat(continuation.arguments.dropArgs(continuation.arity))
-                val functionValue = function.cachedValue
-                if (functionValue == null) {
-                    currentExpression = function.expression
-                    currentLocals = function.locals
-                    currentIsProof = function.isProof
-                    currentSemanticType = function.semanticType
-                    currentProjection = null
-                    argumentStack = (function.cachedArguments ?: function.pendingArguments)
-                        .concat(extraArguments)
-                    currentIsWhnf = false
-                } else {
-                    currentExpression = functionValue.head.expression
-                    currentLocals = functionValue.head.locals
-                    currentIsProof = functionValue.head.isProof
-                    currentSemanticType = functionValue.head.semanticType
-                    currentProjection = functionValue.projection
-                    argumentStack = functionValue.arguments.concat(extraArguments)
-                    currentIsWhnf = extraArguments.isEmpty() || functionValue.projection != null
-                }
+                setCurrent(function)
+                setArgsInOrder(
+                    argumentsOf(function) + ctorValue + continuation.arguments.drop(continuation.arity)
+                )
             }
 
             is ClosedEvalContinuation.Recursor -> {
                 unfoldDefinitions = continuation.unfoldDefinitions
 //                recursorReductions += 1
 //                incrementCount(recursorCounts, continuation.recursorConst.name)
-                val majorNat = terminalNatValue(currentExpression, argumentStack)
+                val majorNat = terminalNatValue()
                 val rule: Inductive.RecursorVal.RecursorRule
                 val fieldArgs: List<ClosedClosure>
                 if (majorNat != null) {
@@ -2599,64 +1496,48 @@ private fun ClosedClosure.closedWhnf(
                         fieldArgs = listOf(ClosedClosure(predecessor, ClosedEvalEnv.Empty))
                     }
                 } else {
-                    if (currentExpression is Expression.StrVal) {
-                        val constructor = currentExpression.tryStringLitCtor() ?: return fail("string recursor")
-                        continuations += continuation
-                        currentExpression = constructor
-                        currentLocals = ClosedEvalEnv.Empty
-                        argumentStack = ClosedArgs.Empty
-                        unfoldDefinitions = true
-                        continue
-                    }
                     val majorHead = currentExpression as? Expression.Const
                     val constructor = majorHead?.decl as? Inductive.ConstructorVal
                     if (majorHead == null || constructor == null) {
                         currentExpression = continuation.recursorConst
                         currentLocals = ClosedEvalEnv.Empty
-                        currentProjection = null
-                        argumentStack = continuation.recursorArgs
+                        setArgsInOrder(continuation.recursorArgs)
                         currentIsWhnf = true
                         continue
                     }
                     rule = continuation.recursor.rules.singleOrNull { it.ctorName == majorHead.name }
                         ?: return fail("recursor rule")
                     if (constructor.numFields != rule.nfields) return fail("recursor fields")
-                    val majorArgs = argumentStack
+                    val majorArgs = argumentStack.toList()
                     if (majorArgs.size != constructor.numParams + constructor.numFields) {
                         return fail("recursor arity")
                     }
                     fieldArgs = majorArgs.drop(constructor.numParams)
                 }
-                val state = applyRecursorRule(
+                applyRecursorRule(
                     continuation.recursorConst,
                     continuation.recursor,
                     continuation.recursorArgs,
                     rule,
                     fieldArgs,
                 )
-                currentExpression = state.expression
-                currentLocals = state.locals
-                currentProjection = null
-                argumentStack = state.arguments
             }
 
             is ClosedEvalContinuation.NatOperand -> {
-                val value = terminalNatValue(currentExpression, argumentStack)
+                val value = terminalNatValue()
                 if (value == null) {
                     val definitionValue = continuation.primitiveConst.instantiatedValue()
                     if (definitionValue == null) {
                         currentExpression = continuation.primitiveConst
                         currentLocals = ClosedEvalEnv.Empty
-                        currentProjection = null
-                        argumentStack = continuation.operands.concat(continuation.extraArgs)
+                        setArgsInOrder(continuation.operands + continuation.extraArgs)
                         currentIsWhnf = true
                     } else {
 //                        deltaReductions += 1
 //                        incrementCount(deltaCounts, continuation.primitiveConst.name)
                         currentExpression = definitionValue
                         currentLocals = ClosedEvalEnv.Empty
-                        currentProjection = null
-                        argumentStack = continuation.operands.concat(continuation.extraArgs)
+                        setArgsInOrder(continuation.operands + continuation.extraArgs)
                     }
                     continue
                 }
@@ -2665,24 +1546,8 @@ private fun ClosedClosure.closedWhnf(
                 if (nextIndex < continuation.operands.size) {
                     continuations += continuation.copy(values = values, operandIndex = nextIndex)
                     val operand = continuation.operands[nextIndex]
-                    val operandValue = operand.cachedValue
-                    if (operandValue == null) {
-                        currentExpression = operand.expression
-                        currentLocals = operand.locals
-                        currentIsProof = operand.isProof
-                        currentSemanticType = operand.semanticType
-                        currentProjection = null
-                        argumentStack = operand.cachedArguments ?: operand.pendingArguments
-                        currentIsWhnf = false
-                    } else {
-                        currentExpression = operandValue.head.expression
-                        currentLocals = operandValue.head.locals
-                        currentIsProof = operandValue.head.isProof
-                        currentSemanticType = operandValue.head.semanticType
-                        currentProjection = operandValue.projection
-                        argumentStack = operandValue.arguments
-                        currentIsWhnf = true
-                    }
+                    setCurrent(operand)
+                    setArgsInOrder(argumentsOf(operand))
                 } else {
                     val reduced = reduceNatPrimitive(continuation.primitive, values)
                     if (reduced == null) {
@@ -2690,22 +1555,19 @@ private fun ClosedClosure.closedWhnf(
                         if (definitionValue == null) {
                             currentExpression = continuation.primitiveConst
                             currentLocals = ClosedEvalEnv.Empty
-                            currentProjection = null
-                            argumentStack = continuation.operands.concat(continuation.extraArgs)
+                            setArgsInOrder(continuation.operands + continuation.extraArgs)
                             currentIsWhnf = true
                         } else {
 //                            deltaReductions += 1
 //                            incrementCount(deltaCounts, continuation.primitiveConst.name)
                             currentExpression = definitionValue
                             currentLocals = ClosedEvalEnv.Empty
-                            currentProjection = null
-                            argumentStack = continuation.operands.concat(continuation.extraArgs)
+                            setArgsInOrder(continuation.operands + continuation.extraArgs)
                         }
                     } else {
                         currentExpression = reduced
                         currentLocals = ClosedEvalEnv.Empty
-                        currentProjection = null
-                        argumentStack = continuation.extraArgs
+                        setArgsInOrder(continuation.extraArgs)
                     }
                 }
             }
@@ -2715,20 +1577,17 @@ private fun ClosedClosure.closedWhnf(
 
 context(env: Environment)
 private fun Expression.Const.closedNatPrimitive(): ClosedNatPrimitive? {
-    val operationName = this.name as? Name.Str ?: return null
-    val namespace = env.names[operationName.pre] as? Name.Str ?: return null
-    if (namespace.pre != 0 || namespace.str != "Nat") return null
     if (this.levels.isNotEmpty()) return null
-    return when (operationName.str) {
-        "succ" -> ClosedNatPrimitive.Succ
-        "add" -> ClosedNatPrimitive.Add
-        "sub" -> ClosedNatPrimitive.Sub
-        "mul" -> ClosedNatPrimitive.Mul
-        "pow" -> ClosedNatPrimitive.Pow
-        "div" -> ClosedNatPrimitive.Div
-        "mod" -> ClosedNatPrimitive.Mod
-        "beq" -> ClosedNatPrimitive.Beq
-        "ble" -> ClosedNatPrimitive.Ble
+    return when (this.name.toStringDetailed()) {
+        "Nat.succ" -> ClosedNatPrimitive.Succ
+        "Nat.add" -> ClosedNatPrimitive.Add
+        "Nat.sub" -> ClosedNatPrimitive.Sub
+        "Nat.mul" -> ClosedNatPrimitive.Mul
+        "Nat.pow" -> ClosedNatPrimitive.Pow
+        "Nat.div" -> ClosedNatPrimitive.Div
+        "Nat.mod" -> ClosedNatPrimitive.Mod
+        "Nat.beq" -> ClosedNatPrimitive.Beq
+        "Nat.ble" -> ClosedNatPrimitive.Ble
         else -> null
     }
 }
@@ -3781,11 +2640,6 @@ private fun Expression.isNatZeroCtorConst(): Boolean {
     return inductiveName.pre == 0 && inductiveName.str == "Nat"
 }
 
-private sealed interface InferredTypeResult {
-    data class Syntax(val expression: Expression) : InferredTypeResult
-    data class Semantic(val closure: ClosedClosure) : InferredTypeResult
-}
-
 private sealed interface InferFrame {
     data class Cache(val key: InferTypeCacheKey) : InferFrame
     data class AppFunction(
@@ -3798,18 +2652,13 @@ private sealed interface InferFrame {
         val expression: Expression.App,
         val args: List<Expression>,
         val index: Int,
-        val functionType: ClosedValue,
-        val expectedType: ClosedClosure,
+        val functionType: Expression.ForallE,
+        val expectedType: Expression,
+        val pendingSubst: List<Expression>,
         val argument: Expression,
         val localCtx: List<Expression>,
     ) : InferFrame
 
-    data class ExpectedType(
-        val expectedBodyType: ClosedClosure,
-        val resultType: ClosedClosure,
-        val bodyCtx: List<Expression>,
-        val subject: Expression,
-    ) : InferFrame
     data class OpenPi(val expression: Expression.ForallE, val domainCtx: List<Expression>)
     data class PiDomains(
         val opened: List<OpenPi>,
@@ -3828,10 +2677,7 @@ private sealed interface InferFrame {
         val index: Int,
     ) : InferFrame
 
-    data class LambdaBody(
-        val opened: List<OpenLambda>,
-        val bodyCtx: List<Expression>,
-    ) : InferFrame
+    data class LambdaBody(val opened: List<OpenLambda>) : InferFrame
     data class LetType(
         val expression: Expression.LetE,
         val localCtx: List<Expression>,
@@ -3840,10 +2686,7 @@ private sealed interface InferFrame {
         val expression: Expression.LetE,
         val localCtx: List<Expression>,
     ) : InferFrame
-    data class LetBody(
-        val value: Expression,
-        val bodyCtx: List<Expression>,
-    ) : InferFrame
+    data class LetBody(val value: Expression) : InferFrame
     data class Projection(
         val expression: Expression.Proj,
         val localCtx: List<Expression>,
@@ -3860,11 +2703,11 @@ private fun requireSort(type: Expression, subject: Expression, localCtx: List<Ex
 }
 
 context(env: Environment)
-private fun Expression.inferTypeCore(
+fun Expression.inferType(
     levelSubst: Map<Int, Level> = emptyMap(),
     localCtx: List<Expression> = emptyList(),
     validate: Boolean = true,
-): InferredTypeResult {
+): Expression {
     val expression = this.instantiateLevelParams(levelSubst)
     check(expression.hasNoUnboundBvars(localCtx.size)) {
         "Inference received an expression outside its context: ${expression.toStringDetailed()}"
@@ -3873,41 +2716,12 @@ private fun Expression.inferTypeCore(
     var current = expression
     var currentCtx = localCtx
     var result: Expression = expression
-    var semanticResult: ClosedClosure? = null
     var evaluating = true
-
-    fun materializeResult(resultCtx: List<Expression>): Expression {
-        semanticResult?.let { semantic ->
-            result = semantic.reify(resultCtx.closedEvalEnv())
-            semanticResult = null
-        }
-        return result
-    }
-
-    fun requireSortResult(subject: Expression, resultCtx: List<Expression>): Level {
-        semanticResult?.trySemanticWhnf()?.let { value ->
-            val sort = value.head.expression as? Expression.Sort
-            if (sort != null && value.arguments.isEmpty()) {
-                semanticResult = null
-                return sort.level
-            }
-        }
-        return requireSort(materializeResult(resultCtx), subject, resultCtx)
-    }
 
     while (true) {
         if (evaluating) {
-            semanticResult = null
             val contextId = if (current.maxLooseBVarIndex() < 0) 0 else env.localCtxId(currentCtx)
             val cacheKey = InferTypeCacheKey(current.ie, contextId, validate)
-            val cachedSemanticType = env.semanticRuntime.inferredTypes[cacheKey]
-                ?: if (validate) null else env.semanticRuntime.inferredTypes[cacheKey.copy(validate = true)]
-            cachedSemanticType?.let {
-                env.inferTypeCacheHits += 1
-                semanticResult = it
-                evaluating = false
-                continue
-            }
             val cachedType = env.inferTypeCacheNoLevelSubst[cacheKey]
                 ?: if (validate) null else env.inferTypeCacheNoLevelSubst[cacheKey.copy(validate = true)]
             cachedType?.let {
@@ -3964,7 +2778,7 @@ private fun Expression.inferTypeCore(
                         current = opened.first().expression.typeExpr
                         currentCtx = opened.first().domainCtx
                     } else {
-                        frames.addLast(InferFrame.LambdaBody(opened, binderCtx))
+                        frames.addLast(InferFrame.LambdaBody(opened))
                         current = binder
                         currentCtx = binderCtx
                     }
@@ -3981,12 +2795,7 @@ private fun Expression.inferTypeCore(
                         frames.addLast(InferFrame.LetType(expr, currentCtx))
                         current = expr.typeExpr
                     } else {
-                        frames.addLast(
-                            InferFrame.LetBody(
-                                expr.valueExpr,
-                                env.consLocalCtx(expr.typeExpr, currentCtx, expr.valueExpr),
-                            )
-                        )
+                        frames.addLast(InferFrame.LetBody(expr.valueExpr))
                         current = expr.bodyExpr
                         currentCtx = env.consLocalCtx(expr.typeExpr, currentCtx, expr.valueExpr)
                     }
@@ -4015,85 +2824,54 @@ private fun Expression.inferTypeCore(
             continue
         }
 
-        if (frames.isEmpty()) {
-            return semanticResult?.let(InferredTypeResult::Semantic)
-                ?: InferredTypeResult.Syntax(result)
-        }
+        if (frames.isEmpty()) return result
         when (val frame = frames.removeLast()) {
-            is InferFrame.Cache -> {
-                val semantic = semanticResult
-                if (semantic == null) {
-                    env.inferTypeCacheNoLevelSubst[frame.key] = result
-                } else {
-                    env.semanticRuntime.inferredTypes[frame.key] = semantic
-                }
-            }
+            is InferFrame.Cache -> env.inferTypeCacheNoLevelSubst[frame.key] = result
             is InferFrame.AppFunction -> {
-                val baseLocals = frame.localCtx.closedEvalEnv()
-                var functionType = (semanticResult ?: ClosedClosure(result, baseLocals)).inferFunctionType(
-                    baseLocals,
-                    frame.localCtx,
-                    frame.expression,
-                )
+                val pi = result.whnf(localCtx = frame.localCtx) as? Expression.ForallE
+                    ?: error("Expected function type for app ${frame.expression.toStringDetailed()}, got ${result.toStringDetailed()}")
                 if (frame.validate) {
                     val argument = frame.args.first()
-                    val pi = functionType.head.expression as Expression.ForallE
-                    val expectedType = ClosedClosure(pi.typeExpr, functionType.head.locals)
                     frames.addLast(
                         InferFrame.AppArgument(
                             frame.expression,
                             frame.args,
                             0,
-                            functionType,
-                            expectedType,
+                            pi,
+                            pi.typeExpr,
+                            emptyList(),
                             argument,
                             frame.localCtx,
                         )
                     )
-                    val lambdaPlan = argument.openLambdasAgainst(expectedType, frame.localCtx)
-                    if (!lambdaPlan.opened) {
-                        current = argument
-                        currentCtx = frame.localCtx
-                        evaluating = true
-                    } else {
-                        check(lambdaPlan.valid) {
-                            "Application argument type mismatch in app ${frame.expression.toStringDetailed()}"
-                        }
-                        frames.addLast(
-                            InferFrame.ExpectedType(
-                                lambdaPlan.expectedType,
-                                expectedType,
-                                lambdaPlan.localCtx,
-                                frame.expression,
-                            )
-                        )
-                        current = lambdaPlan.body
-                        currentCtx = lambdaPlan.localCtx
-                        evaluating = true
-                    }
+                    current = argument
+                    currentCtx = frame.localCtx
+                    evaluating = true
                 } else {
+                    var functionType = pi
+                    var pendingSubst = emptyList<Expression>()
+                    var finalType: Expression? = null
                     frame.args.forEachIndexed { index, argument ->
-                        val pi = functionType.head.expression as Expression.ForallE
-                        val argumentClosure = ClosedClosure(argument, baseLocals).also {
-                            it.semanticType = ClosedClosure(pi.typeExpr, functionType.head.locals)
-                        }
-                        val body = ClosedClosure(
-                            pi.bodyExpr,
-                            ClosedEvalEnv.Bind(
-                                argumentClosure,
-                                functionType.head.locals,
-                            ),
-                        )
+                        pendingSubst = listOf(argument) + pendingSubst
+                        val body = functionType.bodyExpr
                         if (index == frame.args.lastIndex) {
-                            semanticResult = body
+                            finalType = body.applySubst(pendingSubst)
                         } else {
-                            functionType = body.inferFunctionType(
-                                baseLocals,
-                                frame.localCtx,
-                                frame.expression,
-                            )
+                            val directPi = body as? Expression.ForallE
+                            if (directPi != null) {
+                                functionType = directPi
+                            } else {
+                                val instantiatedBody = body.applySubst(pendingSubst)
+                                functionType = instantiatedBody.whnf(localCtx = frame.localCtx) as? Expression.ForallE
+                                    ?: error(
+                                        "Expected function type for app ${frame.expression.toStringDetailed()}, " +
+                                                "got ${instantiatedBody.toStringDetailed()}"
+                                    )
+                                pendingSubst = emptyList()
+                            }
                         }
                     }
+                    result = finalType!!
                 }
             }
 
@@ -4115,21 +2893,8 @@ private fun Expression.inferTypeCore(
 //                }
                 val previousEagerReduction = env.eagerReduction
                 if (frame.argument.isEagerReduceApp()) env.eagerReduction = true
-                val baseLocals = frame.localCtx.closedEvalEnv()
-                val inferredType = semanticResult ?: ClosedClosure(result, baseLocals)
                 val argumentTypeMatches = try {
-                    val semanticMatch = frame.expectedType.trySemanticDefEq(inferredType)
-                    if (semanticMatch) {
-                        true
-                    } else {
-                        val expectedSyntax = frame.expectedType.reify(baseLocals)
-                        val inferredSyntax = inferredType.reify(baseLocals)
-                        expectedSyntax.isDefEqWithoutSemantic(
-                            inferredSyntax,
-                            frame.localCtx,
-                            frame.localCtx,
-                        )
-                    }
+                    frame.expectedType.isDefEq(result, frame.localCtx, frame.localCtx)
                 } finally {
                     env.eagerReduction = previousEagerReduction
                 }
@@ -4196,31 +2961,30 @@ private fun Expression.inferTypeCore(
 //                }
                 check(argumentTypeMatches) {
                     "Application argument type mismatch in app ${frame.expression.toStringDetailed()}: " +
-                            "expected ${frame.expectedType.reify(baseLocals).toStringDetailed()}, " +
-                            "got ${inferredType.reify(baseLocals).toStringDetailed()}"
+                            "expected ${frame.expectedType.toStringDetailed()}, got ${result.toStringDetailed()}"
                 }
-                val functionPi = frame.functionType.head.expression as Expression.ForallE
-                val argumentClosure = ClosedClosure(frame.argument, baseLocals).also {
-                    it.semanticType = frame.expectedType
-                }
-                val body = ClosedClosure(
-                    functionPi.bodyExpr,
-                    ClosedEvalEnv.Bind(
-                        argumentClosure,
-                        frame.functionType.head.locals,
-                    ),
-                )
+                val pendingSubst = listOf(frame.argument) + frame.pendingSubst
+                val body = frame.functionType.bodyExpr
                 val nextIndex = frame.index + 1
                 if (nextIndex == frame.args.size) {
-                    semanticResult = body
+                    result = body.applySubst(pendingSubst)
                 } else {
-                    val functionType = body.inferFunctionType(
-                        baseLocals,
-                        frame.localCtx,
-                        frame.expression,
-                    )
-                    val nextPi = functionType.head.expression as Expression.ForallE
-                    val expectedType = ClosedClosure(nextPi.typeExpr, functionType.head.locals)
+                    val directPi = body as? Expression.ForallE
+                    val functionType: Expression.ForallE
+                    val nextPendingSubst: List<Expression>
+                    if (directPi != null) {
+                        functionType = directPi
+                        nextPendingSubst = pendingSubst
+                    } else {
+                        val instantiatedBody = body.applySubst(pendingSubst)
+                        functionType = instantiatedBody.whnf(localCtx = frame.localCtx) as? Expression.ForallE
+                            ?: error(
+                                "Expected function type for app ${frame.expression.toStringDetailed()}, " +
+                                        "got ${instantiatedBody.toStringDetailed()}"
+                            )
+                        nextPendingSubst = emptyList()
+                    }
+                    val expectedType = functionType.typeExpr.applySubst(nextPendingSubst)
                     val argument = frame.args[nextIndex]
                     frames.addLast(
                         InferFrame.AppArgument(
@@ -4229,47 +2993,21 @@ private fun Expression.inferTypeCore(
                             nextIndex,
                             functionType,
                             expectedType,
+                            nextPendingSubst,
                             argument,
                             frame.localCtx,
                         )
                     )
-                    val lambdaPlan = argument.openLambdasAgainst(expectedType, frame.localCtx)
-                    if (!lambdaPlan.opened) {
-                        current = argument
-                        currentCtx = frame.localCtx
-                        evaluating = true
-                    } else {
-                        check(lambdaPlan.valid) {
-                            "Application argument type mismatch in app ${frame.expression.toStringDetailed()}"
-                        }
-                        frames.addLast(
-                            InferFrame.ExpectedType(
-                                lambdaPlan.expectedType,
-                                expectedType,
-                                lambdaPlan.localCtx,
-                                frame.expression,
-                            )
-                        )
-                        current = lambdaPlan.body
-                        currentCtx = lambdaPlan.localCtx
-                        evaluating = true
-                    }
+                    current = argument
+                    currentCtx = frame.localCtx
+                    evaluating = true
                 }
-            }
-
-            is InferFrame.ExpectedType -> {
-                val inferred = semanticResult?.let(InferredTypeResult::Semantic)
-                    ?: InferredTypeResult.Syntax(result)
-                check(inferred.matchesExpectedType(frame.expectedBodyType, frame.bodyCtx)) {
-                    "Application argument type mismatch in app ${frame.subject.toStringDetailed()}"
-                }
-                semanticResult = frame.resultType
             }
 
             is InferFrame.PiDomains -> {
                 val opened = frame.opened[frame.index]
                 val domainSorts = frame.domainSorts +
-                        requireSortResult(opened.expression.typeExpr, opened.domainCtx)
+                        requireSort(result, opened.expression.typeExpr, opened.domainCtx)
                 val nextIndex = frame.index + 1
                 if (nextIndex < frame.opened.size) {
                     frames.addLast(frame.copy(index = nextIndex, domainSorts = domainSorts))
@@ -4284,7 +3022,7 @@ private fun Expression.inferTypeCore(
             }
 
             is InferFrame.PiBody -> {
-                var level = requireSortResult(frame.tail, frame.tailCtx)
+                var level = requireSort(result, frame.tail, frame.tailCtx)
                 for (domainSort in frame.domainSorts.asReversed()) {
                     level = makeLevelImax(domainSort, level)
                 }
@@ -4293,14 +3031,14 @@ private fun Expression.inferTypeCore(
 
             is InferFrame.LambdaDomains -> {
                 val opened = frame.opened[frame.index]
-                requireSortResult(opened.expression.typeExpr, opened.domainCtx)
+                requireSort(result, opened.expression.typeExpr, opened.domainCtx)
                 val nextIndex = frame.index + 1
                 if (nextIndex < frame.opened.size) {
                     frames.addLast(frame.copy(index = nextIndex))
                     current = frame.opened[nextIndex].expression.typeExpr
                     currentCtx = frame.opened[nextIndex].domainCtx
                 } else {
-                    frames.addLast(InferFrame.LambdaBody(frame.opened, frame.tailCtx))
+                    frames.addLast(InferFrame.LambdaBody(frame.opened))
                     current = frame.tail
                     currentCtx = frame.tailCtx
                 }
@@ -4308,7 +3046,6 @@ private fun Expression.inferTypeCore(
             }
 
             is InferFrame.LambdaBody -> {
-                result = materializeResult(frame.bodyCtx)
                 for (opened in frame.opened.asReversed()) {
                     result = env.addCustomExpr {
                         opened.expression.copyAsForAllE().copy(body = result.ie, ie = it)
@@ -4317,7 +3054,7 @@ private fun Expression.inferTypeCore(
             }
 
             is InferFrame.LetType -> {
-                requireSortResult(frame.expression.typeExpr, frame.localCtx)
+                requireSort(result, frame.expression.typeExpr, frame.localCtx)
                 frames.addLast(
                     InferFrame.LetValue(
                         frame.expression,
@@ -4331,43 +3068,24 @@ private fun Expression.inferTypeCore(
 
             is InferFrame.LetValue -> {
                 val expression = frame.expression
-                val valueType = materializeResult(frame.localCtx)
-                check(expression.typeExpr.isDefEq(valueType, frame.localCtx, frame.localCtx)) {
+                check(expression.typeExpr.isDefEq(result, frame.localCtx, frame.localCtx)) {
                     "Let value type mismatch in ${frame.expression.toStringDetailed()}: " +
-                            "expected ${expression.typeExpr.toStringDetailed()}, got ${valueType.toStringDetailed()}"
+                            "expected ${expression.typeExpr.toStringDetailed()}, got ${result.toStringDetailed()}"
                 }
-                frames.addLast(
-                    InferFrame.LetBody(
-                        expression.valueExpr,
-                        env.consLocalCtx(expression.typeExpr, frame.localCtx, expression.valueExpr),
-                    )
-                )
+                frames.addLast(InferFrame.LetBody(expression.valueExpr))
                 current = expression.bodyExpr
                 currentCtx = env.consLocalCtx(expression.typeExpr, frame.localCtx, expression.valueExpr)
                 evaluating = true
             }
 
-            is InferFrame.LetBody ->
-                result = materializeResult(frame.bodyCtx).applySubst(listOf(frame.value))
+            is InferFrame.LetBody -> result = result.applySubst(listOf(frame.value))
 
             is InferFrame.Projection ->
-                result = frame.expression.inferProjectionType(
-                    materializeResult(frame.localCtx),
-                    frame.localCtx,
-                )
+                result = frame.expression.inferProjectionType(result, frame.localCtx)
         }
     }
 }
 
-context(env: Environment)
-fun Expression.inferType(
-    levelSubst: Map<Int, Level> = emptyMap(),
-    localCtx: List<Expression> = emptyList(),
-    validate: Boolean = true,
-): Expression = when (val inferred = inferTypeCore(levelSubst, localCtx, validate)) {
-    is InferredTypeResult.Syntax -> inferred.expression
-    is InferredTypeResult.Semantic -> inferred.closure.reify(localCtx.closedEvalEnv())
-}
 
 context(env: Environment)
 fun Expression.whnf(
