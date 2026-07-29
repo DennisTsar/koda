@@ -3680,12 +3680,14 @@ private fun Expression.Proj.inferProjectionType(
     val structTypeConst = structTypeHead as? Expression.Const
         ?: error("Projection ${this.toStringDetailed()} expects structure type, got ${structTypeExpr.toStringDetailed()}")
 
-    val inductiveDecl = this.typeDecl as? Inductive.InductiveVal
-        ?: error("Projection ${this.toStringDetailed()} expects inductive type declaration for ${this.typeNameExpr}")
-
     check(structTypeConst.name == this.typeNameExpr) {
         "Projection ${this.toStringDetailed()} type name mismatch: expected ${this.typeNameExpr}, got ${structTypeConst.name}"
     }
+
+    // TODO: this used to be above the above check but it seems like some tests would accidentally fail on this linle instead of the right one
+    val inductiveDecl = this.typeDecl as? Inductive.InductiveVal
+        ?: error("Projection ${this.toStringDetailed()} expects inductive type declaration for ${this.typeNameExpr}")
+
     check(inductiveDecl.ctors.size == 1) {
         "Projection ${this.toStringDetailed()} requires exactly one constructor for ${this.typeNameExpr}"
     }
