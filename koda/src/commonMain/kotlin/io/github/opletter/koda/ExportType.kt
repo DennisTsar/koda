@@ -526,7 +526,6 @@ data class Inductive(
             val name = env.names[_name] ?: error("Name not found for $_name")
             check(_name !in env.declarations) { "Duplicate declaration for $name" }
             env.declarations[this._name] = this
-            env.constructorByName[name] = this
         }
     }
 
@@ -548,6 +547,9 @@ data class Inductive(
         data class RecursorRule(private val ctor: Int, val nfields: Int, private val rhs: Int) {
             context(env: Environment)
             val ctorName get() = env.names[ctor] ?: error("Name $ctor not found")
+
+            context(env: Environment)
+            val constructor get() = env.declarations[ctor] as? ConstructorVal
 
             context(env: Environment)
             val rhsExpr get() = env.expressions[rhs] ?: error("Expression $rhs not found")
@@ -585,7 +587,7 @@ enum class BinderInfo {
 sealed class NamedDecl {
     // Not explicitly documented as part of every declaration, but they are present for all of them currently,
     // so for convenience, they are included in the interface.
-    protected abstract val _name: Int
+    abstract val _name: Int
     protected abstract val _levelParams: List<Int>
     protected abstract val type: Int
 

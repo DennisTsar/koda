@@ -43,15 +43,11 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 is Expression -> data.registerInto(env)
                 is Declaration -> {
                     data.registerInto(env)
-                    env.declTypeByName[data.name] = data.typeExpr
                     env.counter++
                 }
 
                 is Inductive -> {
                     data.registerInto(env)
-                    (data.types + data.ctors + data.recs).forEach { declaration ->
-                        env.declTypeByName[declaration.name] = declaration.typeExpr
-                    }
                 }
 
                 is Meta -> {}
@@ -134,7 +130,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 //                    println("i: checked declaration at index=$index start=$debugStart end=${env.clock.elapsedNow()}")
 //                }
 
-                env.declTypeByName[data.name] = data.typeExpr
                 env.counter++
 
                 // (4): "the declaration's type has no free variables"
@@ -1161,7 +1156,7 @@ private fun ClosedClosure.closedWhnf(
         if (!recursor.k) return null
         val rule = recursor.rules.singleOrNull() ?: return fail("rule count")
         if (rule.nfields != 0) return fail("rule fields")
-        val constructor = env.constructorByName[rule.ctorName] ?: return fail("constructor")
+        val constructor = rule.constructor ?: return fail("constructor")
         if (constructor.numFields != 0 || constructor.numParams != recursor.numParams) {
             return fail("constructor shape")
         }
@@ -1853,7 +1848,7 @@ private fun Inductive.RecursorVal.natLiteralRecursorRules(): NatLiteralRecursorR
         var zeroRule: Inductive.RecursorVal.RecursorRule? = null
         var succRule: Inductive.RecursorVal.RecursorRule? = null
         for (rule in this.rules) {
-            val ctorDecl = env.constructorByName[rule.ctorName] ?: return@run null
+            val ctorDecl = rule.constructor ?: return@run null
             val inductiveName = ctorDecl.inductName as? Name.Str ?: return@run null
             if (
                 inductiveName.pre != 0 || inductiveName.str != "Nat" ||
@@ -2745,7 +2740,7 @@ fun Expression.inferType(
                 }
 
                 is Expression.Const -> {
-                    val type = env.declTypeByName[expr.name] ?: error("Declaration not found for ${expr.name}")
+                    val type = env.declarations[expr.decl]?.typeExpr ?: error("Declaration not found for ${expr.name}")
                     result = type.instantiateLevelParams(expr.composeLevelSubst(emptyMap()))
                     evaluating = false
                 }
@@ -3822,7 +3817,7 @@ private fun Expression.App.tryReduceRecursorHead(
         if (!recursorDecl.k) return null
         val kRule = recursorDecl.rules.singleOrNull() ?: return null
         if (kRule.nfields != 0) return null
-        val kCtorDecl = env.constructorByName[kRule.ctorName] ?: return null
+        val kCtorDecl = kRule.constructor ?: return null
         if (kCtorDecl.numFields != 0 || kCtorDecl.numParams != recursorDecl.numParams) return null
         val majorExpr = args[majorArgIndex].instantiateLevelParams(levelSubst)
         val majorType = majorExpr.inferType(localCtx = localCtx, validate = false).whnf(localCtx = localCtx)

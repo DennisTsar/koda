@@ -59,9 +59,6 @@ fun checkInductive(data: Inductive) {
     }
 
     data.registerInto(env)
-    inductives.forEach { inductive ->
-        env.declTypeByName[inductive.name] = inductive.typeExpr
-    }
 
     val ctorsByInductive = data.ctors.groupBy { it.inductName }
     check(ctorsByInductive.keys.all { it in blockNameSet }) {
@@ -84,7 +81,6 @@ fun checkInductive(data: Inductive) {
                 "Mutual inductive ${inductive.name.toStringDetailed()} constructor list mismatch at #$ctorIndex"
             }
             checkConstructor(constructor, inductive, inductiveInfo, blockNameSet, maxFieldSortLevel)
-            env.declTypeByName[constructor.name] = constructor.typeExpr
         }
     }
     check(data.ctors.size == inductives.sumOf { it.ctors.size }) {
@@ -110,7 +106,6 @@ fun checkInductive(data: Inductive) {
         if (recName.str == "rec") {
             recNamedRecCountByInductive[recParent] = recNamedRecCountByInductive.getOrElse(recParent, { 0 }) + 1
         }
-        env.declTypeByName[recursor.name] = recursor.typeExpr
     }
     inductives.forEach { inductive ->
         val recNamedRecCount = recNamedRecCountByInductive.getOrElse(inductive.name, { 0 })
@@ -321,7 +316,7 @@ private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
         check(seenCtorNames.add(rule.ctorName)) {
             "Recursor ${recursor.name} has duplicate rules"
         }
-        val constructor = env.constructorByName[rule.ctorName]
+        val constructor = rule.constructor
             ?: error("Recursor ${recursor.name} references unknown constructor ${rule.ctorName}")
         check(constructor.inductName == majorInductName) {
             "Recursor ${recursor.name} has rule for constructor ${constructor.name} outside major inductive ${majorInductName.toStringDetailed()}"
