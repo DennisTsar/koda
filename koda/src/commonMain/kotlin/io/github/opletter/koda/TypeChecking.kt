@@ -1991,14 +1991,14 @@ private fun Expression.App.isDefEqWhnfSpine(
         return false
     }
     var functionType: Expression.ForallE? = null
-    var pendingSubst = emptyList<Expression>()
+    val pendingSubst = ArrayDeque<Expression>()
 
     fun advanceFunctionType(type: Expression.ForallE, argument: Expression): Expression.ForallE {
-        pendingSubst = listOf(argument) + pendingSubst
+        pendingSubst.addFirst(argument)
         val directForall = type.bodyExpr as? Expression.ForallE
         if (directForall != null) return directForall
         val nextType = type.bodyExpr.applySubst(pendingSubst)
-        pendingSubst = emptyList()
+        pendingSubst.clear()
         return nextType.whnf(localCtx = localCtxLeft) as? Expression.ForallE
             ?: error("Application spine has more arguments than its function type")
     }
@@ -2654,7 +2654,7 @@ private sealed interface InferFrame {
         val index: Int,
         val functionType: Expression.ForallE,
         val expectedType: Expression,
-        val pendingSubst: List<Expression>,
+        val pendingSubst: ArrayDeque<Expression>,
         val argument: Expression,
         val localCtx: List<Expression>,
     ) : InferFrame
@@ -2665,7 +2665,7 @@ private sealed interface InferFrame {
         val tail: Expression,
         val tailCtx: List<Expression>,
         val index: Int,
-        val domainSorts: List<Level>,
+        val domainSorts: MutableList<Level>,
     ) : InferFrame
 
     data class PiBody(val domainSorts: List<Level>, val tail: Expression, val tailCtx: List<Expression>) : InferFrame
@@ -2759,7 +2759,7 @@ fun Expression.inferType(
                         binderCtx = env.consLocalCtx(binder.typeExpr, binderCtx)
                         binder = binder.bodyExpr
                     }
-                    frames.addLast(InferFrame.PiDomains(opened, binder, binderCtx, 0, emptyList()))
+                    frames.addLast(InferFrame.PiDomains(opened, binder, binderCtx, 0, mutableListOf()))
                     current = opened.first().expression.typeExpr
                     currentCtx = opened.first().domainCtx
                 }
@@ -2839,7 +2839,7 @@ fun Expression.inferType(
                             0,
                             pi,
                             pi.typeExpr,
-                            emptyList(),
+                            ArrayDeque(),
                             argument,
                             frame.localCtx,
                         )
@@ -2849,10 +2849,10 @@ fun Expression.inferType(
                     evaluating = true
                 } else {
                     var functionType = pi
-                    var pendingSubst = emptyList<Expression>()
+                    val pendingSubst = ArrayDeque<Expression>()
                     var finalType: Expression? = null
                     frame.args.forEachIndexed { index, argument ->
-                        pendingSubst = listOf(argument) + pendingSubst
+                        pendingSubst.addFirst(argument)
                         val body = functionType.bodyExpr
                         if (index == frame.args.lastIndex) {
                             finalType = body.applySubst(pendingSubst)
@@ -2867,7 +2867,7 @@ fun Expression.inferType(
                                         "Expected function type for app ${frame.expression.toStringDetailed()}, " +
                                                 "got ${instantiatedBody.toStringDetailed()}"
                                     )
-                                pendingSubst = emptyList()
+                                pendingSubst.clear()
                             }
                         }
                     }
@@ -2963,7 +2963,8 @@ fun Expression.inferType(
                     "Application argument type mismatch in app ${frame.expression.toStringDetailed()}: " +
                             "expected ${frame.expectedType.toStringDetailed()}, got ${result.toStringDetailed()}"
                 }
-                val pendingSubst = listOf(frame.argument) + frame.pendingSubst
+                val pendingSubst = frame.pendingSubst
+                pendingSubst.addFirst(frame.argument)
                 val body = frame.functionType.bodyExpr
                 val nextIndex = frame.index + 1
                 if (nextIndex == frame.args.size) {
@@ -2971,7 +2972,7 @@ fun Expression.inferType(
                 } else {
                     val directPi = body as? Expression.ForallE
                     val functionType: Expression.ForallE
-                    val nextPendingSubst: List<Expression>
+                    val nextPendingSubst: ArrayDeque<Expression>
                     if (directPi != null) {
                         functionType = directPi
                         nextPendingSubst = pendingSubst
@@ -2982,7 +2983,7 @@ fun Expression.inferType(
                                 "Expected function type for app ${frame.expression.toStringDetailed()}, " +
                                         "got ${instantiatedBody.toStringDetailed()}"
                             )
-                        nextPendingSubst = emptyList()
+                        nextPendingSubst = ArrayDeque()
                     }
                     val expectedType = functionType.typeExpr.applySubst(nextPendingSubst)
                     val argument = frame.args[nextIndex]
@@ -3006,8 +3007,8 @@ fun Expression.inferType(
 
             is InferFrame.PiDomains -> {
                 val opened = frame.opened[frame.index]
-                val domainSorts = frame.domainSorts +
-                        requireSort(result, opened.expression.typeExpr, opened.domainCtx)
+                val domainSorts = frame.domainSorts
+                domainSorts += requireSort(result, opened.expression.typeExpr, opened.domainCtx)
                 val nextIndex = frame.index + 1
                 if (nextIndex < frame.opened.size) {
                     frames.addLast(frame.copy(index = nextIndex, domainSorts = domainSorts))
@@ -4493,44 +4494,43 @@ private fun Expression.rewriteBinders(
     fun cacheKey(expr: Expression, currentDepth: Int): Long =
         (currentDepth.toLong() shl 32) xor (expr.ie.toLong() and 0xffffffffL)
 
-    data class Frame(val expr: Expression, val currentDepth: Int, val visited: Boolean)
-
-    val stack = ArrayDeque<Frame>()
-    stack.add(Frame(this, depth, false))
+    val stack = BinderRewriteStack()
+    stack.add(this, depth)
     while (stack.isNotEmpty()) {
-        val (expr, currentDepth, visited) = stack.removeLast()
+        val stackIndex = stack.removeLastIndex()
+        val expr = stack.expressionAt(stackIndex)
+        val currentDepth = stack.depthAt(stackIndex)
+        val rebuild = stack.rebuildAt(stackIndex)
+        stack.release(stackIndex)
         val key = cacheKey(expr, currentDepth)
         if (cache[key] != null) continue
-        if (expr.maxLooseBVarIndex() < currentDepth) {
-            cache[key] = expr
-            continue
-        }
-        if (!visited) {
-            stack.add(Frame(expr, currentDepth, true))
+        if (!rebuild) {
+            if (expr.maxLooseBVarIndex() < currentDepth) continue
+            stack.add(expr, currentDepth, rebuild = true)
             when (expr) {
                 is Expression.App -> {
-                    stack.add(Frame(expr.fnExpr, currentDepth, false))
-                    stack.add(Frame(expr.argExpr, currentDepth, false))
+                    stack.add(expr.fnExpr, currentDepth)
+                    stack.add(expr.argExpr, currentDepth)
                 }
 
                 is Expression.ForallE -> {
-                    stack.add(Frame(expr.typeExpr, currentDepth, false))
-                    stack.add(Frame(expr.bodyExpr, currentDepth + 1, false))
+                    stack.add(expr.typeExpr, currentDepth)
+                    stack.add(expr.bodyExpr, currentDepth + 1)
                 }
 
                 is Expression.Lam -> {
-                    stack.add(Frame(expr.typeExpr, currentDepth, false))
-                    stack.add(Frame(expr.bodyExpr, currentDepth + 1, false))
+                    stack.add(expr.typeExpr, currentDepth)
+                    stack.add(expr.bodyExpr, currentDepth + 1)
                 }
 
                 is Expression.LetE -> {
-                    stack.add(Frame(expr.typeExpr, currentDepth, false))
-                    stack.add(Frame(expr.valueExpr, currentDepth, false))
-                    stack.add(Frame(expr.bodyExpr, currentDepth + 1, false))
+                    stack.add(expr.typeExpr, currentDepth)
+                    stack.add(expr.valueExpr, currentDepth)
+                    stack.add(expr.bodyExpr, currentDepth + 1)
                 }
 
-                is Expression.Mdata -> stack.add(Frame(expr.expr, currentDepth, false))
-                is Expression.Proj -> stack.add(Frame(expr.structExpr, currentDepth, false))
+                is Expression.Mdata -> stack.add(expr.expr, currentDepth)
+                is Expression.Proj -> stack.add(expr.structExpr, currentDepth)
                 else -> {}
             }
             continue

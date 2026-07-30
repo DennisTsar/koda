@@ -252,9 +252,10 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
 
     operator fun get(index: Int): T? {
         return if (index >= 0) {
-            nonNegative.getOrNull(index)
+            if (index < nonNegative.size) nonNegative[index] else null
         } else {
-            negative.getOrNull(negativePosition(index))
+            val position = negativePosition(index)
+            if (position < negative.size) negative[position] else null
         }
     }
 
