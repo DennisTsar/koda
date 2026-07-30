@@ -299,14 +299,12 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     }
 }
 
-operator fun IntObjectStore<NamedDecl>.get(index: NamedDecl?): NamedDecl? = index?.let { this[it._name] }
-
-
 class Environment {
     val names: IntObjectStore<Name> = IntObjectStore(listOf(0 to Name.Str(0, "", 0)))
     val nameIndices: NameIndexStore = NameIndexStore().also { it[Name.Str(0, "", 0)] = 0 }
     val declarations: IntObjectStore<NamedDecl> = IntObjectStore()
     val levelParamByNameIndex: MutableMap<Int, Level.Param> = mutableMapOf()
+    val constructorByName: MutableMap<Name, Inductive.ConstructorVal> = mutableMapOf()
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
     val expressions: IntObjectStore<Expression> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))
@@ -314,6 +312,7 @@ class Environment {
 
     val clock = TimeSource.Monotonic.markNow()
 
+    val declTypeByName: MutableMap<Name, Expression> = mutableMapOf()
     var whnfCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
     var whnfCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
     var natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
