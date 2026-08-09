@@ -97,29 +97,20 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 val debugStart = env.clock.elapsedNow()
                 try {
                     val declaredTypeSortLevel = data.typeExpr.inferSort()
-                    when (data) {
-                        is Declaration.Axiom -> {} // no extra checks needed
-                        is Declaration.Def -> {
-                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                            }
+                    val value = when (data) {
+                        is Declaration.Def -> data.valueExpr
+                        is Declaration.Opaque -> data.valueExpr // TODO: treat opqaue differently
+                        is Declaration.Thm -> data.valueExpr
+                        is Declaration.Axiom, is Declaration.Quot -> null
+                    }
+                    if (value != null) {
+                        check(typeCheckDeclaration(value, data.typeExpr)) {
+                            "value not defeq to type for ${data.name.toStringDetailed()} $data"
                         }
-
-                        is Declaration.Opaque -> {
-                            // TODO: treat opqaue differently
-                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                            }
-                        }
-
-                        is Declaration.Quot -> {} // no extra checks needed
-                        is Declaration.Thm -> {
-                            check(typeCheckDeclaration(data.valueExpr, data.typeExpr)) {
-                                "value not defeq to type for ${data.name.toStringDetailed()} $data"
-                            }
-                            check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
-                                "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
-                            }
+                    }
+                    if (data is Declaration.Thm) {
+                        check(declaredTypeSortLevel.isLessOrEqual(Level.Zero)) {
+                            "The type of a theorem has to be a proposition: found ${data.typeExpr.toStringDetailed()}"
                         }
                     }
                 } catch (error: Throwable) {
@@ -210,12 +201,7 @@ private fun Expression.rigidProofStatus(): Boolean? {
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     if (env.shouldLog) println("found value: ${value/*.toStringDetailed()*/}")
-    return value.checkHasType(expectedType)
-}
-
-context(env: Environment)
-private fun Expression.checkHasType(expectedType: Expression): Boolean {
-    val inferredValueType = this.inferType()
+    val inferredValueType = value.inferType()
     if (env.shouldLog) println("inferred type of value: ${inferredValueType/*.toStringDetailed()*/}")
     if (env.shouldLog) {
         println("expected type detailed: ${expectedType.toStringDetailed()}")
