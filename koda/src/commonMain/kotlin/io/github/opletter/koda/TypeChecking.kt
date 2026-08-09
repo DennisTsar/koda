@@ -1485,51 +1485,33 @@ private fun ClosedClosure.closedWhnf(
 
             is ClosedEvalContinuation.NatOperand -> {
                 val value = terminalNatValue()
-                if (value == null) {
-                    val definitionValue = continuation.primitiveConst.instantiatedValue()
-                    if (definitionValue == null) {
-                        currentExpression = continuation.primitiveConst
-                        currentLocals = ClosedEvalEnv.Empty
-                        setArgsInOrder(continuation.operands + continuation.extraArgs)
-                        currentIsWhnf = true
-                    } else {
-//                        deltaReductions += 1
-//                        incrementCount(deltaCounts, continuation.primitiveConst.name)
-                        currentExpression = definitionValue
-                        currentLocals = ClosedEvalEnv.Empty
-                        setArgsInOrder(continuation.operands + continuation.extraArgs)
+                if (value != null) {
+                    val values = continuation.values + value
+                    val nextIndex = continuation.operandIndex + 1
+                    if (nextIndex < continuation.operands.size) {
+                        continuations += continuation.copy(values = values, operandIndex = nextIndex)
+                        val operand = continuation.operands[nextIndex]
+                        setCurrent(operand)
+                        setArgsInOrder(argumentsOf(operand))
+                        continue
                     }
-                    continue
-                }
-                val values = continuation.values + value
-                val nextIndex = continuation.operandIndex + 1
-                if (nextIndex < continuation.operands.size) {
-                    continuations += continuation.copy(values = values, operandIndex = nextIndex)
-                    val operand = continuation.operands[nextIndex]
-                    setCurrent(operand)
-                    setArgsInOrder(argumentsOf(operand))
-                } else {
                     val reduced = continuation.primitive.reduce(values[0], values.getOrNull(1)) { transientNat(it) }
-                    if (reduced == null) {
-                        val definitionValue = continuation.primitiveConst.instantiatedValue()
-                        if (definitionValue == null) {
-                            currentExpression = continuation.primitiveConst
-                            currentLocals = ClosedEvalEnv.Empty
-                            setArgsInOrder(continuation.operands + continuation.extraArgs)
-                            currentIsWhnf = true
-                        } else {
-//                            deltaReductions += 1
-//                            incrementCount(deltaCounts, continuation.primitiveConst.name)
-                            currentExpression = definitionValue
-                            currentLocals = ClosedEvalEnv.Empty
-                            setArgsInOrder(continuation.operands + continuation.extraArgs)
-                        }
-                    } else {
+                    if (reduced != null) {
                         currentExpression = reduced
                         currentLocals = ClosedEvalEnv.Empty
                         setArgsInOrder(continuation.extraArgs)
+                        continue
                     }
                 }
+                val definitionValue = continuation.primitiveConst.instantiatedValue()
+                currentExpression = definitionValue ?: continuation.primitiveConst
+                currentLocals = ClosedEvalEnv.Empty
+                setArgsInOrder(continuation.operands + continuation.extraArgs)
+                if (definitionValue == null) currentIsWhnf = true
+//                else {
+//                    deltaReductions += 1
+//                    incrementCount(deltaCounts, continuation.primitiveConst.name)
+//                }
             }
         }
     }
