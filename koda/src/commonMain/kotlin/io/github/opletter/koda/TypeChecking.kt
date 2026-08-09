@@ -315,7 +315,7 @@ private fun List<Expression>.closedEvalEnv(): ClosedEvalEnv {
 
 context(env: Environment)
 private fun Expression.tryClosedBoolTrueDefEq(other: Expression, localCtx: List<Expression>): Boolean? {
-    if (!other.isBoolTrueConst() || this.maxLooseBVarIndex() >= 0 && !env.eagerReduction) return null
+    if (other.boolValue() != true || this.maxLooseBVarIndex() >= 0 && !env.eagerReduction) return null
     val start = env.clock.elapsedNow()
     return this.closedBoolValue(localCtx).also { result ->
 //        if (debugClosedEvaluation || debugTargetDeclaration) {
@@ -325,21 +325,16 @@ private fun Expression.tryClosedBoolTrueDefEq(other: Expression, localCtx: List<
 }
 
 context(env: Environment)
-private fun Expression.isBoolFalseConst(): Boolean {
-    val constant = this as? Expression.Const ?: return false
-    val falseName = constant.name as? Name.Str ?: return false
-    if (falseName.str != "false") return false
-    val boolName = env.names[falseName.pre] as? Name.Str ?: return false
-    return boolName.pre == 0 && boolName.str == "Bool"
-}
-
-context(env: Environment)
-private fun Expression.isBoolTrueConst(): Boolean {
-    val constant = this as? Expression.Const ?: return false
-    val trueName = constant.name as? Name.Str ?: return false
-    if (trueName.str != "true") return false
-    val boolName = env.names[trueName.pre] as? Name.Str ?: return false
-    return boolName.pre == 0 && boolName.str == "Bool"
+private fun Expression.boolValue(): Boolean? {
+    val constant = this as? Expression.Const ?: return null
+    val constructorName = constant.name as? Name.Str ?: return null
+    val boolName = env.names[constructorName.pre] as? Name.Str ?: return null
+    if (boolName.pre != 0 || boolName.str != "Bool") return null
+    return when (constructorName.str) {
+        "false" -> false
+        "true" -> true
+        else -> null
+    }
 }
 
 private sealed interface ClosedEvalEnv {
@@ -448,11 +443,7 @@ context(env: Environment)
 private fun Expression.closedBoolValue(localCtx: List<Expression> = emptyList()): Boolean? {
     val value = ClosedClosure(this, localCtx.closedEvalEnv()).closedWhnf(trace = debugTargetDeclaration) ?: return null
     if (value.arguments.isNotEmpty()) return null
-    return when {
-        value.head.expression.isBoolTrueConst() -> true
-        value.head.expression.isBoolFalseConst() -> false
-        else -> null
-    }
+    return value.head.expression.boolValue()
 }
 
 context(env: Environment)
