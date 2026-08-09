@@ -3195,18 +3195,7 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
 
             is WhnfFrame.ReduceNatPrimitive -> {
                 val value = result.asNatLiteralValue()
-                if (value == null) {
-                    val unfolded = frame.app.unfoldValueOnce()
-                    if (unfolded == null) {
-                        result = frame.app
-                        frame.finishFrame.original.cacheWhnf(localCtx, result)
-                    } else {
-                        frames.addLast(frame.finishFrame)
-                        current = unfolded
-                        mode = WhnfMode.CoreFullProjection
-                        result = null
-                    }
-                } else {
+                if (value != null) {
                     val values = frame.values + value
                     val nextIndex = frame.nextIndex + 1
                     if (nextIndex < frame.args.size) {
@@ -3214,24 +3203,24 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                         current = frame.args[nextIndex]
                         mode = WhnfMode.Full
                         result = null
-                    } else {
-                        val reduced = frame.app.reduceNatLiteralValues(values)
-                        if (reduced == null) {
-                            val unfolded = frame.app.unfoldValueOnce()
-                            if (unfolded == null) {
-                                result = frame.app
-                                frame.finishFrame.original.cacheWhnf(localCtx, result)
-                            } else {
-                                frames.addLast(frame.finishFrame)
-                                current = unfolded
-                                mode = WhnfMode.CoreFullProjection
-                                result = null
-                            }
-                        } else {
-                            result = reduced
-                            frame.finishFrame.original.cacheWhnf(localCtx, result)
-                        }
+                        continue
                     }
+                    val reduced = frame.app.reduceNatLiteralValues(values)
+                    if (reduced != null) {
+                        result = reduced
+                        frame.finishFrame.original.cacheWhnf(localCtx, result)
+                        continue
+                    }
+                }
+                val unfolded = frame.app.unfoldValueOnce()
+                if (unfolded == null) {
+                    result = frame.app
+                    frame.finishFrame.original.cacheWhnf(localCtx, result)
+                } else {
+                    frames.addLast(frame.finishFrame)
+                    current = unfolded
+                    mode = WhnfMode.CoreFullProjection
+                    result = null
                 }
             }
 
