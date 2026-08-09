@@ -147,16 +147,16 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             if (data is Declaration) {
                 val declarationElapsed = env.clock.elapsedNow() - itemStart
                 if (declarationElapsed.inWholeMilliseconds >= 1_000) {
-                    val declarationStats = if (data is Declaration) """
+                    val declarationStats = """
                         defEqCalls=${env.defEqCalls} defEqCache=${env.defEqCache.size}
                         inferCache=${env.inferTypeCacheNoLevelSubst.size}
                         whnfCache=${env.whnfCacheNoLevelSubst.size + env.whnfCacheWithCtxNoLevelSubst.size}
                         proofIrrelevance=${env.proofIrrelevanceSuccesses}/${env.proofIrrelevanceAttempts}
                         typedProofSkips=${env.typedCongruenceProofSkips}
-                    """.trimIndent().replace('\n', ' ') else null
+                    """.trimIndent().replace('\n', ' ')
                     println(
                         "slow declaration: name=${data.name.toStringDetailed()} index=$index " +
-                                "elapsed=$declarationElapsed ${checkNotNull(declarationStats)}"
+                                "elapsed=$declarationElapsed $declarationStats"
                     )
                 }
             }
