@@ -210,6 +210,14 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     return expectedType.isDefEq(inferredValueType)
 }
 
+@Suppress("NOTHING_TO_INLINE")
+context(env: Environment)
+private inline fun Expression.Const.hasSameNameAndLevels(other: Expression.Const): Boolean =
+    this.name == other.name &&
+            this.levels.size == other.levels.size &&
+            (this.levels == other.levels ||
+                    this.levels.indices.all { index -> this.levels[index].isEqual(other.levels[index]) })
+
 context(env: Environment)
 fun Expression.isDefEq(
     other: Expression,
@@ -672,11 +680,7 @@ private fun ClosedClosure.closedDefEq(
         val rightHead = right.head.expression
         return when {
             leftHead is Expression.Const && rightHead is Expression.Const ->
-                leftHead.name == rightHead.name &&
-                        leftHead.levels.size == rightHead.levels.size &&
-                        leftHead.levels.indices.all { index ->
-                            leftHead.levels[index].isEqual(rightHead.levels[index])
-                        }
+                leftHead.hasSameNameAndLevels(rightHead)
 
             leftHead is Expression.Lam || rightHead is Expression.Lam -> true
             leftHead is Expression.ForallE && rightHead is Expression.ForallE -> true
@@ -996,11 +1000,7 @@ private fun ClosedClosure.closedDefEq(
         val rightHead = right.head.expression
         val headsMatch = when {
             leftHead is Expression.Const && rightHead is Expression.Const ->
-                leftHead.name == rightHead.name &&
-                        leftHead.levels.size == rightHead.levels.size &&
-                        leftHead.levels.indices.all { index ->
-                            leftHead.levels[index].isEqual(rightHead.levels[index])
-                        }
+                leftHead.hasSameNameAndLevels(rightHead)
 
             leftHead is Expression.Sort && rightHead is Expression.Sort ->
                 leftHead.level.isEqual(rightHead.level)
@@ -1569,9 +1569,7 @@ private fun Expression.Proj.structuresHaveSameConstantHead(
     val rightHead =
         other.structExpr.whnfCore(localCtxRight, cheapProjection = true).asAppSpine().first as? Expression.Const
             ?: return false
-    return leftHead.name == rightHead.name &&
-            leftHead.levels.size == rightHead.levels.size &&
-            leftHead.levels.indices.all { leftHead.levels[it].isEqual(rightHead.levels[it]) }
+    return leftHead.hasSameNameAndLevels(rightHead)
 }
 
 context(env: Environment)
@@ -1652,10 +1650,7 @@ private fun Expression.tryKnownDefEqCongruence(
                 this.argExpr.tryKnownDefEqCongruence(other.argExpr, localCtxLeft, localCtxRight)
 
         is Expression.Bvar -> other is Expression.Bvar && this.bvar == other.bvar
-        is Expression.Const -> other is Expression.Const &&
-                this.name == other.name &&
-                this.levels.size == other.levels.size &&
-                this.levels.indices.all { index -> this.levels[index].isEqual(other.levels[index]) }
+        is Expression.Const -> other is Expression.Const && this.hasSameNameAndLevels(other)
 
         is Expression.Mdata -> other is Expression.Mdata &&
                 this.expr.tryKnownDefEqCongruence(other.expr, localCtxLeft, localCtxRight)
@@ -2063,11 +2058,7 @@ private fun Expression.tryStructuralDefEq(other: Expression): Boolean? {
             }
 
             left is Expression.Const && right is Expression.Const -> {
-                if (
-                    left.name != right.name ||
-                    left.levels.size != right.levels.size ||
-                    !left.levels.indices.all { left.levels[it].isEqual(right.levels[it]) }
-                ) return null
+                if (!left.hasSameNameAndLevels(right)) return null
             }
 
             left is Expression.NatVal && right is Expression.NatVal -> if (left.natVal != right.natVal) return null
@@ -2091,12 +2082,7 @@ private fun Expression.tryConstantApplicationCongruence(
     val rightSpine = rightApp.unfoldApp()
     val leftHead = leftSpine.first as? Expression.Const ?: return null
     val rightHead = rightSpine.first as? Expression.Const ?: return null
-    if (
-        leftHead.name != rightHead.name ||
-        leftHead.levels.size != rightHead.levels.size ||
-        !leftHead.levels.indices.all { leftHead.levels[it].isEqual(rightHead.levels[it]) } ||
-        leftSpine.second.size != rightSpine.second.size
-    ) return null
+    if (!leftHead.hasSameNameAndLevels(rightHead) || leftSpine.second.size != rightSpine.second.size) return null
     return leftApp.isDefEqWhnfSpine(rightApp, localCtxLeft, localCtxRight)
 }
 
@@ -2115,10 +2101,8 @@ private fun Expression.tryRegularDefinitionCongruence(
     val leftHints = (leftHead.decl as? Declaration.Def)?.hints as? Declaration.Def.Hints.Regular ?: return null
     val rightHints = (rightHead.decl as? Declaration.Def)?.hints as? Declaration.Def.Hints.Regular ?: return null
     if (
-        leftHead.name != rightHead.name ||
-        leftHints.value != rightHints.value ||
-        leftHead.levels.size != rightHead.levels.size ||
-        !leftHead.levels.indices.all { leftHead.levels[it].isEqual(rightHead.levels[it]) }
+        !leftHead.hasSameNameAndLevels(rightHead) ||
+        leftHints.value != rightHints.value
     ) return null
 
     val failureKey = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
@@ -2366,11 +2350,7 @@ private fun Expression.isDefEqWhnf(
             this.bvar == other.bvar
         }
 
-        is Expression.Const if other is Expression.Const ->
-            this.name == other.name &&
-                    this.levels.size == other.levels.size &&
-                    (this.levels == other.levels ||
-                            this.levels.zip(other.levels).all { [l1, l2] -> l1.isEqual(l2) })
+        is Expression.Const if other is Expression.Const -> this.hasSameNameAndLevels(other)
 
         is Expression.ForallE if other is Expression.ForallE -> {
             this.isDefEqBinding(other, localCtxLeft, localCtxRight, lambda = false)
