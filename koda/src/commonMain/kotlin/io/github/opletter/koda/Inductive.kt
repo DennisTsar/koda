@@ -420,7 +420,7 @@ private fun checkRecursorRuleType(
 }
 
 context(env: Environment)
-private fun Expression.applyArgs(args: List<Expression>): Expression {
+fun Expression.applyArgs(args: List<Expression>): Expression {
     if (args.isEmpty()) return this
     var result = this
     args.forEach { argExpr ->

@@ -2256,16 +2256,6 @@ private fun Expression.reduceBetaLetHead(): Expression {
 }
 
 context(env: Environment)
-private fun Expression.applyArgs(args: List<Expression>): Expression {
-    if (args.isEmpty()) return this
-    var result = this
-    args.forEach { argExpr ->
-        result = env.addCustomExpr { Expression.App(fn = result.ie, arg = argExpr.ie, ie = it) }
-    }
-    return result
-}
-
-context(env: Environment)
 private fun Expression.applyBetaArgs(args: List<Expression>): Expression {
     var head = this
     var nextArg = 0
