@@ -4287,20 +4287,17 @@ private class BinderRewriteStack {
     private var expressions: Array<Expression?> = arrayOfNulls(64)
     private var depths = IntArray(64)
     private var rebuilds = BooleanArray(64)
-    private var cacheKeys = LongArray(64)
     private var size = 0
 
-    fun add(expr: Expression, depth: Int, rebuild: Boolean = false, cacheKey: Long = 0L) {
+    fun add(expr: Expression, depth: Int, rebuild: Boolean = false) {
         if (size == expressions.size) {
             expressions = expressions.copyOf(size * 2)
             depths = depths.copyOf(size * 2)
             rebuilds = rebuilds.copyOf(size * 2)
-            cacheKeys = cacheKeys.copyOf(size * 2)
         }
         expressions[size] = expr
         depths[size] = depth
         rebuilds[size] = rebuild
-        cacheKeys[size] = cacheKey
         size++
     }
 
@@ -4313,7 +4310,6 @@ private class BinderRewriteStack {
     fun expressionAt(index: Int): Expression = expressions[index]!!
     fun depthAt(index: Int): Int = depths[index]
     fun rebuildAt(index: Int): Boolean = rebuilds[index]
-    fun cacheKeyAt(index: Int): Long = cacheKeys[index]
 
     fun release(index: Int) {
         expressions[index] = null
