@@ -2140,21 +2140,14 @@ private fun Expression.Const.projectionReductionInfo(): ProjectionReductionInfo?
         var binderCount = 0
         var projectionBody: Expression = defDecl.valueExpr
         while (true) {
-            projectionBody = when (projectionBody) {
-                is Expression.Mdata -> projectionBody.expr
-                is Expression.LetE -> projectionBody.bodyExpr.applySubst(listOf(projectionBody.valueExpr))
-                else -> break
-            }
-        }
-        while (projectionBody is Expression.Lam) {
-            binderCount += 1
-            projectionBody = projectionBody.bodyExpr
-            while (true) {
-                projectionBody = when (projectionBody) {
-                    is Expression.Mdata -> projectionBody.expr
-                    is Expression.LetE -> projectionBody.bodyExpr.applySubst(listOf(projectionBody.valueExpr))
-                    else -> break
+            projectionBody = when (val body = projectionBody) {
+                is Expression.Mdata -> body.expr
+                is Expression.LetE -> body.bodyExpr.applySubst(listOf(body.valueExpr))
+                is Expression.Lam -> {
+                    binderCount += 1
+                    body.bodyExpr
                 }
+                else -> break
             }
         }
 
