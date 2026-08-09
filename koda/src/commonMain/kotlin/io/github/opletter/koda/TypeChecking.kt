@@ -397,7 +397,7 @@ private data class ClosedRecursorRuleKey(
     val ruleExprId: Int,
 )
 
-private enum class ClosedNatPrimitive(val arity: Int) {
+private enum class NatPrimitive(val arity: Int) {
     Succ(1), Add(2), Sub(2), Mul(2), Pow(2), Div(2), Mod(2), Beq(2), Ble(2)
 }
 
@@ -431,7 +431,7 @@ private sealed interface ClosedEvalContinuation {
 
     data class NatOperand(
         val primitiveConst: Expression.Const,
-        val primitive: ClosedNatPrimitive,
+        val primitive: NatPrimitive,
         val operands: List<ClosedClosure>,
         val extraArgs: List<ClosedClosure>,
         val values: List<NatValue>,
@@ -1107,23 +1107,6 @@ private fun ClosedClosure.closedWhnf(
     fun transientNat(value: NatValue): Expression.NatVal =
         Expression.NatVal(value, Int.MIN_VALUE)
 
-    fun reduceNatPrimitive(primitive: ClosedNatPrimitive, values: List<NatValue>): Expression? = when (primitive) {
-        ClosedNatPrimitive.Succ -> transientNat(values[0] + NatValue.ONE)
-        ClosedNatPrimitive.Add -> transientNat(values[0] + values[1])
-        ClosedNatPrimitive.Sub ->
-            transientNat(if (values[0] >= values[1]) values[0] - values[1] else NatValue.ZERO)
-
-        ClosedNatPrimitive.Mul -> transientNat(values[0] * values[1])
-        ClosedNatPrimitive.Pow -> {
-            val exponent = values[1].toIntOrNull() ?: return null
-            transientNat(values[0].pow(exponent))
-        }
-        ClosedNatPrimitive.Div -> transientNat(values[0].divLean(values[1]))
-        ClosedNatPrimitive.Mod -> transientNat(values[0].modLean(values[1]))
-        ClosedNatPrimitive.Beq -> boolCtor(values[0] == values[1])
-        ClosedNatPrimitive.Ble -> boolCtor(values[0] <= values[1])
-    }
-
     fun tryKRule(
         recursorConst: Expression.Const,
         recursor: Inductive.RecursorVal,
@@ -1353,7 +1336,7 @@ private fun ClosedClosure.closedWhnf(
                     }
                 }
 
-                val primitive = if (unfoldDefinitions) expression.closedNatPrimitive() else null
+                val primitive = if (unfoldDefinitions) expression.natPrimitive() else null
                 if (primitive != null && argumentStack.size >= primitive.arity) {
                     val arguments = argumentStack.toList()
                     val operands = arguments.take(primitive.arity)
@@ -1526,7 +1509,7 @@ private fun ClosedClosure.closedWhnf(
                     setCurrent(operand)
                     setArgsInOrder(argumentsOf(operand))
                 } else {
-                    val reduced = reduceNatPrimitive(continuation.primitive, values)
+                    val reduced = continuation.primitive.reduce(values[0], values.getOrNull(1)) { transientNat(it) }
                     if (reduced == null) {
                         val definitionValue = continuation.primitiveConst.instantiatedValue()
                         if (definitionValue == null) {
@@ -1553,19 +1536,42 @@ private fun ClosedClosure.closedWhnf(
 }
 
 context(env: Environment)
-private fun Expression.Const.closedNatPrimitive(): ClosedNatPrimitive? {
+private fun Expression.Const.natPrimitive(): NatPrimitive? {
     if (this.levels.isNotEmpty()) return null
     return when (this.name.toStringDetailed()) {
-        "Nat.succ" -> ClosedNatPrimitive.Succ
-        "Nat.add" -> ClosedNatPrimitive.Add
-        "Nat.sub" -> ClosedNatPrimitive.Sub
-        "Nat.mul" -> ClosedNatPrimitive.Mul
-        "Nat.pow" -> ClosedNatPrimitive.Pow
-        "Nat.div" -> ClosedNatPrimitive.Div
-        "Nat.mod" -> ClosedNatPrimitive.Mod
-        "Nat.beq" -> ClosedNatPrimitive.Beq
-        "Nat.ble" -> ClosedNatPrimitive.Ble
+        "Nat.succ" -> NatPrimitive.Succ
+        "Nat.add" -> NatPrimitive.Add
+        "Nat.sub" -> NatPrimitive.Sub
+        "Nat.mul" -> NatPrimitive.Mul
+        "Nat.pow" -> NatPrimitive.Pow
+        "Nat.div" -> NatPrimitive.Div
+        "Nat.mod" -> NatPrimitive.Mod
+        "Nat.beq" -> NatPrimitive.Beq
+        "Nat.ble" -> NatPrimitive.Ble
         else -> null
+    }
+}
+
+context(env: Environment)
+private inline fun NatPrimitive.reduce(
+    first: NatValue,
+    second: NatValue? = null,
+    natCtor: (NatValue) -> Expression,
+): Expression? {
+    val rhs = if (arity == 2) checkNotNull(second) else first
+    return when (this) {
+        NatPrimitive.Succ -> natCtor(first + NatValue.ONE)
+        NatPrimitive.Add -> natCtor(first + rhs)
+        NatPrimitive.Sub -> natCtor(if (first >= rhs) first - rhs else NatValue.ZERO)
+        NatPrimitive.Mul -> natCtor(first * rhs)
+        NatPrimitive.Pow -> {
+            val exponent = rhs.toIntOrNull() ?: return null
+            natCtor(first.pow(exponent))
+        }
+        NatPrimitive.Div -> natCtor(first.divLean(rhs))
+        NatPrimitive.Mod -> natCtor(first.modLean(rhs))
+        NatPrimitive.Beq -> boolCtor(first == rhs)
+        NatPrimitive.Ble -> boolCtor(first <= rhs)
     }
 }
 
@@ -3416,56 +3422,26 @@ private fun Expression.tryRecognizeNatLiteralCore(localCtx: List<Expression>): N
                 val appExpr = current as? Expression.App ?: return null
                 val [headExpr, args] = appExpr.unfoldApp()
                 val headConst = headExpr as? Expression.Const ?: return null
-                if (!headConst.isNatLiteralPrimitiveConst()) return null
+                val primitive = headConst.natPrimitive() ?: return null
 
                 fun natArg(index: Int): NatValue? = args.getOrNull(index)?.tryRecognizeNatLiteral(emptyMap(), localCtx)
 
-                val value = when (headConst.name.toStringDetailed()) {
-                    "Nat.succ" -> {
+                when (primitive) {
+                    NatPrimitive.Succ -> {
                         current = args.getOrNull(0) ?: return null
                         succOffset += NatValue.ONE
                         continue
                     }
 
-                    "Nat.add" -> {
-                        val lhs = natArg(0) ?: return null
-                        val rhs = natArg(1) ?: return null
-                        lhs + rhs
+                    NatPrimitive.Beq, NatPrimitive.Ble -> return null
+                    else -> {
+                        val first = natArg(0) ?: return null
+                        val second = natArg(1) ?: return null
+                        val reduced = primitive.reduce(first, second) { Expression.NatVal(it, Int.MIN_VALUE) }
+                                as? Expression.NatVal ?: return null
+                        return reduced.natVal + succOffset
                     }
-
-                    "Nat.sub" -> {
-                        val lhs = natArg(0) ?: return null
-                        val rhs = natArg(1) ?: return null
-                        if (lhs >= rhs) lhs - rhs else NatValue.ZERO
-                    }
-
-                    "Nat.mul" -> {
-                        val lhs = natArg(0) ?: return null
-                        val rhs = natArg(1) ?: return null
-                        lhs * rhs
-                    }
-
-                    "Nat.pow" -> {
-                        val base = natArg(0) ?: return null
-                        val exponent = natArg(1)?.toIntOrNull() ?: return null
-                        base.pow(exponent)
-                    }
-
-                    "Nat.div" -> {
-                        val lhs = natArg(0) ?: return null
-                        val rhs = natArg(1) ?: return null
-                        lhs.divLean(rhs)
-                    }
-
-                    "Nat.mod" -> {
-                        val lhs = natArg(0) ?: return null
-                        val rhs = natArg(1) ?: return null
-                        lhs.modLean(rhs)
-                    }
-
-                    else -> return null
                 }
-                return value + succOffset
             }
         }
     }
@@ -3491,65 +3467,25 @@ private fun Expression.tryRecognizeNatLiteralByWhnf(
 }
 
 context(env: Environment)
-private fun Expression.isNatLiteralPrimitiveConst(): Boolean = when (this) {
-    is Expression.Const -> this.levels.isEmpty() && when (this.name.toStringDetailed()) {
-        "Nat.succ", "Nat.add", "Nat.sub", "Nat.mul", "Nat.pow", "Nat.div", "Nat.mod",
-        "Nat.beq", "Nat.ble" -> true
-
-        else -> false
-    }
-
-    else -> false
-}
-
-context(env: Environment)
 private fun Expression.isNatLiteralPrimitive(): Boolean = when (this) {
-    is Expression.Const -> this.isNatLiteralPrimitiveConst()
-    is Expression.App -> this.unfoldApp().first.isNatLiteralPrimitiveConst()
+    is Expression.Const -> this.natPrimitive() != null
+    is Expression.App -> (this.unfoldApp().first as? Expression.Const)?.natPrimitive() != null
     else -> false
-}
-
-context(env: Environment)
-private fun Expression.App.natLiteralPrimitiveArity(): Int? {
-    val headConst = this.unfoldApp().first as? Expression.Const ?: return null
-    if (!headConst.isNatLiteralPrimitiveConst()) return null
-    return when (headConst.name.toStringDetailed()) {
-        "Nat.succ" -> 1
-        "Nat.add", "Nat.sub", "Nat.mul", "Nat.pow", "Nat.div", "Nat.mod", "Nat.beq",
-        "Nat.ble" -> 2
-
-        else -> null
-    }
 }
 
 context(env: Environment)
 private fun Expression.App.natLiteralPrimitiveArgsOrNull(): List<Expression>? {
     val spine = this.unfoldApp()
-    val arity = this.natLiteralPrimitiveArity() ?: return null
-    return spine.second.takeIf { it.size == arity }
+    val primitive = (spine.first as? Expression.Const)?.natPrimitive() ?: return null
+    return spine.second.takeIf { it.size == primitive.arity }
 }
 
 context(env: Environment)
 private fun Expression.App.reduceNatLiteralValues(values: List<NatValue>): Expression? {
     val head = this.unfoldApp().first as? Expression.Const ?: return null
-    return when (head.name.toStringDetailed()) {
-        "Nat.succ" -> env.addCustomExpr { Expression.NatVal(values[0] + NatValue.ONE, it) }
-        "Nat.add" -> env.addCustomExpr { Expression.NatVal(values[0] + values[1], it) }
-        "Nat.sub" -> env.addCustomExpr {
-            Expression.NatVal(if (values[0] >= values[1]) values[0] - values[1] else NatValue.ZERO, it)
-        }
-
-        "Nat.mul" -> env.addCustomExpr { Expression.NatVal(values[0] * values[1], it) }
-        "Nat.pow" -> {
-            val exponent = values[1].toIntOrNull() ?: return null
-            env.addCustomExpr { Expression.NatVal(values[0].pow(exponent), it) }
-        }
-
-        "Nat.div" -> env.addCustomExpr { Expression.NatVal(values[0].divLean(values[1]), it) }
-        "Nat.mod" -> env.addCustomExpr { Expression.NatVal(values[0].modLean(values[1]), it) }
-        "Nat.beq" -> boolCtor(values[0] == values[1])
-        "Nat.ble" -> boolCtor(values[0] <= values[1])
-        else -> null
+    val primitive = head.natPrimitive() ?: return null
+    return primitive.reduce(values[0], values.getOrNull(1)) { value ->
+        env.addCustomExpr { Expression.NatVal(value, it) }
     }
 }
 
@@ -3577,7 +3513,7 @@ private fun Expression.App.tryReduceNatLiteral(
 ): Expression? {
     val [headExpr, args] = this.unfoldApp()
     val headConst = headExpr as? Expression.Const ?: return null
-    if (!headConst.isNatLiteralPrimitiveConst()) return null
+    val primitive = headConst.natPrimitive() ?: return null
 
     fun natArg(index: Int): NatValue? {
         val argExpr = args.getOrNull(index) ?: return null
@@ -3590,61 +3526,10 @@ private fun Expression.App.tryReduceNatLiteral(
         }
     }
 
-    return when (headConst.name.toStringDetailed()) {
-        "Nat.succ" -> {
-            val argNat = natArg(0) ?: return null
-            env.addCustomExpr { Expression.NatVal(argNat + NatValue.ONE, it) }
-        }
-
-        "Nat.add" -> {
-            val lhs = natArg(0) ?: return null
-            val rhs = natArg(1) ?: return null
-            env.addCustomExpr { Expression.NatVal(lhs + rhs, it) }
-        }
-
-        "Nat.sub" -> {
-            val lhs = natArg(0) ?: return null
-            val rhs = natArg(1) ?: return null
-            env.addCustomExpr { Expression.NatVal(if (lhs >= rhs) lhs - rhs else NatValue.ZERO, it) }
-        }
-
-        "Nat.mul" -> {
-            val lhs = natArg(0) ?: return null
-            val rhs = natArg(1) ?: return null
-            env.addCustomExpr { Expression.NatVal(lhs * rhs, it) }
-        }
-
-        "Nat.pow" -> {
-            val base = natArg(0) ?: return null
-            val exponent = natArg(1)?.toIntOrNull() ?: return null
-            env.addCustomExpr { Expression.NatVal(base.pow(exponent), it) }
-        }
-
-        "Nat.div" -> {
-            val lhs = natArg(0) ?: return null
-            val rhs = natArg(1) ?: return null
-            env.addCustomExpr { Expression.NatVal(lhs.divLean(rhs), it) }
-        }
-
-        "Nat.mod" -> {
-            val lhs = natArg(0) ?: return null
-            val rhs = natArg(1) ?: return null
-            env.addCustomExpr { Expression.NatVal(lhs.modLean(rhs), it) }
-        }
-
-        "Nat.beq" -> {
-            val lhs = natArg(0) ?: return null
-            val rhs = natArg(1) ?: return null
-            boolCtor(lhs == rhs)
-        }
-
-        "Nat.ble" -> {
-            val lhs = natArg(0) ?: return null
-            val rhs = natArg(1) ?: return null
-            boolCtor(lhs <= rhs)
-        }
-
-        else -> null
+    val first = natArg(0) ?: return null
+    val second = if (primitive.arity == 2) natArg(1) ?: return null else null
+    return primitive.reduce(first, second) { value ->
+        env.addCustomExpr { Expression.NatVal(value, it) }
     }
 }
 
