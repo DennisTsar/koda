@@ -2692,7 +2692,7 @@ fun Expression.inferType(
     validate: Boolean = true,
 ): Expression {
     val expression = this.instantiateLevelParams(levelSubst)
-    check(expression.hasNoUnboundBvars(localCtx.size)) {
+    check(expression.isScopedBy(localCtx)) {
         "Inference received an expression outside its context: ${expression.toStringDetailed()}"
     }
     val frames = ArrayDeque<InferFrame>()
@@ -4053,31 +4053,6 @@ fun Expression.maxLooseBVarIndex(): Int {
         env.maxLooseBVarIndexCache[expr.ie] = value
     }
     return env.maxLooseBVarIndexCache[this.ie] ?: -1
-}
-
-context(env: Environment)
-private fun Expression.hasNoUnboundBvars(localCtxSize: Int, depth: Int = 0): Boolean {
-    if (this.maxLooseBVarIndex() < depth + localCtxSize) return true
-    return when (this) {
-        is Expression.Bvar -> this.bvar < depth + localCtxSize
-        is Expression.App -> this.fnExpr.hasNoUnboundBvars(localCtxSize, depth) &&
-                this.argExpr.hasNoUnboundBvars(localCtxSize, depth)
-
-        is Expression.ForallE -> this.typeExpr.hasNoUnboundBvars(localCtxSize, depth) &&
-                this.bodyExpr.hasNoUnboundBvars(localCtxSize, depth + 1)
-
-        is Expression.Lam -> this.typeExpr.hasNoUnboundBvars(localCtxSize, depth) &&
-                this.bodyExpr.hasNoUnboundBvars(localCtxSize, depth + 1)
-
-        is Expression.LetE ->
-            this.typeExpr.hasNoUnboundBvars(localCtxSize, depth) &&
-                    this.valueExpr.hasNoUnboundBvars(localCtxSize, depth) &&
-                    this.bodyExpr.hasNoUnboundBvars(localCtxSize, depth + 1)
-
-        is Expression.Mdata -> this.expr.hasNoUnboundBvars(localCtxSize, depth)
-        is Expression.Proj -> this.structExpr.hasNoUnboundBvars(localCtxSize, depth)
-        is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> true
-    }
 }
 
 context(env: Environment)
