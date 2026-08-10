@@ -151,11 +151,15 @@ private fun Level.normalizeLevel(): Level {
 
         is Level.Max -> {
             val rawArgs = mutableListOf<Level>()
-            base.forEachMaxArgument { rawArgs += it }
+            val pending = ArrayDeque<Level>()
+            pending.addLast(base)
+            pending.drainMaxArguments { rawArgs += it }
 
             val normalizedArgs = mutableListOf<Level>()
             rawArgs.forEach { argument ->
-                argument.normalizeLevel().forEachMaxArgument {
+                val normalizedPending = ArrayDeque<Level>()
+                normalizedPending.addLast(argument.normalizeLevel())
+                normalizedPending.drainMaxArguments {
                     normalizedArgs += it.addOffset(offset.offset)
                 }
             }
@@ -170,14 +174,12 @@ private fun Level.normalizeLevel(): Level {
 }
 
 context(env: Environment)
-private inline fun Level.forEachMaxArgument(action: (Level) -> Unit) {
-    val pending = ArrayDeque<Level>()
-    pending.addLast(this)
-    while (pending.isNotEmpty()) {
-        when (val current = pending.removeLast()) {
+private inline fun ArrayDeque<Level>.drainMaxArguments(action: (Level) -> Unit) {
+    while (isNotEmpty()) {
+        when (val current = removeLast()) {
             is Level.Max -> {
-                pending.addLast(current.right)
-                pending.addLast(current.left)
+                addLast(current.right)
+                addLast(current.left)
             }
 
             else -> action(current)
@@ -212,20 +214,11 @@ private fun makeNormalizedMax(arguments: List<Level>): Level {
     val greatestByBase = mutableMapOf<Int, LevelOffset>()
     val pending = ArrayDeque<Level>()
     arguments.asReversed().forEach(pending::addLast)
-    while (pending.isNotEmpty()) {
-        when (val argument = pending.removeLast()) {
-            is Level.Max -> {
-                pending.addLast(argument.right)
-                pending.addLast(argument.left)
-            }
-
-            else -> {
-                val offset = argument.toOffset()
-                val previous = greatestByBase[offset.base.il]
-                if (previous == null || previous.offset < offset.offset) {
-                    greatestByBase[offset.base.il] = offset
-                }
-            }
+    pending.drainMaxArguments { argument ->
+        val offset = argument.toOffset()
+        val previous = greatestByBase[offset.base.il]
+        if (previous == null || previous.offset < offset.offset) {
+            greatestByBase[offset.base.il] = offset
         }
     }
 
