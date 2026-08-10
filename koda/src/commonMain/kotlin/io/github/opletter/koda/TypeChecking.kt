@@ -327,7 +327,10 @@ context(env: Environment)
 private fun Expression.tryClosedBoolTrueDefEq(other: Expression, localCtx: List<Expression>): Boolean? {
     if (other.boolValue() != true || this.maxLooseBVarIndex() >= 0 && !env.eagerReduction) return null
     val start = env.clock.elapsedNow()
-    return this.closedBoolValue(localCtx).also { result ->
+    val value = ClosedClosure(this, localCtx.closedEvalEnv()).closedWhnf(trace = debugTargetDeclaration)
+        ?: return null
+    val result = if (value.arguments.isEmpty()) value.head.expression.boolValue() else null
+    return result.also {
 //        if (debugClosedEvaluation || debugTargetDeclaration) {
 //            println("closed Bool evaluation: expr=${this.ie} result=$result elapsed=${env.clock.elapsedNow() - start}")
 //        }
@@ -447,13 +450,6 @@ private sealed interface ClosedEvalContinuation {
         val values: List<NatValue>,
         val operandIndex: Int,
     ) : ClosedEvalContinuation
-}
-
-context(env: Environment)
-private fun Expression.closedBoolValue(localCtx: List<Expression> = emptyList()): Boolean? {
-    val value = ClosedClosure(this, localCtx.closedEvalEnv()).closedWhnf(trace = debugTargetDeclaration) ?: return null
-    if (value.arguments.isNotEmpty()) return null
-    return value.head.expression.boolValue()
 }
 
 context(env: Environment)
