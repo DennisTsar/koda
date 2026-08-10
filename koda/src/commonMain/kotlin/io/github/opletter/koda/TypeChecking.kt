@@ -660,7 +660,7 @@ private fun ClosedClosure.closedDefEq(
         )
     }
 
-    fun deltaStep(value: ClosedValue): Pair<LazyDeltaHeadInfo, ClosedClosure>? {
+    fun deltaStep(value: ClosedValue): Pair<LazyDeltaStep, ClosedClosure>? {
         val head = value.head.expression as? Expression.Const ?: return null
         val step = head.lazyDeltaStepInfo() ?: return null
         val unfolded = head.instantiatedValue() ?: return null
@@ -2179,12 +2179,7 @@ private fun Expression.tryLazyDeltaStep(): LazyDeltaStep? {
     if (headExpr is Expression.Proj) return null
     val projectionInfo = (headExpr as? Expression.Const)?.projectionReductionInfo()
     if (projectionInfo != null && spine.second.size < projectionInfo.arity) return null
-    val headStep = headExpr.lazyDeltaStepInfo() ?: return null
-    return LazyDeltaStep(
-        expression = this,
-        kind = headStep.kind,
-        regularHeight = headStep.regularHeight,
-    )
+    return headExpr.lazyDeltaStepInfo(this)
 }
 
 context(env: Environment)
@@ -2265,22 +2260,17 @@ private fun Expression.applyBetaArgs(args: List<Expression>): Expression {
     }
 }
 
-private data class LazyDeltaHeadInfo(
-    val kind: LazyDeltaStepKind,
-    val regularHeight: Int = 0,
-)
-
 context(env: Environment)
-private fun Expression.lazyDeltaStepInfo(): LazyDeltaHeadInfo? = when (this) {
+private fun Expression.lazyDeltaStepInfo(expression: Expression = this): LazyDeltaStep? = when (this) {
     is Expression.Const -> {
         when (val declaration = this.decl) {
             is Declaration.Def -> when (val hints = declaration.hints) {
-                Declaration.Def.Hints.Opaque -> LazyDeltaHeadInfo(LazyDeltaStepKind.Opaque)
-                Declaration.Def.Hints.Abbrev -> LazyDeltaHeadInfo(LazyDeltaStepKind.Abbrev)
-                is Declaration.Def.Hints.Regular -> LazyDeltaHeadInfo(LazyDeltaStepKind.Regular, hints.value)
+                Declaration.Def.Hints.Opaque -> LazyDeltaStep(expression, LazyDeltaStepKind.Opaque)
+                Declaration.Def.Hints.Abbrev -> LazyDeltaStep(expression, LazyDeltaStepKind.Abbrev)
+                is Declaration.Def.Hints.Regular -> LazyDeltaStep(expression, LazyDeltaStepKind.Regular, hints.value)
             }
 
-            is Declaration.Opaque, is Declaration.Thm -> LazyDeltaHeadInfo(LazyDeltaStepKind.Opaque)
+            is Declaration.Opaque, is Declaration.Thm -> LazyDeltaStep(expression, LazyDeltaStepKind.Opaque)
             else -> null
         }
     }
