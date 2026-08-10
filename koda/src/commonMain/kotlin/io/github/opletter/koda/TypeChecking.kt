@@ -4,6 +4,9 @@ private var debugClosedEvaluation = false
 private var debugTargetDeclaration = false
 private const val debugTargetIndex = -1//21_000_000///51_500_000
 
+fun NamedDecl.hasDistinctLevelParams(): Boolean =
+    levelParamIndices.toSet().size == levelParamIndices.size
+
 internal data class StructureEtaRecursorInfo(
     val inductiveDeclIndex: Int,
     val inductiveDecl: Inductive.InductiveVal,
@@ -91,7 +94,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 data.registerInto(env)
                 // (2): "has no duplicate universe parameters"
                 // not the most efficient check but probably doesn't matter?
-                check(data.levelParams.toSet().size == data.levelParams.size) { "Duplicate universe parameters in $data" }
+                check(data.hasDistinctLevelParams()) { "Duplicate universe parameters in $data" }
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
 //                println("found type: ${data.typeExpr.toStringDetailed()}")
                 val debugStart = env.clock.elapsedNow()

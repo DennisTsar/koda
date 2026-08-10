@@ -27,7 +27,7 @@ fun checkInductive(data: Inductive) {
 
     inductives.forEach { inductive ->
         // (1): no duplicate universe parameters
-        check(inductive.levelParams.toSet().size == inductive.levelParams.size) {
+        check(inductive.hasDistinctLevelParams()) {
             "Duplicate universe parameters in $inductive"
         }
         check(inductive.numParams == blockNumParams) {
@@ -177,7 +177,7 @@ private fun checkConstructor(
     check(constructor.numParams == inductive.numParams) {
         "Constructor ${constructor.name.toStringDetailed()} has wrong numParams: expected ${inductive.numParams}, got ${constructor.numParams}"
     }
-    check(constructor.levelParams.toSet().size == constructor.levelParams.size) {
+    check(constructor.hasDistinctLevelParams()) {
         "Duplicate universe parameters in constructor $constructor"
     }
     check(constructor.levelParams.isEqual(inductive.levelParams)) {
