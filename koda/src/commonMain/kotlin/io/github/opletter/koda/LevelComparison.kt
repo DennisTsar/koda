@@ -2,8 +2,6 @@ package io.github.opletter.koda
 
 private data class LevelOffset(val base: Level, val offset: Int)
 
-private data class LevelComparisonKey(val greater: Int, val lesser: Int)
-
 private inline infix fun Boolean?.andMaybe(other: () -> Boolean?): Boolean? = when (this) {
     false -> false
     true -> other()
@@ -64,10 +62,10 @@ fun Level.isLessOrEqual(other: Level): Boolean {
     this.trySimpleIsLessOrEqual(other)?.let { return it }
     val lesser = this.normalizeLevel()
     val greater = other.normalizeLevel()
-    val cache = mutableMapOf<LevelComparisonKey, Boolean>()
+    val cache = mutableMapOf<Long, Boolean>()
 
     fun isGeq(left: Level, right: Level): Boolean {
-        val key = LevelComparisonKey(left.il, right.il)
+        val key = (left.il.toLong() shl 32) xor (right.il.toLong() and 0xffffffffL)
         cache[key]?.let { return it }
 
         val result = when {
