@@ -143,43 +143,20 @@ private fun Level.normalizeLevel(): Level {
     val normalized = when (val base = offset.base) {
         Level.Zero -> Level.Zero.addOffset(offset.offset)
         is Level.Param -> env.addCustomParamLevel(base.nameIndex).addOffset(offset.offset)
-        is Level.Imax -> {
-            val normalizedImax = makeLevelImax(
+        is Level.Imax ->
+            makeLevelImax(
                 base.left.normalizeLevel(),
                 base.right.normalizeLevel(),
-            )
-            normalizedImax.addOffset(offset.offset)
-        }
+            ).addOffset(offset.offset)
 
         is Level.Max -> {
             val rawArgs = mutableListOf<Level>()
-            val pending = ArrayDeque<Level>()
-            pending.addLast(base)
-            while (pending.isNotEmpty()) {
-                when (val current = pending.removeLast()) {
-                    is Level.Max -> {
-                        pending.addLast(current.right)
-                        pending.addLast(current.left)
-                    }
-
-                    else -> rawArgs += current
-                }
-            }
+            base.forEachMaxArgument { rawArgs += it }
 
             val normalizedArgs = mutableListOf<Level>()
             rawArgs.forEach { argument ->
-                val normalizedArgument = argument.normalizeLevel()
-                val normalizedPending = ArrayDeque<Level>()
-                normalizedPending.addLast(normalizedArgument)
-                while (normalizedPending.isNotEmpty()) {
-                    when (val current = normalizedPending.removeLast()) {
-                        is Level.Max -> {
-                            normalizedPending.addLast(current.right)
-                            normalizedPending.addLast(current.left)
-                        }
-
-                        else -> normalizedArgs += current.addOffset(offset.offset)
-                    }
+                argument.normalizeLevel().forEachMaxArgument {
+                    normalizedArgs += it.addOffset(offset.offset)
                 }
             }
             makeNormalizedMax(normalizedArgs)
@@ -190,6 +167,22 @@ private fun Level.normalizeLevel(): Level {
 
     env.levelNormalizationCache[this.il] = normalized
     return normalized
+}
+
+context(env: Environment)
+private inline fun Level.forEachMaxArgument(action: (Level) -> Unit) {
+    val pending = ArrayDeque<Level>()
+    pending.addLast(this)
+    while (pending.isNotEmpty()) {
+        when (val current = pending.removeLast()) {
+            is Level.Max -> {
+                pending.addLast(current.right)
+                pending.addLast(current.left)
+            }
+
+            else -> action(current)
+        }
+    }
 }
 
 context(env: Environment)
