@@ -3335,7 +3335,19 @@ private fun Expression.tryRecognizeNatLiteral(
         return env.natLiteralCacheNoLevelSubst[cacheKey]
     }
 
-    val result = this.tryRecognizeNatLiteralByWhnf(localCtx)
+    val normalizedExpr = when (this) {
+        is Expression.App -> {
+            val headConst = this.unfoldApp().first as? Expression.Const
+            if (headConst?.projectionReductionInfo() != null) this.whnf(localCtx = localCtx) else this
+        }
+
+        is Expression.Const,
+        is Expression.LetE,
+        is Expression.Mdata -> this.whnf(localCtx = localCtx)
+
+        else -> this
+    }
+    val result = normalizedExpr.tryRecognizeNatLiteralCore(localCtx)
     env.natLiteralCacheNoLevelSubst[cacheKey] = result
     return result
 }
@@ -3378,25 +3390,6 @@ private fun Expression.tryRecognizeNatLiteralCore(localCtx: List<Expression>): N
             }
         }
     }
-}
-
-context(env: Environment)
-private fun Expression.tryRecognizeNatLiteralByWhnf(
-    localCtx: List<Expression>,
-): NatValue? {
-    val normalizedExpr = when (this) {
-        is Expression.App -> {
-            val headConst = this.unfoldApp().first as? Expression.Const
-            if (headConst?.projectionReductionInfo() != null) this.whnf(localCtx = localCtx) else this
-        }
-
-        is Expression.Const,
-        is Expression.LetE,
-        is Expression.Mdata -> this.whnf(localCtx = localCtx)
-
-        else -> this
-    }
-    return normalizedExpr.tryRecognizeNatLiteralCore(localCtx)
 }
 
 context(env: Environment)
