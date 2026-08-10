@@ -259,22 +259,22 @@ private fun walkForalls(
 }
 
 context(env: Environment)
-private fun collectForallBinders(
+private fun collectForallContext(
     expr: Expression,
     expectedBinders: Int,
     owner: String,
     reduceExpr: Boolean = false,
-): Pair<List<Expression.ForallE>, Expression> {
-    val binders = mutableListOf<Expression.ForallE>()
+): Pair<List<Expression>, Expression> {
+    var localCtx: List<Expression> = emptyList()
     var currentExpr = expr
     repeat(expectedBinders) { binderIndex ->
         val current = if (reduceExpr) currentExpr.whnf() else currentExpr
         val forall = current as? Expression.ForallE
             ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
-        binders += forall
+        localCtx = env.consLocalCtx(forall.typeExpr, localCtx)
         currentExpr = forall.bodyExpr
     }
-    return binders to if (reduceExpr) currentExpr.whnf() else currentExpr
+    return localCtx to if (reduceExpr) currentExpr.whnf() else currentExpr
 }
 
 context(env: Environment)
@@ -339,22 +339,17 @@ private fun checkRecursorRuleType(
     val prefixBinderCount = recursor.numParams + recursor.numMotives + recursor.numMinors
     val expectedRuleBinderCount = prefixBinderCount + constructor.numFields
     val inferredRuleType = rule.rhsExpr.inferType()
-    val ruleTypeInfo = collectForallBinders(
+    val ruleTypeInfo = collectForallContext(
         expr = inferredRuleType,
         expectedBinders = expectedRuleBinderCount,
         owner = "Recursor rule for ${constructor.name}",
     )
-    val ruleBinders = ruleTypeInfo.first
+    val ruleLocalCtx = ruleTypeInfo.first
     val ruleResultType = ruleTypeInfo.second
-
-    val ruleLocalCtx =
-        ruleBinders.fold(emptyList<Expression>()) { localCtx: List<Expression>, binder: Expression.ForallE ->
-            env.consLocalCtx(binder.typeExpr, localCtx)
-        }
 
     fun binderExpr(outerIndex: Int): Expression {
         return env.addCustomExpr {
-            Expression.Bvar(ruleBinders.lastIndex - outerIndex, it)
+            Expression.Bvar(ruleLocalCtx.lastIndex - outerIndex, it)
         }
     }
 
