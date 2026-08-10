@@ -43,17 +43,12 @@ fun checkInductive(data: Inductive) {
 
     val inductiveInfos = inductives.associateWith { analyzeInductiveType(it) }
     val firstInductive = inductives.first()
-    val firstInfo = inductiveInfos[firstInductive]
-        ?: error("Missing type info for ${firstInductive.name.toStringDetailed()}")
+    val firstInfo = inductiveInfos.getValue(firstInductive)
     inductives.drop(1).forEach { inductive ->
-        val info = inductiveInfos[inductive] ?: error("Missing type info for ${inductive.name.toStringDetailed()}")
-        checkSharedParams(firstInductive, firstInfo, inductive, info)
+        checkSharedParams(firstInductive, firstInfo, inductive, inductiveInfos.getValue(inductive))
     }
-    val fieldSortLevels: List<Level> =
-        inductives.map { inductiveInfos.getValue(it).sortLevel } + firstInfo.paramSortLevels
-    val maxFieldSortLevel = fieldSortLevels.reduce { acc: Level, level: Level ->
-        makeLevelMax(acc, level)
-    }
+    val maxFieldSortLevel = (inductives.map { inductiveInfos.getValue(it).sortLevel } + firstInfo.paramSortLevels)
+        .reduce { acc, level -> makeLevelMax(acc, level) }
 
     data.registerInto(env)
     inductives.forEach { inductive ->
@@ -65,8 +60,7 @@ fun checkInductive(data: Inductive) {
         "Mutual inductive block has constructor for an unrelated type: ${ctorsByInductive.keys.map { it.toStringDetailed() }}"
     }
     inductives.forEach { inductive ->
-        val inductiveInfo = inductiveInfos[inductive]
-            ?: error("Missing type info for ${inductive.name.toStringDetailed()}")
+        val inductiveInfo = inductiveInfos.getValue(inductive)
         val constructors = (ctorsByInductive[inductive.name] ?: emptyList()).sortedBy { it.cidx }
         check(constructors.size == inductive.ctors.size) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has wrong constructor count: expected ${inductive.ctors.size}, got ${constructors.size}"
