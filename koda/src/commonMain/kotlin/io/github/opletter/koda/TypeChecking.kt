@@ -672,6 +672,9 @@ private fun ClosedClosure.closedDefEq(
         return step to closure
     }
 
+    fun unfoldDeltaStep(step: Pair<LazyDeltaStep, ClosedClosure>): ClosedValue? =
+        step.second.closedWhnf(instantiatedRecursorRules, trace, unfoldDefinitionsAtRoot = false)
+
     fun headsCanBeCompared(left: ClosedValue, right: ClosedValue): Boolean {
         val leftHead = left.head.expression
         val rightHead = right.head.expression
@@ -701,49 +704,15 @@ private fun ClosedClosure.closedDefEq(
         while (!headsCanBeCompared(left, right)) {
             val leftStep = deltaStep(left)
             val rightStep = deltaStep(right)
-            if (leftStep == null && rightStep == null) break
-
-            val unfoldLeft: Boolean
-            val unfoldRight: Boolean
-            when {
-                leftStep == null -> {
-                    unfoldLeft = false
-                    unfoldRight = true
+            when (chooseLazyDeltaSide(leftStep?.first, rightStep?.first)) {
+                LazyDeltaChoice.Left -> left = unfoldDeltaStep(leftStep!!) ?: return null
+                LazyDeltaChoice.Right -> right = unfoldDeltaStep(rightStep!!) ?: return null
+                LazyDeltaChoice.Both -> {
+                    left = unfoldDeltaStep(leftStep!!) ?: return null
+                    right = unfoldDeltaStep(rightStep!!) ?: return null
                 }
 
-                rightStep == null -> {
-                    unfoldLeft = true
-                    unfoldRight = false
-                }
-
-                leftStep.first.kind.priority != rightStep.first.kind.priority -> {
-                    unfoldLeft = leftStep.first.kind.priority > rightStep.first.kind.priority
-                    unfoldRight = !unfoldLeft
-                }
-
-                leftStep.first.regularHeight != rightStep.first.regularHeight -> {
-                    unfoldLeft = leftStep.first.regularHeight > rightStep.first.regularHeight
-                    unfoldRight = !unfoldLeft
-                }
-
-                else -> {
-                    unfoldLeft = true
-                    unfoldRight = true
-                }
-            }
-            if (unfoldLeft) {
-                left = leftStep!!.second.closedWhnf(
-                    instantiatedRecursorRules,
-                    trace,
-                    unfoldDefinitionsAtRoot = false,
-                ) ?: return null
-            }
-            if (unfoldRight) {
-                right = rightStep!!.second.closedWhnf(
-                    instantiatedRecursorRules,
-                    trace,
-                    unfoldDefinitionsAtRoot = false,
-                ) ?: return null
+                null -> break
             }
         }
         return left to right
