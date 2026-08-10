@@ -3046,6 +3046,7 @@ private sealed interface WhnfFrame {
     data class ReduceQuot(val app: Expression.App, val mode: WhnfMode) : WhnfFrame
     data class ReduceNatPrimitive(
         val app: Expression.App,
+        val primitive: NatPrimitive,
         val args: List<Expression>,
         val values: List<NatValue>,
         val nextIndex: Int,
@@ -3114,11 +3115,17 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
         when (val frame = frames.removeLast()) {
             is WhnfFrame.FinishFull -> {
                 val primitiveApp = result as? Expression.App
-                val primitiveArgs = primitiveApp?.natLiteralPrimitiveArgsOrNull()
-                if (primitiveApp != null && primitiveArgs != null) {
+                val primitiveSpine = primitiveApp?.unfoldApp()
+                val primitive = when (result) {
+                    is Expression.Const -> result.natPrimitive()
+                    else -> (primitiveSpine?.first as? Expression.Const)?.natPrimitive()
+                }
+                val primitiveArgs = primitiveSpine?.second
+                if (primitiveApp != null && primitive != null && primitiveArgs?.size == primitive.arity) {
                     frames.addLast(
                         WhnfFrame.ReduceNatPrimitive(
                             app = primitiveApp,
+                            primitive = primitive,
                             args = primitiveArgs,
                             values = emptyList(),
                             nextIndex = 0,
@@ -3129,7 +3136,7 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                     mode = WhnfMode.Full
                     result = null
                 } else {
-                    val unfolded = if (result.isNatLiteralPrimitive()) null else result.unfoldValueOnce()
+                    val unfolded = if (primitive != null) null else result.unfoldValueOnce()
                     if (unfolded == null) frame.original.cacheWhnf(localCtx, result)
                     else {
                         frames.addLast(frame)
@@ -3152,7 +3159,9 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                         result = null
                         continue
                     }
-                    val reduced = frame.app.reduceNatLiteralValues(values)
+                    val reduced = frame.primitive.reduce(values[0], values.getOrNull(1)) { value ->
+                        env.addCustomExpr { Expression.NatVal(value, it) }
+                    }
                     if (reduced != null) {
                         result = reduced
                         frame.finishFrame.original.cacheWhnf(localCtx, result)
@@ -3401,30 +3410,6 @@ private fun Expression.tryRecognizeNatLiteralByWhnf(
     }
     return normalizedExpr.tryRecognizeNatLiteralCore(localCtx)
 }
-
-context(env: Environment)
-private fun Expression.isNatLiteralPrimitive(): Boolean = when (this) {
-    is Expression.Const -> this.natPrimitive() != null
-    is Expression.App -> (this.unfoldApp().first as? Expression.Const)?.natPrimitive() != null
-    else -> false
-}
-
-context(env: Environment)
-private fun Expression.App.natLiteralPrimitiveArgsOrNull(): List<Expression>? {
-    val spine = this.unfoldApp()
-    val primitive = (spine.first as? Expression.Const)?.natPrimitive() ?: return null
-    return spine.second.takeIf { it.size == primitive.arity }
-}
-
-context(env: Environment)
-private fun Expression.App.reduceNatLiteralValues(values: List<NatValue>): Expression? {
-    val head = this.unfoldApp().first as? Expression.Const ?: return null
-    val primitive = head.natPrimitive() ?: return null
-    return primitive.reduce(values[0], values.getOrNull(1)) { value ->
-        env.addCustomExpr { Expression.NatVal(value, it) }
-    }
-}
-
 
 context(env: Environment)
 private fun boolCtor(value: Boolean): Expression {
