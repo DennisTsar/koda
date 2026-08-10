@@ -282,7 +282,6 @@ fun Expression.isDefEq(
     if (
         leftProjection != null && rightProjection != null &&
         leftProjection.projIndex == rightProjection.projIndex &&
-        !leftProjection.structuresHaveSameConstantHead(rightProjection, localCtxLeft, localCtxRight) &&
         leftProjection.lazyProjectionDefEq(rightProjection, localCtxLeft, localCtxRight)
     ) {
         return finish(true)
@@ -1556,21 +1555,6 @@ private inline fun NatPrimitive.reduce(
 }
 
 context(env: Environment)
-private fun Expression.Proj.structuresHaveSameConstantHead(
-    other: Expression.Proj,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
-): Boolean {
-    val leftHead =
-        this.structExpr.whnfCore(localCtxLeft, cheapProjection = true).asAppSpine().first as? Expression.Const
-            ?: return false
-    val rightHead =
-        other.structExpr.whnfCore(localCtxRight, cheapProjection = true).asAppSpine().first as? Expression.Const
-            ?: return false
-    return leftHead.hasSameNameAndLevels(rightHead)
-}
-
-context(env: Environment)
 private fun Expression.Proj.lazyProjectionDefEq(
     other: Expression.Proj,
     localCtxLeft: List<Expression>,
@@ -1578,6 +1562,9 @@ private fun Expression.Proj.lazyProjectionDefEq(
 ): Boolean {
     var left = this.structExpr.whnfCore(localCtxLeft, cheapProjection = true)
     var right = other.structExpr.whnfCore(localCtxRight, cheapProjection = true)
+    val leftHead = left.asAppSpine().first as? Expression.Const
+    val rightHead = right.asAppSpine().first as? Expression.Const
+    if (leftHead != null && rightHead != null && leftHead.hasSameNameAndLevels(rightHead)) return false
     while (true) {
         val quick = left.quickIsDefEq(right, localCtxLeft, localCtxRight)
         if (quick == true) return true
