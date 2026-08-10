@@ -212,11 +212,11 @@ private fun checkConstructor(
     val [resultHead, resultArgs] = ctorTailExpr.unfoldApp()
     val resultConst = resultHead as? Expression.Const
         ?: error("Constructor ${constructor.name} must end in application of inductive ${inductive.name}, got ${ctorTailExpr.toStringDetailed()}")
-
-    inductive.levelParams.indices.forEach { i ->
-        check(resultConst.levels[i].isEqual(inductive.levelParams[i])) {
-            "Constructor ${constructor.name} result has wrong universe arg #$i: expected ${inductive.levelParams[i].toStringDetailed()}, got ${resultConst.levels[i].toStringDetailed()}"
-        }
+    check(
+        resultConst.name == inductive.name && resultConst.levels.isEqual(inductive.levelParams) &&
+                resultArgs.size == inductive.numParams + inductive.numIndices
+    ) {
+        "Constructor ${constructor.name} must return ${inductive.name.toStringDetailed()} with its declared universe parameters and arity"
     }
 
     repeat(inductive.numParams) { paramIndex ->
