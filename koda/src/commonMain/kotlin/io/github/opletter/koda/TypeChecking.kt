@@ -447,7 +447,6 @@ private sealed interface ClosedEvalContinuation {
         val operands: List<ClosedClosure>,
         val extraArgs: List<ClosedClosure>,
         val values: List<NatValue>,
-        val operandIndex: Int,
     ) : ClosedEvalContinuation
 }
 
@@ -1312,7 +1311,6 @@ private fun ClosedClosure.closedWhnf(
                         operands = operands,
                         extraArgs = arguments.drop(primitive.arity),
                         values = emptyList(),
-                        operandIndex = 0,
                     )
                     setCurrent(operands.first())
                     setArgsInOrder(argumentsOf(operands.first()))
@@ -1453,9 +1451,9 @@ private fun ClosedClosure.closedWhnf(
                 val value = terminalNatValue()
                 if (value != null) {
                     val values = continuation.values + value
-                    val nextIndex = continuation.operandIndex + 1
+                    val nextIndex = values.size
                     if (nextIndex < continuation.operands.size) {
-                        continuations += continuation.copy(values = values, operandIndex = nextIndex)
+                        continuations += continuation.copy(values = values)
                         val operand = continuation.operands[nextIndex]
                         setCurrent(operand)
                         setArgsInOrder(argumentsOf(operand))
@@ -2991,7 +2989,6 @@ private sealed interface WhnfFrame {
         val primitive: NatPrimitive,
         val args: List<Expression>,
         val values: List<NatValue>,
-        val nextIndex: Int,
         val finishFrame: FinishFull,
     ) : WhnfFrame
 }
@@ -3070,7 +3067,6 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                             primitive = primitive,
                             args = primitiveArgs,
                             values = emptyList(),
-                            nextIndex = 0,
                             finishFrame = frame,
                         )
                     )
@@ -3093,9 +3089,9 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                 val value = result.asNatLiteralValue()
                 if (value != null) {
                     val values = frame.values + value
-                    val nextIndex = frame.nextIndex + 1
+                    val nextIndex = values.size
                     if (nextIndex < frame.args.size) {
-                        frames.addLast(frame.copy(values = values, nextIndex = nextIndex))
+                        frames.addLast(frame.copy(values = values))
                         current = frame.args[nextIndex]
                         mode = WhnfMode.Full
                         result = null
