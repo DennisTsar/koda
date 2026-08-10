@@ -4339,32 +4339,25 @@ fun Level.instantiateLevelParams(subst: Map<Int, Level>): Level {
         is Level.Param -> subst[this.il] ?: this
 
         is Level.Succ -> {
-            val newLevel = this.level.instantiateLevelParams(subst)
-            if (newLevel == this.level) {
-                this
-            } else {
-                env.addCustomSuccLevel(newLevel.il)
-            }
+            val level = this.level
+            val newLevel = level.instantiateLevelParams(subst)
+            if (newLevel == level) this else env.addCustomSuccLevel(newLevel.il)
         }
 
         is Level.Max -> {
-            val newLeft = this.left.instantiateLevelParams(subst)
-            val newRight = this.right.instantiateLevelParams(subst)
-            if (newLeft == this.left && newRight == this.right) {
-                this
-            } else {
-                makeLevelMax(newLeft, newRight)
-            }
+            val left = this.left
+            val right = this.right
+            val newLeft = left.instantiateLevelParams(subst)
+            val newRight = right.instantiateLevelParams(subst)
+            if (newLeft == left && newRight == right) this else makeLevelMax(newLeft, newRight)
         }
 
         is Level.Imax -> {
-            val newLeft = this.left.instantiateLevelParams(subst)
-            val newRight = this.right.instantiateLevelParams(subst)
-            if (newLeft == this.left && newRight == this.right) {
-                this
-            } else {
-                makeLevelImax(newLeft, newRight)
-            }
+            val left = this.left
+            val right = this.right
+            val newLeft = left.instantiateLevelParams(subst)
+            val newRight = right.instantiateLevelParams(subst)
+            if (newLeft == left && newRight == right) this else makeLevelImax(newLeft, newRight)
         }
     }
 }
