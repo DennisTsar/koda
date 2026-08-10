@@ -3206,8 +3206,18 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                     mode = frame.mode
                     result = null
                 } else {
-                    val recursorMajor = frame.app.recursorMajorOrNull()
-                    val quotMajor = if (recursorMajor == null) frame.app.quotMajorOrNull() else null
+                    val headDecl = (frame.originalHead as? Expression.Const)?.decl
+                    val recursorMajor = (headDecl as? Inductive.RecursorVal)?.let { recursor ->
+                        val majorIndex = recursor.numParams + recursor.numMotives + recursor.numMinors + recursor.numIndices
+                        frame.args.getOrNull(majorIndex)
+                    }
+                    val quotMajor = if (
+                        recursorMajor == null && headDecl is Declaration.Quot &&
+                        (headDecl.kind == Declaration.Quot.Kind.Lift || headDecl.kind == Declaration.Quot.Kind.Ind)
+                    ) {
+                        val arity = headDecl.typeExpr.forallBinderCount()
+                        if (frame.args.size < arity) null else frame.args[arity - 1]
+                    } else null
                     when {
                         recursorMajor != null -> {
                             frames.addLast(WhnfFrame.ReduceRecursor(frame.app, frame.mode))
@@ -3285,24 +3295,6 @@ private fun Expression.Proj.reduceProjectionCore(normalizedStruct: Expression): 
     if (constructor.inductName != this.typeNameExpr || this.projIndex !in 0 until constructor.numFields) return null
     val fieldIndex = constructor.numParams + this.projIndex
     return spine.second.getOrNull(fieldIndex)
-}
-
-context(env: Environment)
-private fun Expression.App.recursorMajorOrNull(): Expression? {
-    val spine = this.unfoldApp()
-    val recursor = (spine.first as? Expression.Const)?.decl as? Inductive.RecursorVal ?: return null
-    val majorIndex = recursor.numParams + recursor.numMotives + recursor.numMinors + recursor.numIndices
-    return spine.second.getOrNull(majorIndex)
-}
-
-context(env: Environment)
-private fun Expression.App.quotMajorOrNull(): Expression? {
-    val spine = this.unfoldApp()
-    val quot = (spine.first as? Expression.Const)?.decl as? Declaration.Quot ?: return null
-    if (quot.kind != Declaration.Quot.Kind.Lift && quot.kind != Declaration.Quot.Kind.Ind) return null
-    val arity = quot.typeExpr.forallBinderCount()
-    if (spine.second.size < arity) return null
-    return spine.second[arity - 1]
 }
 
 context(env: Environment)
