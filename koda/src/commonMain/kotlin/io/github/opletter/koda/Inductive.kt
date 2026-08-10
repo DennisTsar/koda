@@ -411,50 +411,29 @@ fun Expression.unfoldApp(): Pair<Expression, List<Expression>> {
 }
 
 context(env: Environment)
-private fun Expression.containsConst(targetNames: Set<Name>): Boolean {
-    return when (this) {
-        is Expression.App -> this.fnExpr.containsConst(targetNames) || this.argExpr.containsConst(targetNames)
-        is Expression.Const -> this.name in targetNames
-        is Expression.ForallE -> this.typeExpr.containsConst(targetNames) || this.bodyExpr.containsConst(targetNames)
-        is Expression.Lam -> this.typeExpr.containsConst(targetNames) || this.bodyExpr.containsConst(targetNames)
-        is Expression.LetE ->
-            this.typeExpr.containsConst(targetNames) ||
-                    this.valueExpr.containsConst(targetNames) ||
-                    this.bodyExpr.containsConst(targetNames)
-
-        is Expression.Mdata -> this.expr.containsConst(targetNames)
-        is Expression.Proj -> this.structExpr.containsConst(targetNames)
-        is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
-    }
-}
-
-context(env: Environment)
-private fun Expression.containsConst(targetName: Name): Boolean = this.containsConst(setOf(targetName))
-
-context(env: Environment)
-private fun Expression.hasNegativeOccurrenceOf(targetNames: Set<Name>, polarity: Int = 1): Boolean {
+private fun Expression.containsConst(targetNames: Set<Name>, polarity: Int = 0): Boolean {
     return when (this) {
         is Expression.App ->
-            this.fnExpr.hasNegativeOccurrenceOf(targetNames, polarity) ||
-                    this.argExpr.hasNegativeOccurrenceOf(targetNames, polarity)
+            this.fnExpr.containsConst(targetNames, polarity) || this.argExpr.containsConst(targetNames, polarity)
 
-        is Expression.Const -> this.name in targetNames && polarity < 0
-
+        is Expression.Const -> this.name in targetNames && polarity <= 0
         is Expression.ForallE ->
-            this.typeExpr.hasNegativeOccurrenceOf(targetNames, -polarity) ||
-                    this.bodyExpr.hasNegativeOccurrenceOf(targetNames, polarity)
+            this.typeExpr.containsConst(targetNames, -polarity) || this.bodyExpr.containsConst(targetNames, polarity)
 
         is Expression.Lam ->
-            this.typeExpr.hasNegativeOccurrenceOf(targetNames, -polarity) ||
-                    this.bodyExpr.hasNegativeOccurrenceOf(targetNames, polarity)
+            this.typeExpr.containsConst(targetNames, -polarity) || this.bodyExpr.containsConst(targetNames, polarity)
 
         is Expression.LetE ->
-            this.typeExpr.hasNegativeOccurrenceOf(targetNames, polarity) ||
-                    this.valueExpr.hasNegativeOccurrenceOf(targetNames, polarity) ||
-                    this.bodyExpr.hasNegativeOccurrenceOf(targetNames, polarity)
+            this.typeExpr.containsConst(targetNames, polarity) ||
+                    this.valueExpr.containsConst(targetNames, polarity) ||
+                    this.bodyExpr.containsConst(targetNames, polarity)
 
-        is Expression.Mdata -> this.expr.hasNegativeOccurrenceOf(targetNames, polarity)
-        is Expression.Proj -> this.structExpr.hasNegativeOccurrenceOf(targetNames, polarity)
+        is Expression.Mdata -> this.expr.containsConst(targetNames, polarity)
+        is Expression.Proj -> this.structExpr.containsConst(targetNames, polarity)
         is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
     }
 }
+
+context(env: Environment)
+private fun Expression.hasNegativeOccurrenceOf(targetNames: Set<Name>): Boolean =
+    this.containsConst(targetNames, polarity = 1)
