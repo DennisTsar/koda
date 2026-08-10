@@ -297,17 +297,12 @@ fun Inductive.RecursorVal.getMajorBinder(): Expression.ForallE {
 }
 
 context(env: Environment)
-fun Inductive.RecursorVal.getMajorInductName(): Name {
-    val majorType = this.getMajorBinder().typeExpr
-    val [majorTypeHead, _] = majorType.unfoldApp()
-    val majorTypeConst = majorTypeHead as? Expression.Const
-        ?: error("Recursor ${this.name} major premise type must be const-headed, got ${majorType.toStringDetailed()}")
-    return majorTypeConst.name
-}
-
-context(env: Environment)
 private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
-    val majorInductName = recursor.getMajorInductName()
+    val majorType = recursor.getMajorBinder().typeExpr
+    val [majorTypeHead, majorTypeArgs] = majorType.unfoldApp()
+    val majorTypeConst = majorTypeHead as? Expression.Const
+        ?: error("Recursor ${recursor.name} major premise type must be const-headed, got ${majorType.toStringDetailed()}")
+    val majorInductName = majorTypeConst.name
     val majorInductNameIndex = env.nameIndices[majorInductName]
         ?: error("Major inductive name index for ${majorInductName.toStringDetailed()} not found")
     val majorInductive = env.declarations[majorInductNameIndex] as? Inductive.InductiveVal
@@ -329,7 +324,7 @@ private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
         check(rule.nfields == constructor.numFields) {
             "Recursor rule for ${constructor.name} has wrong nfields: expected ${constructor.numFields}, got ${rule.nfields}"
         }
-        checkRecursorRuleType(recursor, constructor, rule, majorInductive)
+        checkRecursorRuleType(recursor, constructor, rule, majorInductive, majorTypeConst, majorTypeArgs)
     }
     val expectedCtorNames = majorInductive.ctors.map { ctorNameIndex ->
         env.names[ctorNameIndex] ?: error("Constructor name $ctorNameIndex not found")
@@ -345,6 +340,8 @@ private fun checkRecursorRuleType(
     constructor: Inductive.ConstructorVal,
     rule: Inductive.RecursorVal.RecursorRule,
     majorInductive: Inductive.InductiveVal,
+    majorTypeConst: Expression.Const,
+    majorTypeArgs: List<Expression>,
 ) {
     val prefixBinderCount = recursor.numParams + recursor.numMotives + recursor.numMinors
     val expectedRuleBinderCount = prefixBinderCount + constructor.numFields
@@ -373,24 +370,17 @@ private fun checkRecursorRuleType(
         binderExpr(prefixBinderCount + fieldIndex)
     }
 
-    val majorBinderType = recursor.getMajorBinder().typeExpr
-    val [majorBinderTypeHead, majorBinderTypeArgs] = majorBinderType.unfoldApp()
-    val majorBinderTypeConst = majorBinderTypeHead as? Expression.Const
-        ?: error("Recursor ${recursor.name} major premise type must be const-headed, got ${majorBinderType.toStringDetailed()}")
-    check(majorBinderTypeConst.name == majorInductive.name) {
-        "Recursor ${recursor.name} major premise type mismatch: expected ${majorInductive.name}, got ${majorBinderTypeConst.name}"
+    check(majorTypeArgs.size >= constructor.numParams) {
+        "Recursor ${recursor.name} major premise type has too few args for constructor ${constructor.name}: expected at least ${constructor.numParams}, got ${majorTypeArgs.size}"
     }
-    check(majorBinderTypeArgs.size >= constructor.numParams) {
-        "Recursor ${recursor.name} major premise type has too few args for constructor ${constructor.name}: expected at least ${constructor.numParams}, got ${majorBinderTypeArgs.size}"
-    }
-    val paramArgs = majorBinderTypeArgs.take(constructor.numParams).map { paramArg ->
+    val paramArgs = majorTypeArgs.take(constructor.numParams).map { paramArg ->
         paramArg.dropOuterBinders(recursor.numIndices).lift(constructor.numFields)
     }
 
     val constructorNameIndex = env.nameIndices[constructor.name]
         ?: error("Constructor name index for ${constructor.name} not found")
     val constructorExpr = env.addCustomExpr {
-        Expression.Const(_name = constructorNameIndex, us = majorBinderTypeConst.levels.map { it.il }, ie = it)
+        Expression.Const(_name = constructorNameIndex, us = majorTypeConst.levels.map { it.il }, ie = it)
     }
     val majorExpr = constructorExpr.applyArgs(paramArgs + fieldArgs)
     val majorType = majorExpr.inferType(localCtx = ruleLocalCtx).whnf()
