@@ -263,18 +263,16 @@ private fun collectForallContext(
     expr: Expression,
     expectedBinders: Int,
     owner: String,
-    reduceExpr: Boolean = false,
 ): Pair<List<Expression>, Expression> {
     var localCtx: List<Expression> = emptyList()
     var currentExpr = expr
     repeat(expectedBinders) { binderIndex ->
-        val current = if (reduceExpr) currentExpr.whnf() else currentExpr
-        val forall = current as? Expression.ForallE
+        val forall = currentExpr as? Expression.ForallE
             ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
         localCtx = env.consLocalCtx(forall.typeExpr, localCtx)
         currentExpr = forall.bodyExpr
     }
-    return localCtx to if (reduceExpr) currentExpr.whnf() else currentExpr
+    return localCtx to currentExpr
 }
 
 context(env: Environment)
