@@ -16,6 +16,10 @@ fun Level.isEqual(other: Level): Boolean {
 }
 
 context(env: Environment)
+fun List<Level>.isEqual(other: List<Level>): Boolean =
+    size == other.size && (this == other || indices.all { this[it].isEqual(other[it]) })
+
+context(env: Environment)
 fun makeLevelMax(left: Level, right: Level): Level {
     val leftOffset = left.toOffset()
     val rightOffset = right.toOffset()

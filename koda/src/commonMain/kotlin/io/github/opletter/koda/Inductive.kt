@@ -36,10 +36,7 @@ fun checkInductive(data: Inductive) {
         check(inductive.all == blockNameIndices) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has wrong all list: expected $blockNameIndices, got ${inductive.all}"
         }
-        check(
-            inductive.levelParams.size == blockLevelParams.size &&
-                    inductive.levelParams.zip(blockLevelParams).all { [actual, expected] -> actual.isEqual(expected) }
-        ) {
+        check(inductive.levelParams.isEqual(blockLevelParams)) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has mismatched universe parameters"
         }
     }
@@ -183,11 +180,7 @@ private fun checkConstructor(
     check(constructor.levelParams.toSet().size == constructor.levelParams.size) {
         "Duplicate universe parameters in constructor $constructor"
     }
-    check(
-        constructor.levelParams.size == inductive.levelParams.size &&
-                constructor.levelParams.zip(inductive.levelParams)
-                    .all { [actual, expected] -> actual.isEqual(expected) }
-    ) {
+    check(constructor.levelParams.isEqual(inductive.levelParams)) {
         "Constructor ${constructor.name.toStringDetailed()} has mismatched universe parameters"
     }
 

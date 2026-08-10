@@ -212,11 +212,10 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
 
 @Suppress("NOTHING_TO_INLINE")
 context(env: Environment)
-private inline fun Expression.Const.hasSameNameAndLevels(other: Expression.Const): Boolean =
-    this.name == other.name &&
-            this.levels.size == other.levels.size &&
-            (this.levels == other.levels ||
-                    this.levels.indices.all { index -> this.levels[index].isEqual(other.levels[index]) })
+private inline fun Expression.Const.hasSameNameAndLevels(other: Expression.Const): Boolean {
+    if (this.name != other.name) return false
+    return this.levels.isEqual(other.levels)
+}
 
 context(env: Environment)
 fun Expression.isDefEq(
