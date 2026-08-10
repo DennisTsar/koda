@@ -4,6 +4,18 @@ private data class LevelOffset(val base: Level, val offset: Int)
 
 private data class LevelComparisonKey(val greater: Int, val lesser: Int)
 
+private inline infix fun Boolean?.andMaybe(other: () -> Boolean?): Boolean? = when (this) {
+    false -> false
+    true -> other()
+    null -> if (other() == false) false else null
+}
+
+private inline infix fun Boolean?.orMaybe(other: () -> Boolean?): Boolean? = when (this) {
+    true -> true
+    false -> other()
+    null -> if (other() == true) true else null
+}
+
 context(env: Environment)
 fun Level.isEqual(other: Level): Boolean {
     if (this === other || this.il == other.il) return true
@@ -96,32 +108,13 @@ private fun Level.trySimpleIsLessOrEqual(other: Level, balance: Int = 0): Boolea
     this === Level.Zero && other is Level.Param -> balance >= 0
     this is Level.Succ -> this.level.trySimpleIsLessOrEqual(other, balance - 1)
     other is Level.Succ -> this.trySimpleIsLessOrEqual(other.level, balance + 1)
-    this is Level.Max -> {
-        val leftResult = this.left.trySimpleIsLessOrEqual(other, balance)
-        if (leftResult == false) {
-            false
-        } else {
-            val rightResult = this.right.trySimpleIsLessOrEqual(other, balance)
-            when {
-                rightResult == false -> false
-                leftResult == true && rightResult == true -> true
-                else -> null
-            }
-        }
+    this is Level.Max -> this.left.trySimpleIsLessOrEqual(other, balance) andMaybe {
+        this.right.trySimpleIsLessOrEqual(other, balance)
     }
 
-    (this is Level.Param || this === Level.Zero) && other is Level.Max -> {
-        val leftResult = this.trySimpleIsLessOrEqual(other.left, balance)
-        if (leftResult == true) {
-            true
-        } else {
-            val rightResult = this.trySimpleIsLessOrEqual(other.right, balance)
-            when {
-                rightResult == true -> true
-                leftResult == false && rightResult == false -> false
-                else -> null
-            }
-        }
+    (this is Level.Param || this === Level.Zero) && other is Level.Max ->
+        this.trySimpleIsLessOrEqual(other.left, balance) orMaybe {
+            this.trySimpleIsLessOrEqual(other.right, balance)
     }
 
     else -> null
