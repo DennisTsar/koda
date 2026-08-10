@@ -17,8 +17,10 @@ fun Level.isEqual(other: Level): Boolean {
 
 context(env: Environment)
 fun makeLevelMax(left: Level, right: Level): Level {
-    if (left.isExplicit() && right.isExplicit()) {
-        return if (left.toOffset().offset >= right.toOffset().offset) left else right
+    val leftOffset = left.toOffset()
+    val rightOffset = right.toOffset()
+    if (leftOffset.base === Level.Zero && rightOffset.base === Level.Zero) {
+        return if (leftOffset.offset >= rightOffset.offset) left else right
     }
     if (left.il == right.il) return left
     if (left === Level.Zero) return right
@@ -26,8 +28,6 @@ fun makeLevelMax(left: Level, right: Level): Level {
     if (right is Level.Max && (right.left.il == left.il || right.right.il == left.il)) return right
     if (left is Level.Max && (left.left.il == right.il || left.right.il == right.il)) return left
 
-    val leftOffset = left.toOffset()
-    val rightOffset = right.toOffset()
     if (leftOffset.base.il == rightOffset.base.il) {
         return if (leftOffset.offset >= rightOffset.offset) left else right
     }
@@ -38,7 +38,7 @@ context(env: Environment)
 fun makeLevelImax(left: Level, right: Level): Level {
     if (right.isDefinitelyNonzero()) return makeLevelMax(left, right)
     if (right === Level.Zero) return Level.Zero
-    if (left === Level.Zero || left.isOne()) return right
+    if (left === Level.Zero || left.toOffset().let { it.base === Level.Zero && it.offset == 1 }) return right
     if (left.il == right.il) return left
     return env.addCustomImaxLevel(left.il, right.il)
 }
@@ -106,21 +106,7 @@ private fun Level.trySimpleIsLessOrEqual(other: Level, balance: Int = 0): Boolea
         }
     }
 
-    this is Level.Param && other is Level.Max -> {
-        val leftResult = this.trySimpleIsLessOrEqual(other.left, balance)
-        if (leftResult == true) {
-            true
-        } else {
-            val rightResult = this.trySimpleIsLessOrEqual(other.right, balance)
-            when {
-                rightResult == true -> true
-                leftResult == false && rightResult == false -> false
-                else -> null
-            }
-        }
-    }
-
-    this === Level.Zero && other is Level.Max -> {
+    (this is Level.Param || this === Level.Zero) && other is Level.Max -> {
         val leftResult = this.trySimpleIsLessOrEqual(other.left, balance)
         if (leftResult == true) {
             true
@@ -154,7 +140,7 @@ private fun Level.normalizeLevel(): Level {
         Level.Zero -> Level.Zero.addOffset(offset.offset)
         is Level.Param -> env.addCustomParamLevel(base.nameIndex).addOffset(offset.offset)
         is Level.Imax -> {
-            val normalizedImax = makeNormalizedImax(
+            val normalizedImax = makeLevelImax(
                 base.left.normalizeLevel(),
                 base.right.normalizeLevel(),
             )
@@ -214,15 +200,6 @@ private fun Level.toOffset(): LevelOffset {
 }
 
 context(env: Environment)
-private fun Level.isExplicit(): Boolean = this.toOffset().base === Level.Zero
-
-context(env: Environment)
-private fun Level.isOne(): Boolean {
-    val offset = this.toOffset()
-    return offset.base === Level.Zero && offset.offset == 1
-}
-
-context(env: Environment)
 private fun Level.addOffset(amount: Int): Level {
     var result = this
     repeat(amount) {
@@ -273,11 +250,6 @@ private fun makeNormalizedMax(arguments: List<Level>): Level {
         result = env.addCustomMaxLevel(reduced[index].il, result.il)
     }
     return result
-}
-
-context(env: Environment)
-private fun makeNormalizedImax(left: Level, right: Level): Level {
-    return makeLevelImax(left, right)
 }
 
 context(env: Environment)
