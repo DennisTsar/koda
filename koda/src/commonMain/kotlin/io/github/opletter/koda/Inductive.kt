@@ -79,7 +79,7 @@ fun checkInductive(data: Inductive) {
         }
     }
 
-    val recNamedRecCountByInductive = mutableMapOf<Name, Int>()
+    val inductivesMissingRecursor = blockNameSet.toMutableSet()
     data.recs.forEach { recursor ->
         check(recursor.all == blockNameIndices) {
             "Recursor ${recursor.name.toStringDetailed()} has wrong all list: expected $blockNameIndices, got ${recursor.all}"
@@ -96,15 +96,14 @@ fun checkInductive(data: Inductive) {
             "Recursor ${recursor.name.toStringDetailed()} must be in one of the mutual inductive namespaces ${blockNames.map { it.toStringDetailed() }}"
         }
         if (recName.str == "rec") {
-            recNamedRecCountByInductive[recParent] = recNamedRecCountByInductive.getOrElse(recParent, { 0 }) + 1
+            check(inductivesMissingRecursor.remove(recParent)) {
+                "Inductive ${recParent.toStringDetailed()} has multiple recursors named ${recParent.toStringDetailed()}.rec"
+            }
         }
         env.declTypeByName[recursor.name] = recursor.typeExpr
     }
-    inductives.forEach { inductive ->
-        val recNamedRecCount = recNamedRecCountByInductive.getOrElse(inductive.name, { 0 })
-        check(recNamedRecCount == 1) {
-            "Inductive ${inductive.name.toStringDetailed()} must declare exactly one recursor named ${inductive.name.toStringDetailed()}.rec, got $recNamedRecCount"
-        }
+    check(inductivesMissingRecursor.isEmpty()) {
+        "Inductives missing a .rec recursor: ${inductivesMissingRecursor.map { it.toStringDetailed() }}"
     }
     data.recs.forEach { recursor ->
         checkRecursorRules(recursor)
