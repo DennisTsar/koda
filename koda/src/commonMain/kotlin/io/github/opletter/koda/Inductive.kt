@@ -250,12 +250,8 @@ private fun walkForalls(
 
 context(env: Environment)
 fun Inductive.RecursorVal.getMajorBinder(): Expression.ForallE {
-    var tailExpr = this.typeExpr
-    repeat(this.numParams + this.numMotives + this.numMinors + this.numIndices) { binderIndex ->
-        val forall = tailExpr as? Expression.ForallE
-            ?: error("Recursor ${this.name} has too few binders before major premise: expected ${this.numParams + this.numMotives + this.numMinors + this.numIndices}, got $binderIndex")
-        tailExpr = forall.bodyExpr
-    }
+    val prefixBinderCount = this.numParams + this.numMotives + this.numMinors + this.numIndices
+    val tailExpr = walkForalls(this.typeExpr, prefixBinderCount, "Recursor ${this.name}", reduceExpr = false).first
     return tailExpr as? Expression.ForallE
         ?: error("Recursor ${this.name} is missing a major premise binder")
 }
