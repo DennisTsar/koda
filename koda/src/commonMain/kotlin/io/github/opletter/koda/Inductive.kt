@@ -130,7 +130,7 @@ private fun analyzeInductiveType(inductive: Inductive.InductiveVal): InductiveTy
             inductiveParamTypes += binderType
             inductiveParamSortLevels += binderSort
         }
-    }
+    }.first
 
     val typeSort = typeTailWhnf as? Expression.Sort
         ?: error("Inductive type must reduce to Sort after $typeBinderCount binders, got ${typeTailWhnf.toStringDetailed()}")
@@ -201,7 +201,7 @@ private fun checkConstructor(
                 "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} contains a non-positive occurrence of a mutual inductive"
             }
         }
-    }
+    }.first
 
     val [resultHead, resultArgs] = ctorTailExpr.unfoldApp()
     val resultConst = resultHead as? Expression.Const
@@ -234,8 +234,8 @@ private fun walkForalls(
     expectedBinders: Int,
     owner: String,
     reduceExpr: Boolean = true,
-    onBinder: (binderIndex: Int, binderType: Expression, localCtx: List<Expression>) -> Unit,
-): Expression {
+    onBinder: (binderIndex: Int, binderType: Expression, localCtx: List<Expression>) -> Unit = { _, _, _ -> },
+): Pair<Expression, List<Expression>> {
     var currentExpr = expr
     var currentLocalCtx: List<Expression> = emptyList()
 
@@ -249,24 +249,7 @@ private fun walkForalls(
         currentExpr = forall.bodyExpr
     }
 
-    return if (reduceExpr) currentExpr.whnf() else currentExpr
-}
-
-context(env: Environment)
-private fun collectForallContext(
-    expr: Expression,
-    expectedBinders: Int,
-    owner: String,
-): Pair<List<Expression>, Expression> {
-    var localCtx: List<Expression> = emptyList()
-    var currentExpr = expr
-    repeat(expectedBinders) { binderIndex ->
-        val forall = currentExpr as? Expression.ForallE
-            ?: error("$owner has too few binders: expected $expectedBinders, got $binderIndex")
-        localCtx = env.consLocalCtx(forall.typeExpr, localCtx)
-        currentExpr = forall.bodyExpr
-    }
-    return localCtx to currentExpr
+    return (if (reduceExpr) currentExpr.whnf() else currentExpr) to currentLocalCtx
 }
 
 context(env: Environment)
@@ -331,13 +314,14 @@ private fun checkRecursorRuleType(
     val prefixBinderCount = recursor.numParams + recursor.numMotives + recursor.numMinors
     val expectedRuleBinderCount = prefixBinderCount + constructor.numFields
     val inferredRuleType = rule.rhsExpr.inferType()
-    val ruleTypeInfo = collectForallContext(
+    val ruleTypeInfo = walkForalls(
         expr = inferredRuleType,
         expectedBinders = expectedRuleBinderCount,
         owner = "Recursor rule for ${constructor.name}",
+        reduceExpr = false,
     )
-    val ruleLocalCtx = ruleTypeInfo.first
-    val ruleResultType = ruleTypeInfo.second
+    val ruleResultType = ruleTypeInfo.first
+    val ruleLocalCtx = ruleTypeInfo.second
 
     fun binderExpr(outerIndex: Int): Expression {
         return env.addCustomExpr {
