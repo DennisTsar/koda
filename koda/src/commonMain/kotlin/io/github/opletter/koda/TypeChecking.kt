@@ -3982,14 +3982,16 @@ fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
         val result = when (expr) {
             is Expression.Bvar, is Expression.NatVal, is Expression.StrVal -> expr
             is Expression.Sort -> {
-                val newLevel = expr.level.instantiateLevelParams(subst)
-                if (newLevel == expr.level) expr else env.addCustomExpr { expr.copy(sort = newLevel.il, ie = it) }
+                val level = expr.level
+                val newLevel = level.instantiateLevelParams(subst)
+                if (newLevel == level) expr else env.addCustomExpr { expr.copy(sort = newLevel.il, ie = it) }
             }
 
             is Expression.Const -> {
-                val newUs = expr.levels.map { it.instantiateLevelParams(subst).il }
-                val oldUs = expr.levels.map { it.il }
-                if (newUs == oldUs) expr else env.addCustomExpr { expr.copy(us = newUs, ie = it) }
+                val levels = expr.levels
+                val newLevels = levels.map { it.instantiateLevelParams(subst) }
+                if (newLevels.indices.all { newLevels[it].il == levels[it].il }) expr
+                else env.addCustomExpr { expr.copy(us = newLevels.map { it.il }, ie = it) }
             }
 
             is Expression.App -> {
