@@ -198,9 +198,7 @@ private fun makeNormalizedMax(arguments: List<Level>): Level {
     check(arguments.isNotEmpty())
 
     val greatestByBase = mutableMapOf<Int, LevelOffset>()
-    val pending = ArrayDeque<Level>()
-    arguments.asReversed().forEach(pending::addLast)
-    pending.drainMaxArguments { argument ->
+    arguments.forEach { argument ->
         val offset = argument.toOffset()
         val previous = greatestByBase[offset.base.il]
         if (previous == null || previous.offset < offset.offset) {
