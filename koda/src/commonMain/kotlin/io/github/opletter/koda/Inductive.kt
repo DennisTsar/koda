@@ -78,9 +78,6 @@ fun checkInductive(data: Inductive) {
             env.declTypeByName[constructor.name] = constructor.typeExpr
         }
     }
-    check(data.ctors.size == inductives.sumOf { it.ctors.size }) {
-        "Mutual inductive block has mismatched constructor inventory"
-    }
 
     val recNamedRecCountByInductive = mutableMapOf<Name, Int>()
     data.recs.forEach { recursor ->
