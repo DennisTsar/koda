@@ -139,13 +139,10 @@ private fun Level.normalizeLevel(): Level {
             ).addOffset(offset.offset)
 
         is Level.Max -> {
-            val rawArgs = mutableListOf<Level>()
+            val normalizedArgs = mutableListOf<Level>()
             val pending = ArrayDeque<Level>()
             pending.addLast(base)
-            pending.drainMaxArguments { rawArgs += it }
-
-            val normalizedArgs = mutableListOf<Level>()
-            rawArgs.forEach { argument ->
+            pending.drainMaxArguments { argument ->
                 val normalizedPending = ArrayDeque<Level>()
                 normalizedPending.addLast(argument.normalizeLevel())
                 normalizedPending.drainMaxArguments {
