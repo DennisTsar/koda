@@ -461,7 +461,7 @@ private fun ClosedClosure.closedDefEq(
     val visited = mutableSetOf<ClosedDefEqState>()
     val instantiatedRecursorRules = mutableMapOf<ClosedRecursorRuleKey, Expression>()
     val looseBvarIndices = mutableMapOf<Int, List<Int>>()
-    val proofArgumentMasks = mutableMapOf<Pair<Int, Int>, BooleanArray?>()
+    val proofArgumentMasks = mutableMapOf<Long, BooleanArray?>()
 
     fun bindingAt(locals: ClosedEvalEnv, index: Int): ClosedClosure? {
         var current = locals
@@ -543,10 +543,10 @@ private fun ClosedClosure.closedDefEq(
     }
 
     fun proofArgumentMask(head: ClosedClosure, arity: Int): BooleanArray? {
-        if (head.expression !is Expression.Const) return null
-        val key = head.expression.ie to arity
+        val constant = head.expression as? Expression.Const ?: return null
+        val key = (constant.ie.toLong() shl 32) xor (arity.toLong() and 0xffffffffL)
         if (proofArgumentMasks.containsKey(key)) return proofArgumentMasks[key]
-        var type = head.expression.inferType(validate = false)
+        var type = constant.inferType(validate = false)
         var localCtx = emptyList<Expression>()
         val result = BooleanArray(arity)
         for (index in 0 until arity) {
