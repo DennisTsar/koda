@@ -47,10 +47,11 @@ fun makeLevelMax(left: Level, right: Level): Level {
 
 context(env: Environment)
 fun makeLevelImax(left: Level, right: Level): Level {
-    if (right.isDefinitelyNonzero()) return makeLevelMax(left, right)
     if (right === Level.Zero) return Level.Zero
-    if (left === Level.Zero || left.toOffset().let { it.base === Level.Zero && it.offset == 1 }) return right
+    if (left === Level.Zero) return right
     if (left.il == right.il) return left
+    if (right.isDefinitelyNonzero()) return makeLevelMax(left, right)
+    if (left.toOffset().let { it.base === Level.Zero && it.offset == 1 }) return right
     return env.addCustomImaxLevel(left.il, right.il)
 }
 
