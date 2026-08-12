@@ -31,17 +31,14 @@ fun List<Level>.isEqual(other: List<Level>): Boolean =
 
 context(env: Environment)
 fun makeLevelMax(left: Level, right: Level): Level {
-    val leftOffset = left.toOffset()
-    val rightOffset = right.toOffset()
-    if (leftOffset.base === Level.Zero && rightOffset.base === Level.Zero) {
-        return if (leftOffset.offset >= rightOffset.offset) left else right
-    }
     if (left.il == right.il) return left
     if (left === Level.Zero) return right
     if (right === Level.Zero) return left
     if (right is Level.Max && (right.left.il == left.il || right.right.il == left.il)) return right
     if (left is Level.Max && (left.left.il == right.il || left.right.il == right.il)) return left
 
+    val leftOffset = left.toOffset()
+    val rightOffset = right.toOffset()
     if (leftOffset.base.il == rightOffset.base.il) {
         return if (leftOffset.offset >= rightOffset.offset) left else right
     }
