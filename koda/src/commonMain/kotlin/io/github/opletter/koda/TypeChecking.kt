@@ -2510,7 +2510,8 @@ private fun Expression.isNatZeroCtorConst(): Boolean {
     return inductiveName.pre == 0 && inductiveName.str == "Nat"
 }
 
-private data class InferRequest(
+private class InferRequest(
+    val environment: Environment,
     val expression: Expression,
     val localCtx: List<Expression>,
     val validate: Boolean,
@@ -2637,7 +2638,12 @@ fun Expression.inferType(
         "Inference received an expression outside its context: ${expression.toStringDetailed()}"
     }
 
-    val infer = DeepRecursiveFunction<InferRequest, Expression> { request ->
+    return inferTypeDeep(InferRequest(env, expression, localCtx, validate))
+}
+
+private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { request ->
+    val env = request.environment
+    context(env) {
         val expr = request.expression
         val contextId = if (expr.maxLooseBVarIndex() < 0) 0 else env.localCtxId(request.localCtx)
         val cacheKey = InferTypeCacheKey(expr.ie, contextId, request.validate)
@@ -2653,33 +2659,32 @@ fun Expression.inferType(
                 is Expression.App -> {
                     val [head, arguments] = expr.unfoldApp()
                     var functionType = callRecursive(
-                        InferRequest(head, request.localCtx, request.validate)
+                        InferRequest(env, head, request.localCtx, request.validate)
                     ).requireFunctionType(expr, request.localCtx)
                     val pendingSubst = ArrayDeque<Expression>()
-                    var result: Expression? = null
 
                     for (index in arguments.indices) {
                         val argument = arguments[index]
                         if (request.validate) {
                             val expectedType = if (pendingSubst.isEmpty()) functionType.typeExpr
                             else functionType.typeExpr.applySubst(pendingSubst)
-                            val argumentType = callRecursive(InferRequest(argument, request.localCtx, true))
+                            val argumentType = callRecursive(InferRequest(env, argument, request.localCtx, true))
                             expr.checkArgumentType(argument, expectedType, argumentType, request.localCtx)
                         }
 
                         pendingSubst.addFirst(argument)
-                        val body = functionType.bodyExpr
-                        if (index == arguments.lastIndex) {
-                            result = body.applySubst(pendingSubst)
-                        } else if (body is Expression.ForallE) {
-                            functionType = body
-                        } else {
-                            val instantiatedBody = body.applySubst(pendingSubst)
-                            functionType = instantiatedBody.requireFunctionType(expr, request.localCtx)
-                            pendingSubst.clear()
+                        if (index < arguments.lastIndex) {
+                            val body = functionType.bodyExpr
+                            if (body is Expression.ForallE) {
+                                functionType = body
+                            } else {
+                                val instantiatedBody = body.applySubst(pendingSubst)
+                                functionType = instantiatedBody.requireFunctionType(expr, request.localCtx)
+                                pendingSubst.clear()
+                            }
                         }
                     }
-                    result!!
+                    functionType.bodyExpr.applySubst(pendingSubst)
                 }
 
                 is Expression.Bvar -> {
@@ -2708,10 +2713,10 @@ fun Expression.inferType(
                     for (binding in binders) {
                         val binder = binding.first
                         val binderCtx = binding.second
-                        val type = callRecursive(InferRequest(binder.typeExpr, binderCtx, request.validate))
+                        val type = callRecursive(InferRequest(env, binder.typeExpr, binderCtx, request.validate))
                         domainSorts += requireSort(type, binder.typeExpr, binderCtx)
                     }
-                    val bodyType = callRecursive(InferRequest(tail, tailCtx, request.validate))
+                    val bodyType = callRecursive(InferRequest(env, tail, tailCtx, request.validate))
                     var level = requireSort(bodyType, tail, tailCtx)
                     for (domainSort in domainSorts.asReversed()) {
                         level = makeLevelImax(domainSort, level)
@@ -2733,11 +2738,11 @@ fun Expression.inferType(
                         for (binding in binders) {
                             val binder = binding.first
                             val binderCtx = binding.second
-                            val type = callRecursive(InferRequest(binder.typeExpr, binderCtx, true))
+                            val type = callRecursive(InferRequest(env, binder.typeExpr, binderCtx, true))
                             requireSort(type, binder.typeExpr, binderCtx)
                         }
                     }
-                    var bodyType = callRecursive(InferRequest(tail, tailCtx, request.validate))
+                    var bodyType = callRecursive(InferRequest(env, tail, tailCtx, request.validate))
                     for (binding in binders.asReversed()) {
                         val binder = binding.first
                         bodyType = env.addCustomExpr {
@@ -2754,20 +2759,20 @@ fun Expression.inferType(
 
                 is Expression.LetE -> {
                     if (request.validate) {
-                        val declaredType = callRecursive(InferRequest(expr.typeExpr, request.localCtx, true))
+                        val declaredType = callRecursive(InferRequest(env, expr.typeExpr, request.localCtx, true))
                         requireSort(declaredType, expr.typeExpr, request.localCtx)
-                        val valueType = callRecursive(InferRequest(expr.valueExpr, request.localCtx, true))
+                        val valueType = callRecursive(InferRequest(env, expr.valueExpr, request.localCtx, true))
                         check(expr.typeExpr.isDefEq(valueType, request.localCtx, request.localCtx)) {
                             "Let value type mismatch in ${expr.toStringDetailed()}: " +
                                     "expected ${expr.typeExpr.toStringDetailed()}, got ${valueType.toStringDetailed()}"
                         }
                     }
                     val bodyCtx = env.consLocalCtx(expr.typeExpr, request.localCtx, expr.valueExpr)
-                    callRecursive(InferRequest(expr.bodyExpr, bodyCtx, request.validate))
+                    callRecursive(InferRequest(env, expr.bodyExpr, bodyCtx, request.validate))
                         .applySubst(listOf(expr.valueExpr))
                 }
 
-                is Expression.Mdata -> callRecursive(InferRequest(expr.expr, request.localCtx, request.validate))
+                is Expression.Mdata -> callRecursive(InferRequest(env, expr.expr, request.localCtx, request.validate))
 
                 is Expression.NatVal -> {
                     val natTypeIndex = env.findRootInductive("Nat")?.first
@@ -2777,7 +2782,7 @@ fun Expression.inferType(
 
                 is Expression.Proj -> {
                     val structType = callRecursive(
-                        InferRequest(expr.structExpr, request.localCtx, request.validate)
+                        InferRequest(env, expr.structExpr, request.localCtx, request.validate)
                     )
                     expr.inferProjectionType(structType, request.localCtx)
                 }
@@ -2792,8 +2797,6 @@ fun Expression.inferType(
             inferredType
         }
     }
-
-    return infer(InferRequest(expression, localCtx, validate))
 }
 
 
