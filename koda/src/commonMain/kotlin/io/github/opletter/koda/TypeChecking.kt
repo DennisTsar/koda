@@ -3643,21 +3643,54 @@ fun Expression.inferSort(
     return sort.level
 }
 
-context(env: Environment)
-private fun Expression.containsLooseBvarZero(depth: Int = 0): Boolean {
-    return when (this) {
-        is Expression.Bvar -> this.bvar == depth
-        is Expression.App -> this.fnExpr.containsLooseBvarZero(depth) || this.argExpr.containsLooseBvarZero(depth)
-        is Expression.ForallE -> this.typeExpr.containsLooseBvarZero(depth) || this.bodyExpr.containsLooseBvarZero(depth + 1)
-        is Expression.Lam -> this.typeExpr.containsLooseBvarZero(depth) || this.bodyExpr.containsLooseBvarZero(depth + 1)
-        is Expression.LetE ->
-            this.typeExpr.containsLooseBvarZero(depth) ||
-                    this.valueExpr.containsLooseBvarZero(depth) ||
-                    this.bodyExpr.containsLooseBvarZero(depth + 1)
+private data class PostorderFrame(val expression: Expression, val expanded: Boolean)
 
-        is Expression.Mdata -> this.expr.containsLooseBvarZero(depth)
-        is Expression.Proj -> this.structExpr.containsLooseBvarZero(depth)
-        is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
+context(env: Environment)
+private inline fun Expression.evaluatePostorder(
+    isEvaluated: (Expression) -> Boolean,
+    evaluate: (Expression) -> Unit,
+) {
+    val stack = ArrayDeque<PostorderFrame>()
+    stack.add(PostorderFrame(this, false))
+    while (stack.isNotEmpty()) {
+        val (expression, expanded) = stack.removeLast()
+        if (isEvaluated(expression)) continue
+        if (expanded) {
+            evaluate(expression)
+            continue
+        }
+
+        stack.add(PostorderFrame(expression, true))
+        when (expression) {
+            is Expression.App -> {
+                stack.add(PostorderFrame(expression.fnExpr, false))
+                stack.add(PostorderFrame(expression.argExpr, false))
+            }
+
+            is Expression.ForallE -> {
+                stack.add(PostorderFrame(expression.typeExpr, false))
+                stack.add(PostorderFrame(expression.bodyExpr, false))
+            }
+
+            is Expression.Lam -> {
+                stack.add(PostorderFrame(expression.typeExpr, false))
+                stack.add(PostorderFrame(expression.bodyExpr, false))
+            }
+
+            is Expression.LetE -> {
+                stack.add(PostorderFrame(expression.typeExpr, false))
+                stack.add(PostorderFrame(expression.valueExpr, false))
+                stack.add(PostorderFrame(expression.bodyExpr, false))
+            }
+
+            is Expression.Mdata -> stack.add(PostorderFrame(expression.expr, false))
+            is Expression.Proj -> stack.add(PostorderFrame(expression.structExpr, false))
+            is Expression.Bvar,
+            is Expression.Const,
+            is Expression.NatVal,
+            is Expression.Sort,
+            is Expression.StrVal -> {}
+        }
     }
 }
 
@@ -3667,48 +3700,9 @@ fun Expression.maxLooseBVarIndex(): Int {
 
     fun Int.descendBinder(): Int = if (this < 0) -1 else this - 1
 
-    data class Frame(val expr: Expression, val visited: Boolean)
-
-    val stack = ArrayDeque<Frame>()
-    stack.add(Frame(this, false))
-    while (stack.isNotEmpty()) {
-        val (expr, visited) = stack.removeLast()
-        if (env.maxLooseBVarIndexCache[expr.ie] != null) continue
-        if (!visited) {
-            stack.add(Frame(expr, true))
-            when (expr) {
-                is Expression.App -> {
-                    stack.add(Frame(expr.fnExpr, false))
-                    stack.add(Frame(expr.argExpr, false))
-                }
-
-                is Expression.ForallE -> {
-                    stack.add(Frame(expr.typeExpr, false))
-                    stack.add(Frame(expr.bodyExpr, false))
-                }
-
-                is Expression.Lam -> {
-                    stack.add(Frame(expr.typeExpr, false))
-                    stack.add(Frame(expr.bodyExpr, false))
-                }
-
-                is Expression.LetE -> {
-                    stack.add(Frame(expr.typeExpr, false))
-                    stack.add(Frame(expr.valueExpr, false))
-                    stack.add(Frame(expr.bodyExpr, false))
-                }
-
-                is Expression.Mdata -> stack.add(Frame(expr.expr, false))
-                is Expression.Proj -> stack.add(Frame(expr.structExpr, false))
-                is Expression.Bvar,
-                is Expression.Const,
-                is Expression.NatVal,
-                is Expression.Sort,
-                is Expression.StrVal -> {
-                }
-            }
-            continue
-        }
+    this.evaluatePostorder(
+        isEvaluated = { env.maxLooseBVarIndexCache[it.ie] != null },
+    ) { expr ->
         val value = when (expr) {
             is Expression.Bvar -> expr.bvar
             is Expression.App -> maxOf(
@@ -3778,49 +3772,11 @@ fun Expression.lift(amount: Int): Expression {
 context(env: Environment)
 fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
     if (subst.isEmpty()) return this
-    data class Frame(val expr: Expression, val visited: Boolean)
 
     val cache = mutableMapOf<Int, Expression>()
-    val stack = ArrayDeque<Frame>()
-    stack.add(Frame(this, false))
-    while (stack.isNotEmpty()) {
-        val (expr, visited) = stack.removeLast()
-        if (cache[expr.ie] != null) continue
-        if (!visited) {
-            stack.add(Frame(expr, true))
-            when (expr) {
-                is Expression.App -> {
-                    stack.add(Frame(expr.fnExpr, false))
-                    stack.add(Frame(expr.argExpr, false))
-                }
-
-                is Expression.ForallE -> {
-                    stack.add(Frame(expr.typeExpr, false))
-                    stack.add(Frame(expr.bodyExpr, false))
-                }
-
-                is Expression.Lam -> {
-                    stack.add(Frame(expr.typeExpr, false))
-                    stack.add(Frame(expr.bodyExpr, false))
-                }
-
-                is Expression.LetE -> {
-                    stack.add(Frame(expr.typeExpr, false))
-                    stack.add(Frame(expr.valueExpr, false))
-                    stack.add(Frame(expr.bodyExpr, false))
-                }
-
-                is Expression.Mdata -> stack.add(Frame(expr.expr, false))
-                is Expression.Proj -> stack.add(Frame(expr.structExpr, false))
-                is Expression.Bvar,
-                is Expression.Const,
-                is Expression.NatVal,
-                is Expression.Sort,
-                is Expression.StrVal -> {
-                }
-            }
-            continue
-        }
+    this.evaluatePostorder(
+        isEvaluated = { cache[it.ie] != null },
+    ) { expr ->
         val result = when (expr) {
             is Expression.Bvar, is Expression.NatVal, is Expression.StrVal -> expr
             is Expression.Sort -> {
