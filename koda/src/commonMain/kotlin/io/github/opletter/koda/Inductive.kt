@@ -306,14 +306,12 @@ private fun checkRecursorRuleType(
     val prefixBinderCount = recursor.numParams + recursor.numMotives + recursor.numMinors
     val expectedRuleBinderCount = prefixBinderCount + constructor.numFields
     val inferredRuleType = rule.rhsExpr.inferType()
-    val ruleTypeInfo = walkForalls(
+    val [ruleResultType, ruleLocalCtx] = walkForalls(
         expr = inferredRuleType,
         expectedBinders = expectedRuleBinderCount,
         owner = "Recursor rule for ${constructor.name}",
         reduceExpr = false,
     )
-    val ruleResultType = ruleTypeInfo.first
-    val ruleLocalCtx = ruleTypeInfo.second
 
     fun binderExpr(outerIndex: Int): Expression {
         return env.addCustomExpr {
