@@ -2510,58 +2510,11 @@ private fun Expression.isNatZeroCtorConst(): Boolean {
     return inductiveName.pre == 0 && inductiveName.str == "Nat"
 }
 
-private sealed interface InferFrame {
-    data class Cache(val key: InferTypeCacheKey) : InferFrame
-    data class AppFunction(
-        val expression: Expression.App,
-        val args: List<Expression>,
-        val validate: Boolean,
-        val localCtx: List<Expression>,
-    ) : InferFrame
-    data class AppArgument(
-        val expression: Expression.App,
-        val args: List<Expression>,
-        val index: Int,
-        val functionType: Expression.ForallE,
-        val expectedType: Expression,
-        val pendingSubst: ArrayDeque<Expression>,
-        val argument: Expression,
-        val localCtx: List<Expression>,
-    ) : InferFrame
-
-    data class OpenPi(val expression: Expression.ForallE, val domainCtx: List<Expression>)
-    data class PiDomains(
-        val opened: List<OpenPi>,
-        val tail: Expression,
-        val tailCtx: List<Expression>,
-        val index: Int,
-        val domainSorts: MutableList<Level>,
-    ) : InferFrame
-
-    data class PiBody(val domainSorts: List<Level>, val tail: Expression, val tailCtx: List<Expression>) : InferFrame
-    data class OpenLambda(val expression: Expression.Lam, val domainCtx: List<Expression>)
-    data class LambdaDomains(
-        val opened: List<OpenLambda>,
-        val tail: Expression,
-        val tailCtx: List<Expression>,
-        val index: Int,
-    ) : InferFrame
-
-    data class LambdaBody(val opened: List<OpenLambda>) : InferFrame
-    data class LetType(
-        val expression: Expression.LetE,
-        val localCtx: List<Expression>,
-    ) : InferFrame
-    data class LetValue(
-        val expression: Expression.LetE,
-        val localCtx: List<Expression>,
-    ) : InferFrame
-    data class LetBody(val value: Expression) : InferFrame
-    data class Projection(
-        val expression: Expression.Proj,
-        val localCtx: List<Expression>,
-    ) : InferFrame
-}
+private data class InferRequest(
+    val expression: Expression,
+    val localCtx: List<Expression>,
+    val validate: Boolean,
+)
 
 @IgnorableReturnValue
 context(env: Environment)
@@ -2570,6 +2523,107 @@ private fun requireSort(type: Expression, subject: Expression, localCtx: List<Ex
     val sort = typeWhnf as? Expression.Sort
         ?: error("Expected Sort type for ${subject.toStringDetailed()}, got ${typeWhnf.toStringDetailed()}")
     return sort.level
+}
+
+context(env: Environment)
+private fun Expression.requireFunctionType(app: Expression.App, localCtx: List<Expression>): Expression.ForallE =
+    this.whnf(localCtx = localCtx) as? Expression.ForallE
+        ?: error("Expected function type for app ${app.toStringDetailed()}, got ${this.toStringDetailed()}")
+
+context(env: Environment)
+private fun Expression.App.checkArgumentType(
+    argument: Expression,
+    expectedType: Expression,
+    inferredType: Expression,
+    localCtx: List<Expression>,
+) {
+//    if (debugTargetDeclaration) {
+//        println(
+//            "debug argument type: expected=${expectedType.debugHead()} " +
+//                    "inferred=${inferredType.debugHead()} argument=${argument.debugHead()}"
+//        )
+//    }
+//    if (
+//        debugTargetDeclaration &&
+//        (expectedType.debugContainsConstant("Nat.decLe") || inferredType.debugContainsConstant("Nat.decLe"))
+//    ) {
+//        println(
+//            "debug Nat.decLe argument type: expected=${expectedType.debugHead()} " +
+//                    "inferred=${inferredType.debugHead()} argument=${argument.debugHead()}"
+//        )
+//    }
+    val previousEagerReduction = env.eagerReduction
+    if (argument.isEagerReduceApp()) env.eagerReduction = true
+    val matches = try {
+        expectedType.isDefEq(inferredType, localCtx, localCtx)
+    } finally {
+        env.eagerReduction = previousEagerReduction
+    }
+//    if (debugTargetDeclaration && !matches) {
+//        println(
+//            "debug mismatch shape: expected=${expectedType.debugShallow()} " +
+//                    "inferred=${inferredType.debugShallow()} argument=${argument.debugShallow()}"
+//        )
+//        println("debug application shape: ${this.debugShallow()}")
+//        val pendingConstants = ArrayDeque<Expression>()
+//        val seenConstants = mutableSetOf<Int>()
+//        pendingConstants.addLast(inferredType)
+//        while (pendingConstants.isNotEmpty()) {
+//            val expression = pendingConstants.removeLast()
+//            if (!seenConstants.add(expression.ie)) continue
+//            when (expression) {
+//                is Expression.App -> {
+//                    pendingConstants.addLast(expression.fnExpr)
+//                    pendingConstants.addLast(expression.argExpr)
+//                }
+//                is Expression.Const -> if (
+//                    expression.name.toStringDetailed() == "AbsoluteValue.IsAdmissible.card"
+//                ) {
+//                    println(
+//                        "debug card type=${expression.inferType(validate = false).debugShallow()} " +
+//                                "value=${expression.instantiatedValue()?.debugShallow()}"
+//                    )
+//                    var cardBody = expression.instantiatedValue()
+//                    val cardDomains = mutableListOf<String>()
+//                    while (cardBody is Expression.Lam) {
+//                        cardDomains += cardBody.typeExpr.debugShallow()
+//                        cardBody = cardBody.bodyExpr
+//                    }
+//                    println(
+//                        "debug card body: binders=${cardDomains.size} " +
+//                                "domains=${cardDomains.joinToString()} tail=${cardBody?.debugShallow()}"
+//                    )
+//                }
+//                is Expression.ForallE -> {
+//                    pendingConstants.addLast(expression.typeExpr)
+//                    pendingConstants.addLast(expression.bodyExpr)
+//                }
+//                is Expression.Lam -> {
+//                    pendingConstants.addLast(expression.typeExpr)
+//                    pendingConstants.addLast(expression.bodyExpr)
+//                }
+//                is Expression.LetE -> {
+//                    pendingConstants.addLast(expression.typeExpr)
+//                    pendingConstants.addLast(expression.valueExpr)
+//                    pendingConstants.addLast(expression.bodyExpr)
+//                }
+//                is Expression.Mdata -> pendingConstants.addLast(expression.expr)
+//                is Expression.Proj -> pendingConstants.addLast(expression.structExpr)
+//                is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
+//            }
+//        }
+//        println(
+//            "debug context values: " + localCtx.indices
+//                .filter { env.localCtxValue(localCtx, it) != null }
+//                .joinToString { index ->
+//                    "$index=${env.localCtxValue(localCtx, index)!!.debugShallow()}"
+//                }
+//        )
+//    }
+    check(matches) {
+        "Application argument type mismatch in app ${this.toStringDetailed()}: " +
+                "expected ${expectedType.toStringDetailed()}, got ${inferredType.toStringDetailed()}"
+    }
 }
 
 context(env: Environment)
@@ -2582,379 +2636,164 @@ fun Expression.inferType(
     check(expression.isScopedBy(localCtx)) {
         "Inference received an expression outside its context: ${expression.toStringDetailed()}"
     }
-    val frames = ArrayDeque<InferFrame>()
-    var current = expression
-    var currentCtx = localCtx
-    var result: Expression = expression
-    var evaluating = true
 
-    while (true) {
-        if (evaluating) {
-            val contextId = if (current.maxLooseBVarIndex() < 0) 0 else env.localCtxId(currentCtx)
-            val cacheKey = InferTypeCacheKey(current.ie, contextId, validate)
-            val cachedType = env.inferTypeCacheNoLevelSubst[cacheKey]
-                ?: if (validate) null else env.inferTypeCacheNoLevelSubst[cacheKey.copy(validate = true)]
-            cachedType?.let {
-                env.inferTypeCacheHits += 1
-                result = it
-                evaluating = false
-                continue
-            }
-            frames.addLast(InferFrame.Cache(cacheKey))
-            when (val expr = current) {
+    val infer = DeepRecursiveFunction<InferRequest, Expression> { request ->
+        val expr = request.expression
+        val contextId = if (expr.maxLooseBVarIndex() < 0) 0 else env.localCtxId(request.localCtx)
+        val cacheKey = InferTypeCacheKey(expr.ie, contextId, request.validate)
+        val cachedType = env.inferTypeCacheNoLevelSubst[cacheKey]
+            ?: if (request.validate) null
+            else env.inferTypeCacheNoLevelSubst[cacheKey.copy(validate = true)]
+
+        if (cachedType != null) {
+            env.inferTypeCacheHits += 1
+            cachedType
+        } else {
+            val inferredType = when (expr) {
                 is Expression.App -> {
-                    val [head, args] = expr.unfoldApp()
-                    frames.addLast(InferFrame.AppFunction(expr, args, validate, currentCtx))
-                    current = head
+                    val [head, arguments] = expr.unfoldApp()
+                    var functionType = callRecursive(
+                        InferRequest(head, request.localCtx, request.validate)
+                    ).requireFunctionType(expr, request.localCtx)
+                    val pendingSubst = ArrayDeque<Expression>()
+                    var result: Expression? = null
+
+                    for (index in arguments.indices) {
+                        val argument = arguments[index]
+                        if (request.validate) {
+                            val expectedType = if (pendingSubst.isEmpty()) functionType.typeExpr
+                            else functionType.typeExpr.applySubst(pendingSubst)
+                            val argumentType = callRecursive(InferRequest(argument, request.localCtx, true))
+                            expr.checkArgumentType(argument, expectedType, argumentType, request.localCtx)
+                        }
+
+                        pendingSubst.addFirst(argument)
+                        val body = functionType.bodyExpr
+                        if (index == arguments.lastIndex) {
+                            result = body.applySubst(pendingSubst)
+                        } else if (body is Expression.ForallE) {
+                            functionType = body
+                        } else {
+                            val instantiatedBody = body.applySubst(pendingSubst)
+                            functionType = instantiatedBody.requireFunctionType(expr, request.localCtx)
+                            pendingSubst.clear()
+                        }
+                    }
+                    result!!
                 }
 
                 is Expression.Bvar -> {
-                    check(expr.bvar in currentCtx.indices) { "Unbound bvar ${expr.bvar} in ${expr.toStringDetailed()}" }
-                    result = currentCtx[expr.bvar].lift(expr.bvar + 1)
-                    evaluating = false
+                    check(expr.bvar in request.localCtx.indices) {
+                        "Unbound bvar ${expr.bvar} in ${expr.toStringDetailed()}"
+                    }
+                    request.localCtx[expr.bvar].lift(expr.bvar + 1)
                 }
 
                 is Expression.Const -> {
                     val type = env.declTypeByName[expr.name] ?: error("Declaration not found for ${expr.name}")
-                    result = type.instantiateLevelParams(expr.composeLevelSubst(emptyMap()))
-                    evaluating = false
+                    type.instantiateLevelParams(expr.composeLevelSubst(emptyMap()))
                 }
 
                 is Expression.ForallE -> {
-                    val opened = mutableListOf<InferFrame.OpenPi>()
-                    var binder: Expression = expr
-                    var binderCtx = currentCtx
-                    while (binder is Expression.ForallE) {
-                        opened += InferFrame.OpenPi(binder, binderCtx)
-                        binderCtx = env.consLocalCtx(binder.typeExpr, binderCtx)
-                        binder = binder.bodyExpr
+                    val binders = mutableListOf<Pair<Expression.ForallE, List<Expression>>>()
+                    var tail: Expression = expr
+                    var tailCtx = request.localCtx
+                    while (tail is Expression.ForallE) {
+                        binders += tail to tailCtx
+                        tailCtx = env.consLocalCtx(tail.typeExpr, tailCtx)
+                        tail = tail.bodyExpr
                     }
-                    frames.addLast(InferFrame.PiDomains(opened, binder, binderCtx, 0, mutableListOf()))
-                    current = opened.first().expression.typeExpr
-                    currentCtx = opened.first().domainCtx
+
+                    val domainSorts = mutableListOf<Level>()
+                    for (binding in binders) {
+                        val binder = binding.first
+                        val binderCtx = binding.second
+                        val type = callRecursive(InferRequest(binder.typeExpr, binderCtx, request.validate))
+                        domainSorts += requireSort(type, binder.typeExpr, binderCtx)
+                    }
+                    val bodyType = callRecursive(InferRequest(tail, tailCtx, request.validate))
+                    var level = requireSort(bodyType, tail, tailCtx)
+                    for (domainSort in domainSorts.asReversed()) {
+                        level = makeLevelImax(domainSort, level)
+                    }
+                    env.addCustomExpr { Expression.Sort(level.il, it) }
                 }
 
                 is Expression.Lam -> {
-                    val opened = mutableListOf<InferFrame.OpenLambda>()
-                    var binder: Expression = expr
-                    var binderCtx = currentCtx
-                    while (binder is Expression.Lam) {
-                        opened += InferFrame.OpenLambda(binder, binderCtx)
-                        binderCtx = env.consLocalCtx(binder.typeExpr, binderCtx)
-                        binder = binder.bodyExpr
+                    val binders = mutableListOf<Pair<Expression.Lam, List<Expression>>>()
+                    var tail: Expression = expr
+                    var tailCtx = request.localCtx
+                    while (tail is Expression.Lam) {
+                        binders += tail to tailCtx
+                        tailCtx = env.consLocalCtx(tail.typeExpr, tailCtx)
+                        tail = tail.bodyExpr
                     }
-                    if (validate) {
-                        frames.addLast(InferFrame.LambdaDomains(opened, binder, binderCtx, 0))
-                        current = opened.first().expression.typeExpr
-                        currentCtx = opened.first().domainCtx
-                    } else {
-                        frames.addLast(InferFrame.LambdaBody(opened))
-                        current = binder
-                        currentCtx = binderCtx
+
+                    if (request.validate) {
+                        for (binding in binders) {
+                            val binder = binding.first
+                            val binderCtx = binding.second
+                            val type = callRecursive(InferRequest(binder.typeExpr, binderCtx, true))
+                            requireSort(type, binder.typeExpr, binderCtx)
+                        }
                     }
+                    var bodyType = callRecursive(InferRequest(tail, tailCtx, request.validate))
+                    for (binding in binders.asReversed()) {
+                        val binder = binding.first
+                        bodyType = env.addCustomExpr {
+                            binder.copyAsForAllE().copy(body = bodyType.ie, ie = it)
+                        }
+                    }
+                    bodyType
                 }
 
                 is Expression.Sort -> {
                     val newLevel = env.addCustomSuccLevel(expr.level.il)
-                    result = env.addCustomExpr { Expression.Sort(newLevel.il, it) }
-                    evaluating = false
+                    env.addCustomExpr { Expression.Sort(newLevel.il, it) }
                 }
 
                 is Expression.LetE -> {
-                    if (validate) {
-                        frames.addLast(InferFrame.LetType(expr, currentCtx))
-                        current = expr.typeExpr
-                    } else {
-                        frames.addLast(InferFrame.LetBody(expr.valueExpr))
-                        current = expr.bodyExpr
-                        currentCtx = env.consLocalCtx(expr.typeExpr, currentCtx, expr.valueExpr)
+                    if (request.validate) {
+                        val declaredType = callRecursive(InferRequest(expr.typeExpr, request.localCtx, true))
+                        requireSort(declaredType, expr.typeExpr, request.localCtx)
+                        val valueType = callRecursive(InferRequest(expr.valueExpr, request.localCtx, true))
+                        check(expr.typeExpr.isDefEq(valueType, request.localCtx, request.localCtx)) {
+                            "Let value type mismatch in ${expr.toStringDetailed()}: " +
+                                    "expected ${expr.typeExpr.toStringDetailed()}, got ${valueType.toStringDetailed()}"
+                        }
                     }
+                    val bodyCtx = env.consLocalCtx(expr.typeExpr, request.localCtx, expr.valueExpr)
+                    callRecursive(InferRequest(expr.bodyExpr, bodyCtx, request.validate))
+                        .applySubst(listOf(expr.valueExpr))
                 }
 
-                is Expression.Mdata -> current = expr.expr
+                is Expression.Mdata -> callRecursive(InferRequest(expr.expr, request.localCtx, request.validate))
+
                 is Expression.NatVal -> {
                     val natTypeIndex = env.findRootInductive("Nat")?.first
                         ?: error("Nat literal ${expr.natVal} used without Nat inductive in environment")
-                    result = env.addCustomExpr { Expression.Const(_name = natTypeIndex, us = emptyList(), ie = it) }
-                    evaluating = false
+                    env.addCustomExpr { Expression.Const(_name = natTypeIndex, us = emptyList(), ie = it) }
                 }
 
                 is Expression.Proj -> {
-                    frames.addLast(InferFrame.Projection(expr, currentCtx))
-                    current = expr.structExpr
+                    val structType = callRecursive(
+                        InferRequest(expr.structExpr, request.localCtx, request.validate)
+                    )
+                    expr.inferProjectionType(structType, request.localCtx)
                 }
 
                 is Expression.StrVal -> {
                     val stringTypeIndex = env.findRootInductive("String")?.first
                         ?: error("String literal used without String inductive in environment")
-                    result = env.addCustomExpr { Expression.Const(_name = stringTypeIndex, us = emptyList(), ie = it) }
-                    evaluating = false
+                    env.addCustomExpr { Expression.Const(_name = stringTypeIndex, us = emptyList(), ie = it) }
                 }
             }
-            continue
-        }
-
-        if (frames.isEmpty()) return result
-        when (val frame = frames.removeLast()) {
-            is InferFrame.Cache -> env.inferTypeCacheNoLevelSubst[frame.key] = result
-            is InferFrame.AppFunction -> {
-                val pi = result.whnf(localCtx = frame.localCtx) as? Expression.ForallE
-                    ?: error("Expected function type for app ${frame.expression.toStringDetailed()}, got ${result.toStringDetailed()}")
-                if (frame.validate) {
-                    val argument = frame.args.first()
-                    frames.addLast(
-                        InferFrame.AppArgument(
-                            frame.expression,
-                            frame.args,
-                            0,
-                            pi,
-                            pi.typeExpr,
-                            ArrayDeque(),
-                            argument,
-                            frame.localCtx,
-                        )
-                    )
-                    current = argument
-                    currentCtx = frame.localCtx
-                    evaluating = true
-                } else {
-                    var functionType = pi
-                    val pendingSubst = ArrayDeque<Expression>()
-                    var finalType: Expression? = null
-                    frame.args.forEachIndexed { index, argument ->
-                        pendingSubst.addFirst(argument)
-                        val body = functionType.bodyExpr
-                        if (index == frame.args.lastIndex) {
-                            finalType = body.applySubst(pendingSubst)
-                        } else {
-                            val directPi = body as? Expression.ForallE
-                            if (directPi != null) {
-                                functionType = directPi
-                            } else {
-                                val instantiatedBody = body.applySubst(pendingSubst)
-                                functionType = instantiatedBody.whnf(localCtx = frame.localCtx) as? Expression.ForallE
-                                    ?: error(
-                                        "Expected function type for app ${frame.expression.toStringDetailed()}, " +
-                                                "got ${instantiatedBody.toStringDetailed()}"
-                                    )
-                                pendingSubst.clear()
-                            }
-                        }
-                    }
-                    result = finalType!!
-                }
-            }
-
-            is InferFrame.AppArgument -> {
-//                if (debugTargetDeclaration) {
-//                    println(
-//                        "debug argument type: expected=${frame.expectedType.debugHead()} " +
-//                                "inferred=${result.debugHead()} argument=${frame.argument.debugHead()}"
-//                    )
-//                }
-//                if (
-//                    debugTargetDeclaration &&
-//                    (frame.expectedType.debugContainsConstant("Nat.decLe") || result.debugContainsConstant("Nat.decLe"))
-//                ) {
-//                    println(
-//                        "debug Nat.decLe argument type: expected=${frame.expectedType.debugHead()} " +
-//                                "inferred=${result.debugHead()} argument=${frame.argument.debugHead()}"
-//                    )
-//                }
-                val previousEagerReduction = env.eagerReduction
-                if (frame.argument.isEagerReduceApp()) env.eagerReduction = true
-                val argumentTypeMatches = try {
-                    frame.expectedType.isDefEq(result, frame.localCtx, frame.localCtx)
-                } finally {
-                    env.eagerReduction = previousEagerReduction
-                }
-//                if (debugTargetDeclaration && !argumentTypeMatches) {
-//                    println(
-//                        "debug mismatch shape: expected=${frame.expectedType.debugShallow()} " +
-//                                "inferred=${result.debugShallow()} argument=${frame.argument.debugShallow()}"
-//                    )
-//                    println("debug application shape: ${frame.expression.debugShallow()}")
-//                    val pendingConstants = ArrayDeque<Expression>()
-//                    val seenConstants = mutableSetOf<Int>()
-//                    pendingConstants.addLast(result)
-//                    while (pendingConstants.isNotEmpty()) {
-//                        val expression = pendingConstants.removeLast()
-//                        if (!seenConstants.add(expression.ie)) continue
-//                        when (expression) {
-//                            is Expression.App -> {
-//                                pendingConstants.addLast(expression.fnExpr)
-//                                pendingConstants.addLast(expression.argExpr)
-//                            }
-//                            is Expression.Const -> if (
-//                                expression.name.toStringDetailed() == "AbsoluteValue.IsAdmissible.card"
-//                            ) {
-//                                println(
-//                                    "debug card type=${expression.inferType(validate = false).debugShallow()} " +
-//                                            "value=${expression.instantiatedValue()?.debugShallow()}"
-//                                )
-//                                var cardBody = expression.instantiatedValue()
-//                                val cardDomains = mutableListOf<String>()
-//                                while (cardBody is Expression.Lam) {
-//                                    cardDomains += cardBody.typeExpr.debugShallow()
-//                                    cardBody = cardBody.bodyExpr
-//                                }
-//                                println(
-//                                    "debug card body: binders=${cardDomains.size} " +
-//                                            "domains=${cardDomains.joinToString()} tail=${cardBody?.debugShallow()}"
-//                                )
-//                            }
-//                            is Expression.ForallE -> {
-//                                pendingConstants.addLast(expression.typeExpr)
-//                                pendingConstants.addLast(expression.bodyExpr)
-//                            }
-//                            is Expression.Lam -> {
-//                                pendingConstants.addLast(expression.typeExpr)
-//                                pendingConstants.addLast(expression.bodyExpr)
-//                            }
-//                            is Expression.LetE -> {
-//                                pendingConstants.addLast(expression.typeExpr)
-//                                pendingConstants.addLast(expression.valueExpr)
-//                                pendingConstants.addLast(expression.bodyExpr)
-//                            }
-//                            is Expression.Mdata -> pendingConstants.addLast(expression.expr)
-//                            is Expression.Proj -> pendingConstants.addLast(expression.structExpr)
-//                            is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
-//                        }
-//                    }
-//                    println(
-//                        "debug context values: " + frame.localCtx.indices
-//                            .filter { env.localCtxValue(frame.localCtx, it) != null }
-//                            .joinToString { index ->
-//                                "$index=${env.localCtxValue(frame.localCtx, index)!!.debugShallow()}"
-//                            }
-//                    )
-//                }
-                check(argumentTypeMatches) {
-                    "Application argument type mismatch in app ${frame.expression.toStringDetailed()}: " +
-                            "expected ${frame.expectedType.toStringDetailed()}, got ${result.toStringDetailed()}"
-                }
-                val pendingSubst = frame.pendingSubst
-                pendingSubst.addFirst(frame.argument)
-                val body = frame.functionType.bodyExpr
-                val nextIndex = frame.index + 1
-                if (nextIndex == frame.args.size) {
-                    result = body.applySubst(pendingSubst)
-                } else {
-                    val directPi = body as? Expression.ForallE
-                    val functionType: Expression.ForallE
-                    val nextPendingSubst: ArrayDeque<Expression>
-                    if (directPi != null) {
-                        functionType = directPi
-                        nextPendingSubst = pendingSubst
-                    } else {
-                        val instantiatedBody = body.applySubst(pendingSubst)
-                        functionType = instantiatedBody.whnf(localCtx = frame.localCtx) as? Expression.ForallE
-                            ?: error(
-                                "Expected function type for app ${frame.expression.toStringDetailed()}, " +
-                                        "got ${instantiatedBody.toStringDetailed()}"
-                            )
-                        nextPendingSubst = ArrayDeque()
-                    }
-                    val expectedType = functionType.typeExpr.applySubst(nextPendingSubst)
-                    val argument = frame.args[nextIndex]
-                    frames.addLast(
-                        InferFrame.AppArgument(
-                            frame.expression,
-                            frame.args,
-                            nextIndex,
-                            functionType,
-                            expectedType,
-                            nextPendingSubst,
-                            argument,
-                            frame.localCtx,
-                        )
-                    )
-                    current = argument
-                    currentCtx = frame.localCtx
-                    evaluating = true
-                }
-            }
-
-            is InferFrame.PiDomains -> {
-                val opened = frame.opened[frame.index]
-                val domainSorts = frame.domainSorts
-                domainSorts += requireSort(result, opened.expression.typeExpr, opened.domainCtx)
-                val nextIndex = frame.index + 1
-                if (nextIndex < frame.opened.size) {
-                    frames.addLast(frame.copy(index = nextIndex, domainSorts = domainSorts))
-                    current = frame.opened[nextIndex].expression.typeExpr
-                    currentCtx = frame.opened[nextIndex].domainCtx
-                } else {
-                    frames.addLast(InferFrame.PiBody(domainSorts, frame.tail, frame.tailCtx))
-                    current = frame.tail
-                    currentCtx = frame.tailCtx
-                }
-                evaluating = true
-            }
-
-            is InferFrame.PiBody -> {
-                var level = requireSort(result, frame.tail, frame.tailCtx)
-                for (domainSort in frame.domainSorts.asReversed()) {
-                    level = makeLevelImax(domainSort, level)
-                }
-                result = env.addCustomExpr { Expression.Sort(level.il, it) }
-            }
-
-            is InferFrame.LambdaDomains -> {
-                val opened = frame.opened[frame.index]
-                requireSort(result, opened.expression.typeExpr, opened.domainCtx)
-                val nextIndex = frame.index + 1
-                if (nextIndex < frame.opened.size) {
-                    frames.addLast(frame.copy(index = nextIndex))
-                    current = frame.opened[nextIndex].expression.typeExpr
-                    currentCtx = frame.opened[nextIndex].domainCtx
-                } else {
-                    frames.addLast(InferFrame.LambdaBody(frame.opened))
-                    current = frame.tail
-                    currentCtx = frame.tailCtx
-                }
-                evaluating = true
-            }
-
-            is InferFrame.LambdaBody -> {
-                for (opened in frame.opened.asReversed()) {
-                    result = env.addCustomExpr {
-                        opened.expression.copyAsForAllE().copy(body = result.ie, ie = it)
-                    }
-                }
-            }
-
-            is InferFrame.LetType -> {
-                requireSort(result, frame.expression.typeExpr, frame.localCtx)
-                frames.addLast(
-                    InferFrame.LetValue(
-                        frame.expression,
-                        frame.localCtx,
-                    )
-                )
-                current = frame.expression.valueExpr
-                currentCtx = frame.localCtx
-                evaluating = true
-            }
-
-            is InferFrame.LetValue -> {
-                val expression = frame.expression
-                check(expression.typeExpr.isDefEq(result, frame.localCtx, frame.localCtx)) {
-                    "Let value type mismatch in ${frame.expression.toStringDetailed()}: " +
-                            "expected ${expression.typeExpr.toStringDetailed()}, got ${result.toStringDetailed()}"
-                }
-                frames.addLast(InferFrame.LetBody(expression.valueExpr))
-                current = expression.bodyExpr
-                currentCtx = env.consLocalCtx(expression.typeExpr, frame.localCtx, expression.valueExpr)
-                evaluating = true
-            }
-
-            is InferFrame.LetBody -> result = result.applySubst(listOf(frame.value))
-
-            is InferFrame.Projection ->
-                result = frame.expression.inferProjectionType(result, frame.localCtx)
+            env.inferTypeCacheNoLevelSubst[cacheKey] = inferredType
+            inferredType
         }
     }
+
+    return infer(InferRequest(expression, localCtx, validate))
 }
 
 
