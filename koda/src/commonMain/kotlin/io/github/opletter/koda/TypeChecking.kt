@@ -24,7 +24,7 @@ fun typeCheck(data: Sequence<ExportType>) {
 
 context(env: Environment)
 fun _typeCheck(rawData: Sequence<ExportType>) {
-    val debugTimingRanges = emptyList<IntRange>()
+//    val debugTimingRanges = emptyList<IntRange>()
     rawData.forEachIndexed { index, data ->
         debugTargetDeclaration = index == debugTargetIndex && data is Declaration
         //i: progress = 1000000 13.462160800s
@@ -97,7 +97,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 check(data.hasDistinctLevelParams()) { "Duplicate universe parameters in $data" }
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
 //                println("found type: ${data.typeExpr.toStringDetailed()}")
-                val debugStart = env.clock.elapsedNow()
+//                val debugStart = env.clock.elapsedNow()
                 try {
                     val declaredTypeSortLevel = data.typeExpr.inferSort()
                     val value = when (data) {
@@ -216,8 +216,7 @@ fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
 @Suppress("NOTHING_TO_INLINE")
 context(env: Environment)
 private inline fun Expression.Const.hasSameNameAndLevels(other: Expression.Const): Boolean {
-    if (this.name != other.name) return false
-    return this.levels.isEqual(other.levels)
+    return this.name == other.name && this.levels.isEqual(other.levels)
 }
 
 context(env: Environment)
@@ -325,15 +324,16 @@ private fun List<Expression>.closedEvalEnv(): ClosedEvalEnv {
 context(env: Environment)
 private fun Expression.tryClosedBoolTrueDefEq(other: Expression, localCtx: List<Expression>): Boolean? {
     if (other.boolValue() != true || this.maxLooseBVarIndex() >= 0 && !env.eagerReduction) return null
-    val start = env.clock.elapsedNow()
+//    val start = env.clock.elapsedNow()
     val value = ClosedClosure(this, localCtx.closedEvalEnv()).closedWhnf(trace = debugTargetDeclaration)
         ?: return null
     val result = if (value.arguments.isEmpty()) value.head.expression.boolValue() else null
-    return result.also {
+    return result
+//        .also {
 //        if (debugClosedEvaluation || debugTargetDeclaration) {
 //            println("closed Bool evaluation: expr=${this.ie} result=$result elapsed=${env.clock.elapsedNow() - start}")
 //        }
-    }
+//    }
 }
 
 context(env: Environment)
@@ -505,19 +505,23 @@ private fun ClosedClosure.closedDefEq(
                     expressions.addLast(current.fnExpr to depth)
                     expressions.addLast(current.argExpr to depth)
                 }
+
                 is Expression.ForallE -> {
                     expressions.addLast(current.typeExpr to depth)
                     expressions.addLast(current.bodyExpr to depth + 1)
                 }
+
                 is Expression.Lam -> {
                     expressions.addLast(current.typeExpr to depth)
                     expressions.addLast(current.bodyExpr to depth + 1)
                 }
+
                 is Expression.LetE -> {
                     expressions.addLast(current.typeExpr to depth)
                     expressions.addLast(current.valueExpr to depth)
                     expressions.addLast(current.bodyExpr to depth + 1)
                 }
+
                 is Expression.Mdata -> expressions.addLast(current.expr to depth)
                 is Expression.Proj -> expressions.addLast(current.structExpr to depth)
                 is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
@@ -548,15 +552,15 @@ private fun ClosedClosure.closedDefEq(
         if (proofArgumentMasks.containsKey(key)) return proofArgumentMasks[key]
         var type = constant.inferType(validate = false)
         var localCtx = emptyList<Expression>()
-        val result = BooleanArray(arity)
-        for (index in 0 until arity) {
+        val result = BooleanArray(arity) {
             val forall = type.whnf(localCtx = localCtx) as? Expression.ForallE
-                ?: return null.also { proofArgumentMasks[key] = null }
-            result[index] = forall.typeExpr
+                ?: return run { proofArgumentMasks[key] = null; null }
+            val domainIsProp = forall.typeExpr
                 .inferSort(localCtx = localCtx, validate = false)
                 .isLessOrEqual(Level.Zero)
             localCtx = env.consLocalCtx(forall.typeExpr, localCtx)
             type = forall.bodyExpr
+            domainIsProp
         }
         proofArgumentMasks[key] = result
         return result
@@ -782,10 +786,10 @@ private fun ClosedClosure.closedDefEq(
                     enclosingStructureType(task.expectedType),
                 )
             )
-            for (index in left.arguments.indices) {
+            left.arguments.forEachIndexed { index, left ->
                 pending.addLast(
                     ClosedDefEqTask(
-                        left.arguments[index], right.arguments[index], task.nextNeutral, true,
+                        left, right.arguments[index], task.nextNeutral, true,
                     )
                 )
             }
@@ -848,6 +852,7 @@ private fun ClosedClosure.closedDefEq(
                 ClosedEvalEnv.Empty,
                 neutralDomain.rigidTypeIsProp(),
             )
+
             fun applyNeutral(value: ClosedValue, lambda: Expression.Lam?): ClosedClosure {
                 if (lambda != null) {
                     return ClosedClosure(
@@ -894,6 +899,7 @@ private fun ClosedClosure.closedDefEq(
                     ClosedEvalEnv.Empty,
                     forall.typeExpr.rigidTypeIsProp(),
                 )
+
                 fun applyNeutral(value: ClosedValue): ClosedClosure = ClosedClosure(
                     value.head.expression,
                     value.head.locals,
@@ -1167,9 +1173,9 @@ private fun ClosedClosure.closedWhnf(
             }
         }
 
-        for (index in 0 until prefixSize) applyArgument(recursorArgs[index])
-        for (argument in fieldArgs) applyArgument(argument)
-        for (index in majorIndex + 1 until recursorArgs.size) applyArgument(recursorArgs[index])
+        (recursorArgs.take(prefixSize) + fieldArgs + recursorArgs.drop(majorIndex + 1)).forEach {
+            applyArgument(it)
+        }
     }
 
     while (true) {
@@ -1514,6 +1520,7 @@ private inline fun NatPrimitive.reduce(
             val exponent = rhs.toIntOrNull() ?: return null
             natCtor(first.pow(exponent))
         }
+
         NatPrimitive.Div -> natCtor(first.divLean(rhs))
         NatPrimitive.Mod -> natCtor(first.modLean(rhs))
         NatPrimitive.Beq -> boolCtor(first == rhs)
@@ -1640,6 +1647,7 @@ private fun Expression.quickIsDefEq(
     return when {
         this is Expression.Bvar && other is Expression.Bvar ->
             if (this.bvar == other.bvar) true else null
+
         this is Expression.ForallE && other is Expression.ForallE ->
             this.isDefEqBinding(other, localCtxLeft, localCtxRight, lambda = false)
 
@@ -1764,7 +1772,7 @@ private fun Inductive.RecursorVal.natLiteralRecursorRules(): NatLiteralRecursorR
     val result = run {
         var zeroRule: Inductive.RecursorVal.RecursorRule? = null
         var succRule: Inductive.RecursorVal.RecursorRule? = null
-        for (rule in this.rules) {
+        this.rules.forEach { rule ->
             val ctorDecl = env.constructorByName[rule.ctorName] ?: return@run null
             val inductiveName = ctorDecl.inductName as? Name.Str ?: return@run null
             if (
@@ -2083,6 +2091,7 @@ private fun Expression.Const.projectionReductionInfo(): ProjectionReductionInfo?
                     binderCount += 1
                     body.bodyExpr
                 }
+
                 else -> break
             }
         }
@@ -2124,10 +2133,10 @@ private fun Expression.App.tryReduceProjectionApp(): Expression? {
 
 private fun chooseLazyDeltaSide(left: LazyDeltaStep?, right: LazyDeltaStep?): LazyDeltaChoice? {
     if (left == null && right == null) return null
-    if (left != null && right == null) return LazyDeltaChoice.Left
-    if (left == null && right != null) return LazyDeltaChoice.Right
+    if (right == null) return LazyDeltaChoice.Left
+    if (left == null) return LazyDeltaChoice.Right
 
-    val kindCmp = left!!.kind.priority.compareTo(right!!.kind.priority)
+    val kindCmp = left.kind.priority.compareTo(right.kind.priority)
     if (kindCmp > 0) return LazyDeltaChoice.Left
     if (kindCmp < 0) return LazyDeltaChoice.Right
 
@@ -2139,13 +2148,12 @@ private fun chooseLazyDeltaSide(left: LazyDeltaStep?, right: LazyDeltaStep?): La
 
 context(env: Environment)
 private fun Expression.tryLazyDeltaStep(): LazyDeltaStep? {
-    val spine = this.asAppSpine()
-    val headExpr = spine.first
+    val [headExpr, args] = this.asAppSpine()
     // A projection is not itself a delta target. Keeping it out of the ordinary
     // hint comparison lets the projection-specific paths reduce its structure first.
     if (headExpr is Expression.Proj) return null
     val projectionInfo = (headExpr as? Expression.Const)?.projectionReductionInfo()
-    if (projectionInfo != null && spine.second.size < projectionInfo.arity) return null
+    if (projectionInfo != null && args.size < projectionInfo.arity) return null
     return headExpr.lazyDeltaStepInfo(this)
 }
 
@@ -2309,11 +2317,7 @@ private fun Expression.isDefEqWhnf(
         is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
 
         is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
-        else -> if (other is Expression.Lam) {
-            this.tryCompareWithFunction(other, localCtxLeft, localCtxRight) ?: false
-        } else {
-            false
-        }
+        else -> other is Expression.Lam && this.tryCompareWithFunction(other, localCtxLeft, localCtxRight) ?: false
     }
     if (result) return true
     val leftIsConstructor = (this.asAppSpine().first as? Expression.Const)?.decl is Inductive.ConstructorVal
@@ -2424,6 +2428,7 @@ private fun Expression.tryStringLitCtor(): Expression? {
     val headCtorDecl = (headExpr as? Expression.Const)?.decl as? Inductive.ConstructorVal
     return ctorExpr.takeIf { headCtorDecl != null }
 }
+
 context(env: Environment)
 private fun Expression.StrVal.toStringOfListExpr(): Expression {
     val stringInfo = env.findRootInductive("String")
@@ -2470,7 +2475,7 @@ private fun Expression.StrVal.toListCharExpr(): Expression {
         Expression.Const(_name = listConsCtorIndex, us = listOf(Level.Zero.il), ie = it)
     }
     var listExpr = listNilExpr.applyArgs(listOf(charTypeExpr))
-    for (codePoint in this.strVal.toUnicodeScalarValues().asReversed()) {
+    this.strVal.toUnicodeScalarValues().asReversed().forEach { codePoint ->
         val natExpr = env.addCustomExpr {
             Expression.NatVal(NatValue.fromString(codePoint.toString()), it)
         }
@@ -2663,8 +2668,7 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
                     ).requireFunctionType(expr, request.localCtx)
                     val pendingSubst = ArrayDeque<Expression>()
 
-                    for (index in arguments.indices) {
-                        val argument = arguments[index]
+                    arguments.forEachIndexed { index, argument ->
                         if (request.validate) {
                             val expectedType = if (pendingSubst.isEmpty()) functionType.typeExpr
                             else functionType.typeExpr.applySubst(pendingSubst)
@@ -2710,16 +2714,14 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
                     }
 
                     val domainSorts = mutableListOf<Level>()
-                    for (binding in binders) {
-                        val binder = binding.first
-                        val binderCtx = binding.second
+                    binders.forEach { [binder, binderCtx] ->
                         val type = callRecursive(InferRequest(env, binder.typeExpr, binderCtx, request.validate))
                         domainSorts += requireSort(type, binder.typeExpr, binderCtx)
                     }
                     val bodyType = callRecursive(InferRequest(env, tail, tailCtx, request.validate))
                     var level = requireSort(bodyType, tail, tailCtx)
-                    for (domainSort in domainSorts.asReversed()) {
-                        level = makeLevelImax(domainSort, level)
+                    domainSorts.asReversed().forEach {
+                        level = makeLevelImax(it, level)
                     }
                     env.addCustomExpr { Expression.Sort(level.il, it) }
                 }
@@ -2735,16 +2737,13 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
                     }
 
                     if (request.validate) {
-                        for (binding in binders) {
-                            val binder = binding.first
-                            val binderCtx = binding.second
+                        binders.forEach { [binder, binderCtx] ->
                             val type = callRecursive(InferRequest(env, binder.typeExpr, binderCtx, true))
                             requireSort(type, binder.typeExpr, binderCtx)
                         }
                     }
                     var bodyType = callRecursive(InferRequest(env, tail, tailCtx, request.validate))
-                    for (binding in binders.asReversed()) {
-                        val binder = binding.first
+                    binders.asReversed().forEach { [binder] ->
                         bodyType = env.addCustomExpr {
                             binder.copyAsForAllE().copy(body = bodyType.ie, ie = it)
                         }
@@ -2870,20 +2869,19 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                         val value = env.localCtxValue(localCtx, current.bvar)
                         if (value == null) result = current else current = value.lift(current.bvar + 1)
                     }
+
                     is Expression.Proj -> {
                         frames.addLast(WhnfFrame.ReduceProjection(current, mode))
                         current = current.structExpr
-                        mode = if (mode == WhnfMode.CoreCheapProjection) {
-                            WhnfMode.CoreCheapProjection
-                        } else {
-                            WhnfMode.Full
+                        if (mode != WhnfMode.CoreCheapProjection) {
+                            mode = WhnfMode.Full
                         }
                     }
 
                     is Expression.App -> {
-                        val spine = current.unfoldApp()
-                        frames.addLast(WhnfFrame.ApplyHead(current, spine.first, spine.second, mode))
-                        current = spine.first
+                        val [headExpr, args] = current.unfoldApp()
+                        frames.addLast(WhnfFrame.ApplyHead(current, headExpr, args, mode))
+                        current = headExpr
                     }
 
                     else -> result = current
@@ -3314,28 +3312,26 @@ private fun Expression.Proj.inferProjectionType(
 }
 
 context(env: Environment)
-private fun Expression.containsProjectionOf(typeName: Name, projIndices: Set<Int>): Boolean {
-    if (projIndices.isEmpty()) return false
-    return when (this) {
-        is Expression.App -> this.fnExpr.containsProjectionOf(typeName, projIndices)
-                || this.argExpr.containsProjectionOf(typeName, projIndices)
+private fun Expression.containsProjectionOf(typeName: Name, projIndices: Set<Int>): Boolean = when (this) {
+    else if projIndices.isEmpty() -> false
+    is Expression.App -> this.fnExpr.containsProjectionOf(typeName, projIndices)
+            || this.argExpr.containsProjectionOf(typeName, projIndices)
 
-        is Expression.ForallE -> this.typeExpr.containsProjectionOf(typeName, projIndices)
-                || this.bodyExpr.containsProjectionOf(typeName, projIndices)
+    is Expression.ForallE -> this.typeExpr.containsProjectionOf(typeName, projIndices)
+            || this.bodyExpr.containsProjectionOf(typeName, projIndices)
 
-        is Expression.Lam -> this.typeExpr.containsProjectionOf(typeName, projIndices)
-                || this.bodyExpr.containsProjectionOf(typeName, projIndices)
+    is Expression.Lam -> this.typeExpr.containsProjectionOf(typeName, projIndices)
+            || this.bodyExpr.containsProjectionOf(typeName, projIndices)
 
-        is Expression.LetE -> this.typeExpr.containsProjectionOf(typeName, projIndices)
-                || this.valueExpr.containsProjectionOf(typeName, projIndices)
-                || this.bodyExpr.containsProjectionOf(typeName, projIndices)
+    is Expression.LetE -> this.typeExpr.containsProjectionOf(typeName, projIndices)
+            || this.valueExpr.containsProjectionOf(typeName, projIndices)
+            || this.bodyExpr.containsProjectionOf(typeName, projIndices)
 
-        is Expression.Mdata -> this.expr.containsProjectionOf(typeName, projIndices)
-        is Expression.Proj -> (this.typeNameExpr == typeName && this.projIndex in projIndices)
-                || this.structExpr.containsProjectionOf(typeName, projIndices)
+    is Expression.Mdata -> this.expr.containsProjectionOf(typeName, projIndices)
+    is Expression.Proj -> (this.typeNameExpr == typeName && this.projIndex in projIndices)
+            || this.structExpr.containsProjectionOf(typeName, projIndices)
 
-        else -> false
-    }
+    else -> false
 }
 
 context(env: Environment)
@@ -3436,12 +3432,7 @@ private fun Expression.App.tryReduceRecursorHead(
 
         val fieldArgs = List(constructorDecl.numFields) { fieldIndex ->
             env.addCustomExpr {
-                Expression.Proj(
-                    typeName = inductiveDeclIndex,
-                    idx = fieldIndex,
-                    struct = majorWhnf.ie,
-                    ie = it
-                )
+                Expression.Proj(typeName = inductiveDeclIndex, idx = fieldIndex, struct = majorWhnf.ie, ie = it)
             }
         }
         return applyRule(singleRule, fieldArgs)
@@ -3547,14 +3538,9 @@ private fun Expression.tryStructureEtaDefEq(
         if (constructorType.inferSort(localCtx = constructorCtx, validate = false).isLessOrEqual(Level.Zero)) {
             return false
         }
-        for (fieldIndex in 0 until constructor.numFields) {
+        repeat(constructor.numFields) { fieldIndex ->
             val projection = env.addCustomExpr {
-                Expression.Proj(
-                    typeName = inductiveIndex,
-                    idx = fieldIndex,
-                    struct = value.ie,
-                    ie = it,
-                )
+                Expression.Proj(typeName = inductiveIndex, idx = fieldIndex, struct = value.ie, ie = it)
             }
             val field = constructorSpine.second[constructor.numParams + fieldIndex]
             if (!projection.isDefEq(field, valueCtx, constructorCtx)) return false
@@ -3575,8 +3561,7 @@ private fun Expression.tryStructureEtaDefEq(
     if (inductive.isRec || inductive.numIndices != 0 || inductive.ctors.size != 1) return false
     if (leftType.inferSort(localCtx = localCtxLeft, validate = false).isLessOrEqual(Level.Zero)) return false
     val constructor = env.declarations[inductive.ctors.single()] as? Inductive.ConstructorVal ?: return false
-    if (constructor.numFields != 0) return false
-    return leftType.isDefEq(
+    return constructor.numFields == 0 && leftType.isDefEq(
         other.inferType(localCtx = localCtxRight, validate = false),
         localCtxLeft,
         localCtxRight,
