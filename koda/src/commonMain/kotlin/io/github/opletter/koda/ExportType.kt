@@ -184,6 +184,9 @@ sealed class Expression : ExportType {
     @SerialName("const")
     data class Const(@SerialName("name") private val _name: Int, private val us: List<Int>, override val ie: Int) :
         Expression() {
+        internal val nameId get() = _name
+        internal val hasNoLevels get() = us.isEmpty()
+
         context(env: Environment)
         val name get() = env.names[_name] ?: error("Name $_name not found")
 
@@ -196,7 +199,7 @@ sealed class Expression : ExportType {
 
     @Serializable
     @SerialName("app")
-    data class App(private val fn: Int, private val arg: Int, override val ie: Int) :
+    data class App(internal val fn: Int, internal val arg: Int, override val ie: Int) :
         Expression() { // TODO: why are these documented as <number> and not <integer>
         context(env: Environment)
         val fnExpr get() = env.expressions[fn] ?: error("Expression $fn not found")
@@ -216,8 +219,8 @@ sealed class Expression : ExportType {
     @SerialName("lam")
     data class Lam(
         @SerialName("name") private val _name: Int,
-        private val type: Int,
-        private val body: Int,
+        internal val type: Int,
+        internal val body: Int,
         val binderInfo: BinderInfo,
         override val ie: Int,
     ) : Expression() {
@@ -247,8 +250,8 @@ sealed class Expression : ExportType {
     /** Also known as `pi` */
     data class ForallE(
         @SerialName("name") private val _name: Int,
-        private val type: Int,
-        private val body: Int,
+        internal val type: Int,
+        internal val body: Int,
         val binderInfo: BinderInfo,
         override val ie: Int,
     ) : Expression() {
@@ -275,9 +278,9 @@ sealed class Expression : ExportType {
     @SerialName("letE")
     data class LetE(
         @SerialName("name") private val _name: Int,
-        private val type: Int,
-        private val value: Int,
-        private val body: Int,
+        internal val type: Int,
+        internal val value: Int,
+        internal val body: Int,
         val nondep: Boolean,
         override val ie: Int,
     ) : Expression() {
@@ -299,7 +302,7 @@ sealed class Expression : ExportType {
     data class Proj(
         private val typeName: Int,
         private val idx: Int,
-        private val struct: Int,
+        internal val struct: Int,
         override val ie: Int,
     ) : Expression() {
         context(env: Environment)
@@ -327,7 +330,7 @@ sealed class Expression : ExportType {
     @Serializable
     @SerialName("mdata")
     data class Mdata(
-        @SerialName("expr") private val _expr: Int,
+        @SerialName("expr") internal val _expr: Int,
         val data: JsonObject,
         override val ie: Int,
     ) : Expression() {
@@ -336,7 +339,7 @@ sealed class Expression : ExportType {
     }
 
     override fun registerInto(env: Environment) {
-        env.expressions[this.ie] = this
+        env.registerSourceExpression(this)
     }
 
     context(env: Environment)

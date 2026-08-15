@@ -45,7 +45,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 is Level -> data.registerInto(env)
                 is Expression -> {
                     data.registerInto(env)
-                    env.recordExpressionReferences(data)
                 }
                 is Declaration -> {
                     data.registerInto(env)
@@ -90,7 +89,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 
             is Expression -> {
                 data.registerInto(env)
-                env.recordExpressionReferences(data)
             }
 
             is Declaration -> {
@@ -254,13 +252,12 @@ fun Expression.isDefEq(
     if (this === other) return true
     val cacheKey = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
     if (env.defEqEquivalences.areEquivalent(cacheKey)) return true
-    env.defEqCache[cacheKey]?.let { cached ->
+    if (cacheKey in env.defEqCache) {
         env.defEqCacheHits += 1
-        return cached
+        return false
     }
     fun finish(value: Boolean): Boolean {
-        env.defEqCache[cacheKey] = value
-        if (value) env.defEqEquivalences.addEquivalent(cacheKey)
+        if (value) env.defEqEquivalences.addEquivalent(cacheKey) else env.defEqCache += cacheKey
         return value
     }
 
@@ -278,6 +275,7 @@ fun Expression.isDefEq(
 //    if (traceDefEq) println("debug defeq phase: structural")
     this.tryStructuralDefEq(other)?.let { return finish(it) }
     if (this.tryKnownDefEqCongruence(other, localCtxLeft, localCtxRight)) return finish(true)
+    if (this.tryProofIrrelevanceDefEqNoLog(other, localCtxLeft, localCtxRight)) return finish(true)
 
 //    if (traceDefEq) println("debug defeq phase: cheap whnf")
     val leftCore = this.whnfCore(localCtxLeft, cheapProjection = true)
@@ -286,10 +284,6 @@ fun Expression.isDefEq(
     leftCore.quickIsDefEq(rightCore, localCtxLeft, localCtxRight)?.let { return finish(it) }
     leftCore.tryStructuralDefEq(rightCore)?.let { return finish(it) }
     if (leftCore.tryKnownDefEqCongruence(rightCore, localCtxLeft, localCtxRight)) return finish(true)
-    if (leftCore.tryProofIrrelevanceDefEqNoLog(rightCore, localCtxLeft, localCtxRight)) {
-        return finish(true)
-    }
-
 //    if (traceDefEq) println("debug defeq phase: lazy delta")
     val lazyResult = leftCore.lazyDeltaDefEq(rightCore, localCtxLeft, localCtxRight)
 //    if (traceDefEq) {
@@ -1512,19 +1506,26 @@ private fun ClosedClosure.closedWhnf(
 
 context(env: Environment)
 private fun Expression.Const.natPrimitive(): NatPrimitive? {
-    if (this.levels.isNotEmpty()) return null
-    return when (this.name.toStringDetailed()) {
-        "Nat.succ" -> NatPrimitive.Succ
-        "Nat.add" -> NatPrimitive.Add
-        "Nat.sub" -> NatPrimitive.Sub
-        "Nat.mul" -> NatPrimitive.Mul
-        "Nat.pow" -> NatPrimitive.Pow
-        "Nat.div" -> NatPrimitive.Div
-        "Nat.mod" -> NatPrimitive.Mod
-        "Nat.beq" -> NatPrimitive.Beq
-        "Nat.ble" -> NatPrimitive.Ble
+    return when (this.natMemberName()) {
+        "succ" -> NatPrimitive.Succ
+        "add" -> NatPrimitive.Add
+        "sub" -> NatPrimitive.Sub
+        "mul" -> NatPrimitive.Mul
+        "pow" -> NatPrimitive.Pow
+        "div" -> NatPrimitive.Div
+        "mod" -> NatPrimitive.Mod
+        "beq" -> NatPrimitive.Beq
+        "ble" -> NatPrimitive.Ble
         else -> null
     }
+}
+
+context(env: Environment)
+private fun Expression.Const.natMemberName(): String? {
+    if (!this.hasNoLevels) return null
+    val member = this.name as? Name.Str ?: return null
+    val parent = env.names[member.pre] as? Name.Str ?: return null
+    return member.str.takeIf { parent.pre == 0 && parent.str == "Nat" }
 }
 
 context(env: Environment)
@@ -1666,7 +1667,6 @@ private fun Expression.quickIsDefEq(
     localCtxRight: List<Expression>,
 ): Boolean? {
     if (this === other) return true
-    this.tryNatOffsetDefEq(other, localCtxLeft, localCtxRight)?.let { return it }
     return when {
         this is Expression.Bvar && other is Expression.Bvar ->
             if (this.bvar == other.bvar) true else null
@@ -1752,10 +1752,8 @@ private fun Expression.natPredecessorOrNull(): Expression? {
         return env.addCustomExpr { Expression.NatVal(this.natVal.minus(1L), it) }
     }
     val app = this as? Expression.App ?: return null
-    val spine = app.unfoldApp()
-    val constant = spine.first as? Expression.Const ?: return null
-    if (constant.levels.isNotEmpty() || constant.name.toStringDetailed() != "Nat.succ") return null
-    return spine.second.singleOrNull()
+    val constant = app.fnExpr as? Expression.Const ?: return null
+    return app.argExpr.takeIf { constant.natMemberName() == "succ" }
 }
 
 private enum class LazyDeltaStepKind(val priority: Int) {
@@ -1847,6 +1845,9 @@ private fun Expression.lazyDeltaDefEq(
 //                        "right=${right.debugHead()}"
 //            )
 //        }
+        left.tryNatOffsetDefEq(right, localCtxLeft, localCtxRight)?.let {
+            return LazyDeltaResult(left, right, it)
+        }
         left.quickIsDefEq(right, localCtxLeft, localCtxRight)?.let {
             return LazyDeltaResult(left, right, it)
         }
@@ -1973,10 +1974,11 @@ private fun Expression.App.isDefEqWhnfSpine(
                     functionType = advanceFunctionType(functionType!!, leftArgs[priorIndex])
                 }
             }
-            val domain = functionType.typeExpr.applySubst(pendingSubst)
-            val domainIsProp = domain
-                .inferSort(localCtx = localCtxLeft, validate = false)
-                .isLessOrEqual(Level.Zero)
+            val domain = functionType.typeExpr
+            val domainIsProp = domain.rigidTypeIsProp() ||
+                    domain.applySubst(pendingSubst)
+                        .inferSort(localCtx = localCtxLeft, validate = false)
+                        .isLessOrEqual(Level.Zero)
             if (domainIsProp) {
                 env.typedCongruenceProofSkips += 1
             } else if (!leftArgument.isDefEq(rightArgument, localCtxLeft, localCtxRight)) {
@@ -2099,8 +2101,10 @@ private fun Expression.tryRegularDefinitionCongruence(
 
 context(env: Environment)
 private fun Expression.Const.projectionReductionInfo(): ProjectionReductionInfo? {
-    val nameIndex = env.nameIndices[this.name] ?: return null
-    env.projectionReductionInfoByNameIndex[nameIndex]?.let { return it }
+    val nameIndex = this.nameId
+    if (env.projectionReductionInfoByNameIndex.containsKey(nameIndex)) {
+        return env.projectionReductionInfoByNameIndex[nameIndex]
+    }
 
     val result = run {
         val defDecl = this.decl as? Declaration.Def ?: return@run null
@@ -2109,7 +2113,7 @@ private fun Expression.Const.projectionReductionInfo(): ProjectionReductionInfo?
         while (true) {
             projectionBody = when (val body = projectionBody) {
                 is Expression.Mdata -> body.expr
-                is Expression.LetE -> body.bodyExpr.applySubst(listOf(body.valueExpr))
+                is Expression.LetE -> body.instantiateLeadingLets()
                 is Expression.Lam -> {
                     binderCount += 1
                     body.bodyExpr
@@ -2210,18 +2214,28 @@ private fun LazyDeltaStep.unfold(localCtx: List<Expression>): Expression {
 }
 
 context(env: Environment)
+private fun Expression.LetE.instantiateLeadingLets(): Expression {
+    var tail: Expression = this
+    val subst = ArrayDeque<Expression>()
+    while (tail is Expression.LetE) {
+        subst.addFirst(tail.valueExpr.applySubst(subst))
+        tail = tail.bodyExpr
+    }
+    return tail.applySubst(subst)
+}
+
+context(env: Environment)
 private fun Expression.reduceBetaLetHead(): Expression {
     var current = this
     while (true) {
         current = when (current) {
             is Expression.Mdata -> current.expr
-            is Expression.LetE -> current.bodyExpr.applySubst(listOf(current.valueExpr))
+            is Expression.LetE -> current.instantiateLeadingLets()
             is Expression.App -> {
                 val spine = current.unfoldApp()
                 when (val head = spine.first) {
                     is Expression.Mdata -> head.expr.applyArgs(spine.second)
-                    is Expression.LetE ->
-                        head.bodyExpr.applySubst(listOf(head.valueExpr)).applyArgs(spine.second)
+                    is Expression.LetE -> head.instantiateLeadingLets().applyArgs(spine.second)
 
                     is Expression.Lam -> head.applyBetaArgs(spine.second)
                     else -> return current
@@ -2240,7 +2254,7 @@ private fun Expression.applyBetaArgs(args: List<Expression>): Expression {
     while (true) {
         when (head) {
             is Expression.Mdata -> head = head.expr
-            is Expression.LetE -> head = head.bodyExpr.applySubst(listOf(head.valueExpr))
+            is Expression.LetE -> head = head.instantiateLeadingLets()
             is Expression.Lam -> {
                 if (nextArg == args.size) return head
                 var body: Expression = head
@@ -2780,18 +2794,24 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
                 }
 
                 is Expression.LetE -> {
-                    if (request.validate) {
-                        val declaredType = callRecursive(InferRequest(env, expr.typeExpr, request.localCtx, true))
-                        requireSort(declaredType, expr.typeExpr, request.localCtx)
-                        val valueType = callRecursive(InferRequest(env, expr.valueExpr, request.localCtx, true))
-                        check(expr.typeExpr.isDefEq(valueType, request.localCtx, request.localCtx)) {
-                            "Let value type mismatch in ${expr.toStringDetailed()}: " +
-                                    "expected ${expr.typeExpr.toStringDetailed()}, got ${valueType.toStringDetailed()}"
+                    var tail: Expression = expr
+                    var tailCtx = request.localCtx
+                    val subst = ArrayDeque<Expression>()
+                    while (tail is Expression.LetE) {
+                        if (request.validate) {
+                            val declaredType = callRecursive(InferRequest(env, tail.typeExpr, tailCtx, true))
+                            requireSort(declaredType, tail.typeExpr, tailCtx)
+                            val valueType = callRecursive(InferRequest(env, tail.valueExpr, tailCtx, true))
+                            check(tail.typeExpr.isDefEq(valueType, tailCtx, tailCtx)) {
+                                "Let value type mismatch in ${tail.toStringDetailed()}: " +
+                                        "expected ${tail.typeExpr.toStringDetailed()}, got ${valueType.toStringDetailed()}"
+                            }
                         }
+                        subst.addFirst(tail.valueExpr.applySubst(subst))
+                        tailCtx = env.consLocalCtx(tail.typeExpr, tailCtx, tail.valueExpr)
+                        tail = tail.bodyExpr
                     }
-                    val bodyCtx = env.consLocalCtx(expr.typeExpr, request.localCtx, expr.valueExpr)
-                    callRecursive(InferRequest(env, expr.bodyExpr, bodyCtx, request.validate))
-                        .applySubst(listOf(expr.valueExpr))
+                    callRecursive(InferRequest(env, tail, tailCtx, request.validate)).applySubst(subst)
                 }
 
                 is Expression.Mdata -> callRecursive(InferRequest(env, expr.expr, request.localCtx, request.validate))
@@ -2887,7 +2907,7 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
 
                 WhnfMode.CoreCheapProjection, WhnfMode.CoreFullProjection -> when (current) {
                     is Expression.Mdata -> current = current.expr
-                    is Expression.LetE -> current = current.bodyExpr.applySubst(listOf(current.valueExpr))
+                    is Expression.LetE -> current = current.instantiateLeadingLets()
                     is Expression.Bvar -> {
                         val value = env.localCtxValue(localCtx, current.bvar)
                         if (value == null) result = current else current = value.lift(current.bvar + 1)
@@ -3164,7 +3184,7 @@ private fun Expression.tryRecognizeNatLiteralCore(localCtx: List<Expression>): N
     while (true) {
         when (current) {
             is Expression.Mdata -> current = current.expr
-            is Expression.LetE -> current = current.bodyExpr.applySubst(listOf(current.valueExpr))
+            is Expression.LetE -> current = current.instantiateLeadingLets()
             else -> {
                 val baseValue = current.asNatLiteralValue()
                 if (baseValue != null) return baseValue + succOffset
@@ -3627,11 +3647,8 @@ private fun Expression.tryProofIrrelevanceDefEq(
     if (!this.isScopedBy(localCtxLeft) || !other.isScopedBy(localCtxRight)) return false
     val thisTy = this.inferType(localCtx = localCtxLeft, validate = false)
     if (!thisTy.inferSort(localCtx = localCtxLeft, validate = false).isLessOrEqual(Level.Zero)) return false
-    return thisTy.isDefEq(
-        other.inferType(localCtx = localCtxRight, validate = false),
-        localCtxLeft,
-        localCtxRight,
-    )
+    val otherTy = other.inferType(localCtx = localCtxRight, validate = false)
+    return thisTy.isDefEq(otherTy, localCtxLeft, localCtxRight)
 }
 
 context(env: Environment)
@@ -3703,45 +3720,7 @@ private inline fun Expression.evaluatePostorder(
 }
 
 context(env: Environment)
-fun Expression.maxLooseBVarIndex(): Int {
-    env.maxLooseBVarIndexCache[this.ie]?.let { return it }
-
-    fun Int.descendBinder(): Int = if (this < 0) -1 else this - 1
-
-    this.evaluatePostorder(
-        isEvaluated = { env.maxLooseBVarIndexCache[it.ie] != null },
-    ) { expr ->
-        val value = when (expr) {
-            is Expression.Bvar -> expr.bvar
-            is Expression.App -> maxOf(
-                env.maxLooseBVarIndexCache[expr.fnExpr.ie] ?: -1,
-                env.maxLooseBVarIndexCache[expr.argExpr.ie] ?: -1,
-            )
-
-            is Expression.ForallE -> maxOf(
-                env.maxLooseBVarIndexCache[expr.typeExpr.ie] ?: -1,
-                (env.maxLooseBVarIndexCache[expr.bodyExpr.ie] ?: -1).descendBinder(),
-            )
-
-            is Expression.Lam -> maxOf(
-                env.maxLooseBVarIndexCache[expr.typeExpr.ie] ?: -1,
-                (env.maxLooseBVarIndexCache[expr.bodyExpr.ie] ?: -1).descendBinder(),
-            )
-
-            is Expression.LetE -> maxOf(
-                env.maxLooseBVarIndexCache[expr.typeExpr.ie] ?: -1,
-                env.maxLooseBVarIndexCache[expr.valueExpr.ie] ?: -1,
-                (env.maxLooseBVarIndexCache[expr.bodyExpr.ie] ?: -1).descendBinder(),
-            )
-
-            is Expression.Mdata -> env.maxLooseBVarIndexCache[expr.expr.ie] ?: -1
-            is Expression.Proj -> env.maxLooseBVarIndexCache[expr.structExpr.ie] ?: -1
-            is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> -1
-        }
-        env.maxLooseBVarIndexCache[expr.ie] = value
-    }
-    return env.maxLooseBVarIndexCache[this.ie] ?: -1
-}
+fun Expression.maxLooseBVarIndex(): Int = env.expressionMaxLooseBVarIndex(this.ie)
 
 context(env: Environment)
 fun Expression.dropOuterBinders(count: Int): Expression {
@@ -3762,7 +3741,7 @@ fun Expression.dropOuterBinders(count: Int): Expression {
 context(env: Environment)
 fun Expression.lift(amount: Int): Expression {
     if (amount == 0 || this.maxLooseBVarIndex() < 0) return this
-    val cacheKey = ExprPairKey(this.ie, amount)
+    val cacheKey = exprPairKey(this.ie, amount)
     env.liftCache[cacheKey]?.let { return it }
     val result = this.rewriteBinders { bvarExpr, depth ->
         if (bvarExpr.bvar >= depth) {
@@ -3852,16 +3831,15 @@ fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
 context(env: Environment)
 fun Expression.applySubst(subst: List<Expression>): Expression {
     if (subst.isEmpty() || this.maxLooseBVarIndex() < 0) return this
-    val singleSubstKey = subst.singleOrNull()?.let { ExprPairKey(this.ie, it.ie) }
+    val singleSubstKey = subst.singleOrNull()?.let { exprPairKey(this.ie, it.ie) }
     if (singleSubstKey != null) {
         env.applySubstSingleCache[singleSubstKey]?.let { return it }
     }
-    val liftedSubstCache = mutableMapOf<Long, Expression>()
+    val liftedSubstCache = LongObjectStore<Expression>()
     fun getLiftedSubst(index: Int, depth: Int): Expression {
-        val cacheKey = (depth.toLong() shl 32) xor (index.toLong() and 0xffffffffL)
-        return liftedSubstCache.getOrPut(cacheKey) {
-            subst[index].lift(depth)
-        }
+        val cacheKey = exprPairKey(depth, index)
+        liftedSubstCache[cacheKey]?.let { return it }
+        return subst[index].lift(depth).also { liftedSubstCache[cacheKey] = it }
     }
 
     val result = this.rewriteBinders { bvarExpr, currentDepth ->
@@ -3879,60 +3857,6 @@ fun Expression.applySubst(subst: List<Expression>): Expression {
     }
     if (singleSubstKey != null) env.applySubstSingleCache[singleSubstKey] = result
     return result
-}
-
-private class BinderRewriteCache {
-    private var keys = LongArray(16)
-    private var values: Array<Expression?> = arrayOfNulls(16)
-    private var size = 0
-
-    private fun startIndex(key: Long): Int {
-        val folded = (key xor (key ushr 32)).toInt()
-        return (folded xor (folded ushr 16)) and (keys.size - 1)
-    }
-
-    operator fun get(key: Long): Expression? {
-        var index = startIndex(key)
-        while (true) {
-            val value = values[index] ?: return null
-            if (keys[index] == key) return value
-            index = (index + 1) and (keys.size - 1)
-        }
-    }
-
-    operator fun set(key: Long, value: Expression) {
-        if ((size + 1) * 3 >= keys.size * 2) resize()
-        insert(key, value)
-    }
-
-    private fun insert(key: Long, value: Expression) {
-        var index = startIndex(key)
-        while (true) {
-            val current = values[index]
-            if (current == null) {
-                keys[index] = key
-                values[index] = value
-                size += 1
-                return
-            }
-            if (keys[index] == key) {
-                values[index] = value
-                return
-            }
-            index = (index + 1) and (keys.size - 1)
-        }
-    }
-
-    private fun resize() {
-        val oldKeys = keys
-        val oldValues = values
-        keys = LongArray(oldKeys.size * 2)
-        values = arrayOfNulls(keys.size)
-        size = 0
-        oldValues.forEachIndexed { index, value ->
-            if (value != null) insert(oldKeys[index], value)
-        }
-    }
 }
 
 private class BinderRewriteStack {
@@ -3995,7 +3919,7 @@ private fun Expression.rewriteBinders(
     depth: Int = 0,
     rewriteBvar: (Expression.Bvar, Int) -> Expression
 ): Expression {
-    val cache = BinderRewriteCache()
+    val cache = LongObjectStore<Expression>()
     fun cacheKey(expr: Expression, currentDepth: Int): Long =
         (currentDepth.toLong() shl 32) xor (expr.ie.toLong() and 0xffffffffL)
 

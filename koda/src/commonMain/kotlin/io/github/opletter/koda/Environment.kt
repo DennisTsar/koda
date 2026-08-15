@@ -172,6 +172,65 @@ data class ReduceCacheKey(
 
 data class ExprPairKey(val firstExprId: Int, val second: Int)
 
+internal fun exprPairKey(first: Int, second: Int): Long =
+    (first.toLong() shl 32) xor (second.toLong() and 0xffffffffL)
+
+internal class LongObjectStore<T> {
+    private var keys = LongArray(16)
+    private var values: Array<Any?> = arrayOfNulls(16)
+    var size = 0
+        private set
+
+    private fun startIndex(key: Long): Int {
+        val folded = (key xor (key ushr 32)).toInt()
+        return (folded xor (folded ushr 16)) and (keys.size - 1)
+    }
+
+    operator fun get(key: Long): T? {
+        var index = startIndex(key)
+        while (true) {
+            @Suppress("UNCHECKED_CAST")
+            val value = values[index] as T? ?: return null
+            if (keys[index] == key) return value
+            index = (index + 1) and (keys.size - 1)
+        }
+    }
+
+    operator fun set(key: Long, value: T) {
+        if ((size + 1) * 3 >= keys.size * 2) resize()
+        insert(key, value)
+    }
+
+    private fun insert(key: Long, value: T) {
+        var index = startIndex(key)
+        while (true) {
+            if (values[index] == null) {
+                keys[index] = key
+                values[index] = value
+                size++
+                return
+            }
+            if (keys[index] == key) {
+                values[index] = value
+                return
+            }
+            index = (index + 1) and (keys.size - 1)
+        }
+    }
+
+    private fun resize() {
+        val oldKeys = keys
+        val oldValues = values
+        keys = LongArray(oldKeys.size * 2)
+        values = arrayOfNulls(oldValues.size * 2)
+        size = 0
+        oldValues.forEachIndexed { index, value ->
+            @Suppress("UNCHECKED_CAST")
+            if (value != null) insert(oldKeys[index], value as T)
+        }
+    }
+}
+
 data class ProjectionReductionInfo(
     val inductiveNameIndex: Int,
     val fieldIndex: Int,
@@ -231,34 +290,27 @@ class NameIndexStore {
 }
 
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
-    private var nonNegative: Array<Any?> = arrayOfNulls(16)
-    private var nonNegativeSize = 0
-    private var negative: Array<Any?> = arrayOfNulls(16)
-    private var negativeSize = 0
+    private var sourceEntries: Array<Any?> = arrayOfNulls(16)
+    private var sourceSize = 0
+    private var syntheticEntries: Array<Any?> = arrayOfNulls(16)
+    private var syntheticSize = 0
 
     init {
         initialEntries.forEach { pair -> this[pair.first] = pair.second }
     }
 
-    private fun ensureNonNegativeCapacity(size: Int) {
-        if (nonNegative.size >= size) return
-        nonNegative = nonNegative.copyOf(maxOf(size, nonNegative.size + nonNegative.size / 2))
-    }
+    private fun grow(entries: Array<Any?>, size: Int): Array<Any?> =
+        if (entries.size >= size) entries else entries.copyOf(maxOf(size, entries.size + entries.size / 2))
 
-    private fun ensureNegativeCapacity(size: Int) {
-        if (negative.size >= size) return
-        negative = negative.copyOf(maxOf(size, negative.size + negative.size / 2))
-    }
-
-    private fun negativePosition(index: Int): Int = -index - 1
+    private fun syntheticPosition(index: Int): Int = -index - 1
 
     operator fun get(index: Int): T? {
         @Suppress("UNCHECKED_CAST")
         return if (index >= 0) {
-            if (index < nonNegativeSize) nonNegative[index] as T? else null
+            if (index < sourceSize) sourceEntries[index] as T? else null
         } else {
-            val position = negativePosition(index)
-            if (position < negativeSize) negative[position] as T? else null
+            val position = syntheticPosition(index)
+            if (position < syntheticSize) syntheticEntries[position] as T? else null
         }
     }
 
@@ -266,14 +318,14 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
 
     operator fun set(index: Int, value: T) {
         if (index >= 0) {
-            ensureNonNegativeCapacity(index + 1)
-            nonNegative[index] = value
-            if (index >= nonNegativeSize) nonNegativeSize = index + 1
+            sourceEntries = grow(sourceEntries, index + 1)
+            sourceEntries[index] = value
+            if (index >= sourceSize) sourceSize = index + 1
         } else {
-            val position = negativePosition(index)
-            ensureNegativeCapacity(position + 1)
-            negative[position] = value
-            if (position >= negativeSize) negativeSize = position + 1
+            val position = syntheticPosition(index)
+            syntheticEntries = grow(syntheticEntries, position + 1)
+            syntheticEntries[position] = value
+            if (position >= syntheticSize) syntheticSize = position + 1
         }
     }
 
@@ -281,38 +333,83 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
         return this[index] != null
     }
 
-    fun clearNegative() {
-        negative = arrayOfNulls(16)
-        negativeSize = 0
+    fun clearSynthetic() {
+        syntheticEntries = arrayOfNulls(16)
+        syntheticSize = 0
     }
 
     val values: Sequence<T>
         get() = sequence {
-            for (index in 0 until nonNegativeSize) {
+            for (index in 0 until sourceSize) {
                 @Suppress("UNCHECKED_CAST")
-                val value = nonNegative[index] as T?
+                val value = sourceEntries[index] as T?
                 if (value != null) yield(value)
             }
-            for (position in 0 until negativeSize) {
+            for (position in 0 until syntheticSize) {
                 @Suppress("UNCHECKED_CAST")
-                val value = negative[position] as T?
+                val value = syntheticEntries[position] as T?
                 if (value != null) yield(value)
             }
         }
 
     fun toList(): List<Pair<Int, T>> {
         val items = mutableListOf<Pair<Int, T>>()
-        for (index in 0 until nonNegativeSize) {
+        for (index in 0 until sourceSize) {
             @Suppress("UNCHECKED_CAST")
-            val value = nonNegative[index] as T?
+            val value = sourceEntries[index] as T?
             if (value != null) items += index to value
         }
-        for (position in negativeSize - 1 downTo 0) {
+        for (position in syntheticSize - 1 downTo 0) {
             @Suppress("UNCHECKED_CAST")
-            val value = negative[position] as T? ?: continue
+            val value = syntheticEntries[position] as T? ?: continue
             items += -(position + 1) to value
         }
         return items
+    }
+}
+
+private class ExpressionMetadataStore {
+    private var source = IntArray(16)
+    private var synthetic = IntArray(16)
+
+    private fun position(index: Int): Int = if (index >= 0) index else -index - 1
+
+    private fun grow(entries: IntArray, size: Int): IntArray =
+        if (entries.size >= size) entries else entries.copyOf(maxOf(size, entries.size + entries.size / 2))
+
+    private fun packed(index: Int): Int {
+        val position = position(index)
+        val entries = if (index >= 0) source else synthetic
+        return if (position < entries.size) entries[position] else 0
+    }
+
+    fun setMaxLooseBVarIndex(index: Int, maxLooseBVarIndex: Int) {
+        val position = position(index)
+        if (index >= 0) {
+            source = grow(source, position + 1)
+            source[position] = ((maxLooseBVarIndex + 1) shl 2) or (source[position] and 3)
+        } else {
+            synthetic = grow(synthetic, position + 1)
+            synthetic[position] = ((maxLooseBVarIndex + 1) shl 2) or (synthetic[position] and 3)
+        }
+    }
+
+    fun incrementReferenceCount(index: Int) {
+        val position = position(index)
+        if (index >= 0) {
+            source = grow(source, position + 1)
+            if ((source[position] and 3) < 2) source[position]++
+        } else {
+            synthetic = grow(synthetic, position + 1)
+            if ((synthetic[position] and 3) < 2) synthetic[position]++
+        }
+    }
+
+    fun maxLooseBVarIndex(index: Int): Int = (packed(index) ushr 2) - 1
+    fun isShared(index: Int): Boolean = (packed(index) and 3) >= 2
+
+    fun clearSynthetic() {
+        synthetic = IntArray(16)
     }
 }
 
@@ -333,14 +430,13 @@ class Environment {
     var whnfCacheNoLevelSubst: MutableMap<Int, Expression> = mutableMapOf()
     var whnfCacheWithCtxNoLevelSubst: MutableMap<ReduceCacheKey, Expression> = mutableMapOf()
     var natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
-    var liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
-    var applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    internal var liftCache = LongObjectStore<Expression>()
+    internal var applySubstSingleCache = LongObjectStore<Expression>()
     var unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
-    val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
-    var defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
+    var defEqCache: MutableSet<DefEqCacheKey> = mutableSetOf()
     var defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
     var defEqEquivalences = DefEqEquivalenceManager()
     var inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
@@ -356,8 +452,7 @@ class Environment {
     private var customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private var customExprIntern = ExpressionInterner()
     private var nextLevelIndex: Int = 0
-    private var sourceExprReferenceCounts = ByteArray(16)
-    private var customExprReferenceCounts = ByteArray(16)
+    private val expressionMetadata = ExpressionMetadataStore()
 
     private sealed interface LevelKey {
         data class Succ(val levelIl: Int) : LevelKey
@@ -521,6 +616,11 @@ class Environment {
 
     private var nextExprIndex: Int = -100 // Could start with 0, but this helps while debugging vs levels
 
+    internal fun registerSourceExpression(expression: Expression) {
+        expressions[expression.ie] = expression
+        recordExpressionMetadata(expression)
+    }
+
     fun addCustomExpr(exprConstructor: (Int) -> Expression): Expression {
         val candidateIndex = nextExprIndex - 1
         val newExpr = exprConstructor(candidateIndex)
@@ -528,69 +628,46 @@ class Environment {
         if (internedExpr !== newExpr) return internedExpr
         nextExprIndex = candidateIndex
         expressions[nextExprIndex] = newExpr
-        recordExpressionReferences(newExpr)
+        recordExpressionMetadata(newExpr)
         return newExpr
     }
 
-    private fun recordExpressionReference(exprId: Int) {
-        val counts: ByteArray
-        val position: Int
-        if (exprId >= 0) {
-            position = exprId
-            if (position >= sourceExprReferenceCounts.size) {
-                sourceExprReferenceCounts = sourceExprReferenceCounts.copyOf(
-                    maxOf(position + 1, sourceExprReferenceCounts.size + sourceExprReferenceCounts.size / 2)
-                )
-            }
-            counts = sourceExprReferenceCounts
-        } else {
-            position = -exprId - 1
-            if (position >= customExprReferenceCounts.size) {
-                customExprReferenceCounts = customExprReferenceCounts.copyOf(
-                    maxOf(position + 1, customExprReferenceCounts.size + customExprReferenceCounts.size / 2)
-                )
-            }
-            counts = customExprReferenceCounts
+    private fun recordExpressionMetadata(expression: Expression) {
+        fun recordChild(childId: Int): Int {
+            expressionMetadata.incrementReferenceCount(childId)
+            return expressionMetadata.maxLooseBVarIndex(childId)
         }
-        if (counts[position] < 2) counts[position]++
-    }
 
-    fun recordExpressionReferences(expression: Expression) {
-        when (expression) {
-            is Expression.App -> {
-                recordExpressionReference(expression.fnExpr.ie)
-                recordExpressionReference(expression.argExpr.ie)
-            }
+        fun Int.descendBinder(): Int = if (this < 0) -1 else this - 1
 
-            is Expression.ForallE -> {
-                recordExpressionReference(expression.typeExpr.ie)
-                recordExpressionReference(expression.bodyExpr.ie)
-            }
+        val maxLooseBVarIndex = when (expression) {
+            is Expression.Bvar -> expression.bvar
+            is Expression.App -> maxOf(recordChild(expression.fn), recordChild(expression.arg))
+            is Expression.ForallE -> maxOf(
+                recordChild(expression.type),
+                recordChild(expression.body).descendBinder(),
+            )
 
-            is Expression.Lam -> {
-                recordExpressionReference(expression.typeExpr.ie)
-                recordExpressionReference(expression.bodyExpr.ie)
-            }
+            is Expression.Lam -> maxOf(
+                recordChild(expression.type),
+                recordChild(expression.body).descendBinder(),
+            )
 
-            is Expression.LetE -> {
-                recordExpressionReference(expression.typeExpr.ie)
-                recordExpressionReference(expression.valueExpr.ie)
-                recordExpressionReference(expression.bodyExpr.ie)
-            }
+            is Expression.LetE -> maxOf(
+                recordChild(expression.type),
+                recordChild(expression.value),
+                recordChild(expression.body).descendBinder(),
+            )
 
-            is Expression.Mdata -> recordExpressionReference(expression.expr.ie)
-            is Expression.Proj -> recordExpressionReference(expression.structExpr.ie)
-            is Expression.Bvar, is Expression.Const, is Expression.NatVal,
-            is Expression.Sort, is Expression.StrVal -> {
-            }
+            is Expression.Mdata -> recordChild(expression._expr)
+            is Expression.Proj -> recordChild(expression.struct)
+            is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> -1
         }
+        expressionMetadata.setMaxLooseBVarIndex(expression.ie, maxLooseBVarIndex)
     }
 
-    fun expressionIsShared(exprId: Int): Boolean {
-        if (exprId >= 0) return exprId < sourceExprReferenceCounts.size && sourceExprReferenceCounts[exprId] >= 2
-        val position = -exprId - 1
-        return position < customExprReferenceCounts.size && customExprReferenceCounts[position] >= 2
-    }
+    fun expressionMaxLooseBVarIndex(exprId: Int): Int = expressionMetadata.maxLooseBVarIndex(exprId)
+    fun expressionIsShared(exprId: Int): Boolean = expressionMetadata.isShared(exprId)
 
     private fun localCtxStepId(headTypeExprId: Int, headValueExprId: Int?, tailCtxId: Int): Int {
         val stepKey = LocalCtxStepKey(headTypeExprId, headValueExprId, tailCtxId)
@@ -620,22 +697,21 @@ class Environment {
     }
 
     fun clearCustom() {
-        levels.clearNegative()
+        levels.clearSynthetic()
         nextLevelIndex = 0
         customLevelIntern = mutableMapOf()
         levelNormalizationCache = mutableMapOf()
-        expressions.clearNegative()
+        expressions.clearSynthetic()
         nextExprIndex = -100
         customExprIntern = ExpressionInterner()
-        customExprReferenceCounts = ByteArray(16)
+        expressionMetadata.clearSynthetic()
         whnfCacheNoLevelSubst = mutableMapOf()
         whnfCacheWithCtxNoLevelSubst = mutableMapOf()
         natLiteralCacheNoLevelSubst = mutableMapOf()
-        liftCache = mutableMapOf()
-        applySubstSingleCache = mutableMapOf()
+        liftCache = LongObjectStore()
+        applySubstSingleCache = LongObjectStore()
         unfoldedDefinitionCache = mutableMapOf()
-        maxLooseBVarIndexCache.clearNegative()
-        defEqCache = mutableMapOf()
+        defEqCache = mutableSetOf()
         defEqAppFailures = mutableSetOf()
         defEqEquivalences = DefEqEquivalenceManager()
         inferTypeCacheNoLevelSubst = mutableMapOf()
