@@ -336,7 +336,6 @@ class Environment {
     var liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
     var applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
     var unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
-    val maxLooseBVarIndexCache: IntObjectStore<Int> = IntObjectStore()
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
@@ -528,8 +527,47 @@ class Environment {
         if (internedExpr !== newExpr) return internedExpr
         nextExprIndex = candidateIndex
         expressions[nextExprIndex] = newExpr
+        initializeLooseBVarRange(newExpr)
         recordExpressionReferences(newExpr)
         return newExpr
+    }
+
+    internal fun initializeLooseBVarRange(expression: Expression) {
+        fun Expression.range(): Int = looseBVarRange.also {
+            check(it >= 0) { "Expression $ie was registered before its children" }
+        }
+
+        expression.looseBVarRange = when (expression) {
+            is Expression.Bvar -> {
+                check(expression.bvar in 0 until Int.MAX_VALUE) { "Invalid bvar ${expression.bvar}" }
+                expression.bvar + 1
+            }
+
+            is Expression.App -> maxOf(
+                expression.fnExpr.range(),
+                expression.argExpr.range(),
+            )
+
+            is Expression.ForallE -> maxOf(
+                expression.typeExpr.range(),
+                (expression.bodyExpr.range() - 1).coerceAtLeast(0),
+            )
+
+            is Expression.Lam -> maxOf(
+                expression.typeExpr.range(),
+                (expression.bodyExpr.range() - 1).coerceAtLeast(0),
+            )
+
+            is Expression.LetE -> maxOf(
+                expression.typeExpr.range(),
+                expression.valueExpr.range(),
+                (expression.bodyExpr.range() - 1).coerceAtLeast(0),
+            )
+
+            is Expression.Mdata -> expression.expr.range()
+            is Expression.Proj -> expression.structExpr.range()
+            is Expression.Const, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> 0
+        }
     }
 
     private fun recordExpressionReference(exprId: Int) {
@@ -634,7 +672,6 @@ class Environment {
         liftCache = mutableMapOf()
         applySubstSingleCache = mutableMapOf()
         unfoldedDefinitionCache = mutableMapOf()
-        maxLooseBVarIndexCache.clearNegative()
         defEqCache = mutableMapOf()
         defEqAppFailures = mutableSetOf()
         defEqEquivalences = DefEqEquivalenceManager()

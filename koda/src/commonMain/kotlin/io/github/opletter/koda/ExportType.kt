@@ -163,6 +163,7 @@ sealed class Level : ExportType {
 
 sealed class Expression : ExportType {
     abstract val ie: Int // AKA "expression index"
+    internal var looseBVarRange: Int = -1
 
     @Serializable
     @SerialName("bvar")
@@ -337,6 +338,7 @@ sealed class Expression : ExportType {
 
     override fun registerInto(env: Environment) {
         env.expressions[this.ie] = this
+        env.initializeLooseBVarRange(this)
     }
 
     context(env: Environment)
