@@ -43,7 +43,10 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             when (data) {
                 is Name -> data.registerInto(env)
                 is Level -> data.registerInto(env)
-                is Expression -> data.registerInto(env)
+                is Expression -> {
+                    data.registerInto(env)
+                    env.recordExpressionReferences(data)
+                }
                 is Declaration -> {
                     data.registerInto(env)
                     env.declTypeByName[data.name] = data.typeExpr
@@ -87,6 +90,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
 
             is Expression -> {
                 data.registerInto(env)
+                env.recordExpressionReferences(data)
             }
 
             is Declaration -> {
@@ -204,13 +208,32 @@ private fun Expression.rigidProofStatus(): Boolean? {
 context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     if (env.shouldLog) println("found value: ${value/*.toStringDetailed()*/}")
-    val inferredValueType = value.inferType()
+    var valueExpr = value
+    var expectedExpr = expectedType
+    var valueCtx = emptyList<Expression>()
+    var expectedCtx = emptyList<Expression>()
+    while (true) {
+        if (valueExpr is Expression.Mdata) {
+            valueExpr = valueExpr.expr
+            continue
+        }
+        val lambda = valueExpr as? Expression.Lam ?: break
+        val expectedForall = expectedExpr.whnf(localCtx = expectedCtx) as? Expression.ForallE ?: break
+        lambda.typeExpr.inferSort(localCtx = valueCtx)
+        if (!expectedForall.typeExpr.isDefEq(lambda.typeExpr, expectedCtx, valueCtx)) return false
+        expectedCtx = env.consLocalCtx(expectedForall.typeExpr, expectedCtx)
+        valueCtx = env.consLocalCtx(lambda.typeExpr, valueCtx)
+        expectedExpr = expectedForall.bodyExpr
+        valueExpr = lambda.bodyExpr
+    }
+
+    val inferredValueType = valueExpr.inferType(localCtx = valueCtx)
     if (env.shouldLog) println("inferred type of value: ${inferredValueType/*.toStringDetailed()*/}")
     if (env.shouldLog) {
-        println("expected type detailed: ${expectedType.toStringDetailed()}")
+        println("expected type detailed: ${expectedExpr.toStringDetailed()}")
         println("inferred type detailed: ${inferredValueType.toStringDetailed()}")
     }
-    return expectedType.isDefEq(inferredValueType)
+    return expectedExpr.isDefEq(inferredValueType, expectedCtx, valueCtx)
 }
 
 @Suppress("NOTHING_TO_INLINE")
@@ -3915,33 +3938,53 @@ private class BinderRewriteCache {
 private class BinderRewriteStack {
     private var expressions: Array<Expression?> = arrayOfNulls(64)
     private var depths = IntArray(64)
-    private var rebuilds = BooleanArray(64)
+    private var states = ByteArray(64)
+    private var firstResults: Array<Expression?> = arrayOfNulls(64)
+    private var secondResults: Array<Expression?> = arrayOfNulls(64)
     private var size = 0
 
-    fun add(expr: Expression, depth: Int, rebuild: Boolean = false) {
+    fun add(expr: Expression, depth: Int) {
         if (size == expressions.size) {
             expressions = expressions.copyOf(size * 2)
             depths = depths.copyOf(size * 2)
-            rebuilds = rebuilds.copyOf(size * 2)
+            states = states.copyOf(size * 2)
+            firstResults = firstResults.copyOf(size * 2)
+            secondResults = secondResults.copyOf(size * 2)
         }
         expressions[size] = expr
         depths[size] = depth
-        rebuilds[size] = rebuild
+        states[size] = 0
         size++
     }
 
-    fun removeLastIndex(): Int {
+    fun lastIndex(): Int {
         check(size > 0)
-        size--
-        return size
+        return size - 1
     }
 
     fun expressionAt(index: Int): Expression = expressions[index]!!
     fun depthAt(index: Int): Int = depths[index]
-    fun rebuildAt(index: Int): Boolean = rebuilds[index]
+    fun stateAt(index: Int): Int = states[index].toInt()
+    fun setState(index: Int, state: Int) {
+        states[index] = state.toByte()
+    }
 
-    fun release(index: Int) {
+    fun firstResultAt(index: Int): Expression = firstResults[index]!!
+    fun setFirstResult(index: Int, result: Expression) {
+        firstResults[index] = result
+    }
+
+    fun secondResultAt(index: Int): Expression = secondResults[index]!!
+    fun setSecondResult(index: Int, result: Expression) {
+        secondResults[index] = result
+    }
+
+    fun removeLast() {
+        val index = lastIndex()
         expressions[index] = null
+        firstResults[index] = null
+        secondResults[index] = null
+        size--
     }
 
     fun isNotEmpty(): Boolean = size > 0
@@ -3958,98 +4001,171 @@ private fun Expression.rewriteBinders(
 
     val stack = BinderRewriteStack()
     stack.add(this, depth)
+    var result: Expression = this
     while (stack.isNotEmpty()) {
-        val stackIndex = stack.removeLastIndex()
+        val stackIndex = stack.lastIndex()
         val expr = stack.expressionAt(stackIndex)
         val currentDepth = stack.depthAt(stackIndex)
-        val rebuild = stack.rebuildAt(stackIndex)
-        stack.release(stackIndex)
-        val key = cacheKey(expr, currentDepth)
-        if (cache[key] != null) continue
-        if (!rebuild) {
-            if (expr.maxLooseBVarIndex() < currentDepth) continue
-            stack.add(expr, currentDepth, rebuild = true)
-            when (expr) {
+        val useCache = env.expressionIsShared(expr.ie)
+        val key = if (useCache) cacheKey(expr, currentDepth) else 0L
+        when (stack.stateAt(stackIndex)) {
+            0 -> {
+                val cached = if (useCache) cache[key] else null
+                if (cached != null) {
+                    result = cached
+                    stack.removeLast()
+                    continue
+                }
+                if (expr.maxLooseBVarIndex() < currentDepth) {
+                    result = expr
+                    stack.removeLast()
+                    continue
+                }
+                when (expr) {
+                    is Expression.Bvar -> {
+                        result = rewriteBvar(expr, currentDepth)
+                        if (useCache) cache[key] = result
+                        stack.removeLast()
+                    }
+
+                    is Expression.App -> {
+                        stack.setState(stackIndex, 1)
+                        stack.add(expr.fnExpr, currentDepth)
+                    }
+
+                    is Expression.ForallE -> {
+                        stack.setState(stackIndex, 1)
+                        stack.add(expr.typeExpr, currentDepth)
+                    }
+
+                    is Expression.Lam -> {
+                        stack.setState(stackIndex, 1)
+                        stack.add(expr.typeExpr, currentDepth)
+                    }
+
+                    is Expression.LetE -> {
+                        stack.setState(stackIndex, 1)
+                        stack.add(expr.typeExpr, currentDepth)
+                    }
+
+                    is Expression.Mdata -> {
+                        stack.setState(stackIndex, 1)
+                        stack.add(expr.expr, currentDepth)
+                    }
+
+                    is Expression.Proj -> {
+                        stack.setState(stackIndex, 1)
+                        stack.add(expr.structExpr, currentDepth)
+                    }
+
+                    else -> error("Unexpected open expression $expr")
+                }
+            }
+
+            1 -> when (expr) {
+                is Expression.Mdata -> {
+                    result = if (result === expr.expr) expr
+                    else env.addCustomExpr { expr.copy(_expr = result.ie, ie = it) }
+                    if (useCache) cache[key] = result
+                    stack.removeLast()
+                }
+
+                is Expression.Proj -> {
+                    result = if (result === expr.structExpr) expr
+                    else env.addCustomExpr { expr.copy(struct = result.ie, ie = it) }
+                    if (useCache) cache[key] = result
+                    stack.removeLast()
+                }
+
                 is Expression.App -> {
-                    stack.add(expr.fnExpr, currentDepth)
+                    stack.setFirstResult(stackIndex, result)
+                    stack.setState(stackIndex, 2)
                     stack.add(expr.argExpr, currentDepth)
                 }
 
                 is Expression.ForallE -> {
-                    stack.add(expr.typeExpr, currentDepth)
+                    stack.setFirstResult(stackIndex, result)
+                    stack.setState(stackIndex, 2)
                     stack.add(expr.bodyExpr, currentDepth + 1)
                 }
 
                 is Expression.Lam -> {
-                    stack.add(expr.typeExpr, currentDepth)
+                    stack.setFirstResult(stackIndex, result)
+                    stack.setState(stackIndex, 2)
                     stack.add(expr.bodyExpr, currentDepth + 1)
                 }
 
                 is Expression.LetE -> {
-                    stack.add(expr.typeExpr, currentDepth)
+                    stack.setFirstResult(stackIndex, result)
+                    stack.setState(stackIndex, 2)
                     stack.add(expr.valueExpr, currentDepth)
-                    stack.add(expr.bodyExpr, currentDepth + 1)
                 }
 
-                is Expression.Mdata -> stack.add(expr.expr, currentDepth)
-                is Expression.Proj -> stack.add(expr.structExpr, currentDepth)
-                else -> {}
+                else -> error("Unexpected rewrite state for $expr")
             }
-            continue
+
+            2 -> {
+                val firstResult = stack.firstResultAt(stackIndex)
+                when (expr) {
+                    is Expression.App -> {
+                        result = if (firstResult === expr.fnExpr && result === expr.argExpr) expr
+                        else env.addCustomExpr { expr.copy(fn = firstResult.ie, arg = result.ie, ie = it) }
+                        if (useCache) cache[key] = result
+                        stack.removeLast()
+                    }
+
+                    is Expression.ForallE -> {
+                        result = if (firstResult === expr.typeExpr && result === expr.bodyExpr) expr
+                        else env.addCustomExpr { expr.copy(type = firstResult.ie, body = result.ie, ie = it) }
+                        if (useCache) cache[key] = result
+                        stack.removeLast()
+                    }
+
+                    is Expression.Lam -> {
+                        result = if (firstResult === expr.typeExpr && result === expr.bodyExpr) expr
+                        else env.addCustomExpr { expr.copy(type = firstResult.ie, body = result.ie, ie = it) }
+                        if (useCache) cache[key] = result
+                        stack.removeLast()
+                    }
+
+                    is Expression.LetE -> {
+                        stack.setSecondResult(stackIndex, result)
+                        stack.setState(stackIndex, 3)
+                        stack.add(expr.bodyExpr, currentDepth + 1)
+                    }
+
+                    else -> error("Unexpected rewrite state for $expr")
+                }
+            }
+
+            3 -> {
+                check(expr is Expression.LetE)
+                val newType = stack.firstResultAt(stackIndex)
+                val newValue = stack.secondResultAt(stackIndex)
+                result = if (
+                    newType === expr.typeExpr &&
+                    newValue === expr.valueExpr &&
+                    result === expr.bodyExpr
+                ) {
+                    expr
+                } else {
+                    env.addCustomExpr {
+                        expr.copy(
+                            type = newType.ie,
+                            value = newValue.ie,
+                            body = result.ie,
+                            ie = it,
+                        )
+                    }
+                }
+                if (useCache) cache[key] = result
+                stack.removeLast()
+            }
+
+            else -> error("Unexpected binder rewrite state")
         }
-        val result = when (expr) {
-            is Expression.Bvar -> rewriteBvar(expr, currentDepth)
-            is Expression.App -> {
-                val newFn = cache[cacheKey(expr.fnExpr, currentDepth)] ?: expr.fnExpr
-                val newArg = cache[cacheKey(expr.argExpr, currentDepth)] ?: expr.argExpr
-                if (newFn === expr.fnExpr && newArg === expr.argExpr) expr
-                else env.addCustomExpr { expr.copy(fn = newFn.ie, arg = newArg.ie, ie = it) }
-            }
-
-            is Expression.ForallE -> {
-                val newType = cache[cacheKey(expr.typeExpr, currentDepth)] ?: expr.typeExpr
-                val newBody = cache[cacheKey(expr.bodyExpr, currentDepth + 1)] ?: expr.bodyExpr
-                if (newType === expr.typeExpr && newBody === expr.bodyExpr) expr
-                else env.addCustomExpr { expr.copy(type = newType.ie, body = newBody.ie, ie = it) }
-            }
-
-            is Expression.Lam -> {
-                val newType = cache[cacheKey(expr.typeExpr, currentDepth)] ?: expr.typeExpr
-                val newBody = cache[cacheKey(expr.bodyExpr, currentDepth + 1)] ?: expr.bodyExpr
-                if (newType === expr.typeExpr && newBody === expr.bodyExpr) expr
-                else env.addCustomExpr { expr.copy(type = newType.ie, body = newBody.ie, ie = it) }
-            }
-
-            is Expression.LetE -> {
-                val newType = cache[cacheKey(expr.typeExpr, currentDepth)] ?: expr.typeExpr
-                val newValue = cache[cacheKey(expr.valueExpr, currentDepth)] ?: expr.valueExpr
-                val newBody = cache[cacheKey(expr.bodyExpr, currentDepth + 1)] ?: expr.bodyExpr
-                if (newType === expr.typeExpr && newValue === expr.valueExpr && newBody === expr.bodyExpr) expr
-                else env.addCustomExpr {
-                    expr.copy(type = newType.ie, value = newValue.ie, body = newBody.ie, ie = it)
-                }
-            }
-
-            is Expression.Mdata -> {
-                val newExpr = cache[cacheKey(expr.expr, currentDepth)] ?: expr.expr
-                if (newExpr === expr.expr) expr else env.addCustomExpr { expr.copy(_expr = newExpr.ie, ie = it) }
-            }
-
-            is Expression.Proj -> {
-                val newStruct = cache[cacheKey(expr.structExpr, currentDepth)] ?: expr.structExpr
-                if (newStruct === expr.structExpr) expr else env.addCustomExpr {
-                    expr.copy(
-                        struct = newStruct.ie,
-                        ie = it
-                    )
-                }
-            }
-
-            else -> expr
-        }
-        cache[key] = result
     }
-    return cache[cacheKey(this, depth)] ?: this
+    return result
 }
 
 context(env: Environment)

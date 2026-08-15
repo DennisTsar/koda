@@ -231,31 +231,34 @@ class NameIndexStore {
 }
 
 class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
-    private val nonNegative: MutableList<T?> = mutableListOf()
-    private var negative: MutableList<T?> = mutableListOf()
+    private var nonNegative: Array<Any?> = arrayOfNulls(16)
+    private var nonNegativeSize = 0
+    private var negative: Array<Any?> = arrayOfNulls(16)
+    private var negativeSize = 0
 
     init {
         initialEntries.forEach { pair -> this[pair.first] = pair.second }
     }
 
-    private fun ensureNonNegativeSize(size: Int) {
+    private fun ensureNonNegativeCapacity(size: Int) {
         if (nonNegative.size >= size) return
-        repeat(size - nonNegative.size) { nonNegative.add(null) }
+        nonNegative = nonNegative.copyOf(maxOf(size, nonNegative.size + nonNegative.size / 2))
     }
 
-    private fun ensureNegativeSize(size: Int) {
+    private fun ensureNegativeCapacity(size: Int) {
         if (negative.size >= size) return
-        repeat(size - negative.size) { negative.add(null) }
+        negative = negative.copyOf(maxOf(size, negative.size + negative.size / 2))
     }
 
     private fun negativePosition(index: Int): Int = -index - 1
 
     operator fun get(index: Int): T? {
+        @Suppress("UNCHECKED_CAST")
         return if (index >= 0) {
-            if (index < nonNegative.size) nonNegative[index] else null
+            if (index < nonNegativeSize) nonNegative[index] as T? else null
         } else {
             val position = negativePosition(index)
-            if (position < negative.size) negative[position] else null
+            if (position < negativeSize) negative[position] as T? else null
         }
     }
 
@@ -263,12 +266,14 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
 
     operator fun set(index: Int, value: T) {
         if (index >= 0) {
-            ensureNonNegativeSize(index + 1)
+            ensureNonNegativeCapacity(index + 1)
             nonNegative[index] = value
+            if (index >= nonNegativeSize) nonNegativeSize = index + 1
         } else {
             val position = negativePosition(index)
-            ensureNegativeSize(position + 1)
+            ensureNegativeCapacity(position + 1)
             negative[position] = value
+            if (position >= negativeSize) negativeSize = position + 1
         }
     }
 
@@ -277,22 +282,34 @@ class IntObjectStore<T>(initialEntries: List<Pair<Int, T>> = emptyList()) {
     }
 
     fun clearNegative() {
-        negative = mutableListOf()
+        negative = arrayOfNulls(16)
+        negativeSize = 0
     }
 
     val values: Sequence<T>
         get() = sequence {
-            nonNegative.forEach { value -> if (value != null) yield(value) }
-            negative.forEach { value -> if (value != null) yield(value) }
+            for (index in 0 until nonNegativeSize) {
+                @Suppress("UNCHECKED_CAST")
+                val value = nonNegative[index] as T?
+                if (value != null) yield(value)
+            }
+            for (position in 0 until negativeSize) {
+                @Suppress("UNCHECKED_CAST")
+                val value = negative[position] as T?
+                if (value != null) yield(value)
+            }
         }
 
     fun toList(): List<Pair<Int, T>> {
         val items = mutableListOf<Pair<Int, T>>()
-        nonNegative.forEachIndexed { index, value ->
+        for (index in 0 until nonNegativeSize) {
+            @Suppress("UNCHECKED_CAST")
+            val value = nonNegative[index] as T?
             if (value != null) items += index to value
         }
-        for (position in negative.indices.reversed()) {
-            val value = negative[position] ?: continue
+        for (position in negativeSize - 1 downTo 0) {
+            @Suppress("UNCHECKED_CAST")
+            val value = negative[position] as T? ?: continue
             items += -(position + 1) to value
         }
         return items
@@ -339,6 +356,8 @@ class Environment {
     private var customLevelIntern: MutableMap<LevelKey, Level> = mutableMapOf()
     private var customExprIntern = ExpressionInterner()
     private var nextLevelIndex: Int = 0
+    private var sourceExprReferenceCounts = ByteArray(16)
+    private var customExprReferenceCounts = ByteArray(16)
 
     private sealed interface LevelKey {
         data class Succ(val levelIl: Int) : LevelKey
@@ -407,98 +426,38 @@ class Environment {
 
         private fun mix(hash: Int, value: Int): Int = hash * 31 + value
 
-        private fun structuralHash(expr: Expression): Int = with(this@Environment) {
-            when (expr) {
-                is Expression.Bvar -> mix(1, expr.bvar)
-                is Expression.Sort -> mix(2, expr.level.il)
-                is Expression.Const -> {
-                    val levels = expr.levels
-                    var hash = mix(mix(3, expr.name.hashCode()), levels.size)
-                    levels.forEach { level -> hash = mix(hash, level.il) }
-                    hash
-                }
-
-                is Expression.App -> mix(mix(4, expr.fnExpr.ie), expr.argExpr.ie)
-                is Expression.ForallE -> {
-                    var hash = mix(5, expr.name.hashCode())
-                    hash = mix(hash, expr.typeExpr.ie)
-                    hash = mix(hash, expr.bodyExpr.ie)
-                    mix(hash, expr.binderInfo.hashCode())
-                }
-
-                is Expression.Lam -> {
-                    var hash = mix(6, expr.name.hashCode())
-                    hash = mix(hash, expr.typeExpr.ie)
-                    hash = mix(hash, expr.bodyExpr.ie)
-                    mix(hash, expr.binderInfo.hashCode())
-                }
-
-                is Expression.LetE -> {
-                    var hash = mix(7, expr.name.hashCode())
-                    hash = mix(hash, expr.typeExpr.ie)
-                    hash = mix(hash, expr.valueExpr.ie)
-                    hash = mix(hash, expr.bodyExpr.ie)
-                    mix(hash, expr.nondep.hashCode())
-                }
-
-                is Expression.Mdata -> mix(mix(8, expr.data.hashCode()), expr.expr.ie)
-                is Expression.Proj -> {
-                    var hash = mix(9, expr.typeNameExpr.hashCode())
-                    hash = mix(hash, expr.projIndex)
-                    mix(hash, expr.structExpr.ie)
-                }
-
-                is Expression.NatVal -> mix(10, expr.natVal.hashCode())
-                is Expression.StrVal -> mix(11, expr.strVal.hashCode())
+        private fun structuralHash(expr: Expression): Int {
+            // Expression index is the final data-class field, so subtracting it leaves a hash of the serialized node.
+            val nodeHash = expr.hashCode() - expr.ie
+            val kind = when (expr) {
+                is Expression.Bvar -> 1
+                is Expression.Sort -> 2
+                is Expression.Const -> 3
+                is Expression.App -> 4
+                is Expression.ForallE -> 5
+                is Expression.Lam -> 6
+                is Expression.LetE -> 7
+                is Expression.Mdata -> 8
+                is Expression.Proj -> 9
+                is Expression.NatVal -> 10
+                is Expression.StrVal -> 11
             }
+            return mix(kind, nodeHash)
         }
 
-        private fun structurallyEqual(left: Expression, right: Expression): Boolean = with(this@Environment) {
-            when (left) {
-                is Expression.Bvar -> right is Expression.Bvar && left.bvar == right.bvar
-                is Expression.Sort -> right is Expression.Sort && left.level.il == right.level.il
-                is Expression.Const -> {
-                    if (right !is Expression.Const || left.name != right.name) return@with false
-                    val leftLevels = left.levels
-                    val rightLevels = right.levels
-                    leftLevels.size == rightLevels.size &&
-                            leftLevels.indices.all { index -> leftLevels[index].il == rightLevels[index].il }
-                }
-
-                is Expression.App -> right is Expression.App &&
-                        left.fnExpr.ie == right.fnExpr.ie &&
-                        left.argExpr.ie == right.argExpr.ie
-
-                is Expression.ForallE -> right is Expression.ForallE &&
-                        left.name == right.name &&
-                        left.typeExpr.ie == right.typeExpr.ie &&
-                        left.bodyExpr.ie == right.bodyExpr.ie &&
-                        left.binderInfo == right.binderInfo
-
-                is Expression.Lam -> right is Expression.Lam &&
-                        left.name == right.name &&
-                        left.typeExpr.ie == right.typeExpr.ie &&
-                        left.bodyExpr.ie == right.bodyExpr.ie &&
-                        left.binderInfo == right.binderInfo
-
-                is Expression.LetE -> right is Expression.LetE &&
-                        left.name == right.name &&
-                        left.typeExpr.ie == right.typeExpr.ie &&
-                        left.valueExpr.ie == right.valueExpr.ie &&
-                        left.bodyExpr.ie == right.bodyExpr.ie &&
-                        left.nondep == right.nondep
-
-                is Expression.Mdata -> right is Expression.Mdata &&
-                        left.data == right.data &&
-                        left.expr.ie == right.expr.ie
-
-                is Expression.Proj -> right is Expression.Proj &&
-                        left.typeNameExpr == right.typeNameExpr &&
-                        left.projIndex == right.projIndex &&
-                        left.structExpr.ie == right.structExpr.ie
-
-                is Expression.NatVal -> right is Expression.NatVal && left.natVal == right.natVal
-                is Expression.StrVal -> right is Expression.StrVal && left.strVal == right.strVal
+        private fun structurallyEqual(left: Expression, right: Expression): Boolean {
+            return when (left) {
+                is Expression.Bvar -> right is Expression.Bvar && left.copy(ie = right.ie) == right
+                is Expression.Sort -> right is Expression.Sort && left.copy(ie = right.ie) == right
+                is Expression.Const -> right is Expression.Const && left.copy(ie = right.ie) == right
+                is Expression.App -> right is Expression.App && left.copy(ie = right.ie) == right
+                is Expression.ForallE -> right is Expression.ForallE && left.copy(ie = right.ie) == right
+                is Expression.Lam -> right is Expression.Lam && left.copy(ie = right.ie) == right
+                is Expression.LetE -> right is Expression.LetE && left.copy(ie = right.ie) == right
+                is Expression.Mdata -> right is Expression.Mdata && left.copy(ie = right.ie) == right
+                is Expression.Proj -> right is Expression.Proj && left.copy(ie = right.ie) == right
+                is Expression.NatVal -> right is Expression.NatVal && left.copy(ie = right.ie) == right
+                is Expression.StrVal -> right is Expression.StrVal && left.copy(ie = right.ie) == right
             }
         }
     }
@@ -569,7 +528,68 @@ class Environment {
         if (internedExpr !== newExpr) return internedExpr
         nextExprIndex = candidateIndex
         expressions[nextExprIndex] = newExpr
+        recordExpressionReferences(newExpr)
         return newExpr
+    }
+
+    private fun recordExpressionReference(exprId: Int) {
+        val counts: ByteArray
+        val position: Int
+        if (exprId >= 0) {
+            position = exprId
+            if (position >= sourceExprReferenceCounts.size) {
+                sourceExprReferenceCounts = sourceExprReferenceCounts.copyOf(
+                    maxOf(position + 1, sourceExprReferenceCounts.size + sourceExprReferenceCounts.size / 2)
+                )
+            }
+            counts = sourceExprReferenceCounts
+        } else {
+            position = -exprId - 1
+            if (position >= customExprReferenceCounts.size) {
+                customExprReferenceCounts = customExprReferenceCounts.copyOf(
+                    maxOf(position + 1, customExprReferenceCounts.size + customExprReferenceCounts.size / 2)
+                )
+            }
+            counts = customExprReferenceCounts
+        }
+        if (counts[position] < 2) counts[position]++
+    }
+
+    fun recordExpressionReferences(expression: Expression) {
+        when (expression) {
+            is Expression.App -> {
+                recordExpressionReference(expression.fnExpr.ie)
+                recordExpressionReference(expression.argExpr.ie)
+            }
+
+            is Expression.ForallE -> {
+                recordExpressionReference(expression.typeExpr.ie)
+                recordExpressionReference(expression.bodyExpr.ie)
+            }
+
+            is Expression.Lam -> {
+                recordExpressionReference(expression.typeExpr.ie)
+                recordExpressionReference(expression.bodyExpr.ie)
+            }
+
+            is Expression.LetE -> {
+                recordExpressionReference(expression.typeExpr.ie)
+                recordExpressionReference(expression.valueExpr.ie)
+                recordExpressionReference(expression.bodyExpr.ie)
+            }
+
+            is Expression.Mdata -> recordExpressionReference(expression.expr.ie)
+            is Expression.Proj -> recordExpressionReference(expression.structExpr.ie)
+            is Expression.Bvar, is Expression.Const, is Expression.NatVal,
+            is Expression.Sort, is Expression.StrVal -> {
+            }
+        }
+    }
+
+    fun expressionIsShared(exprId: Int): Boolean {
+        if (exprId >= 0) return exprId < sourceExprReferenceCounts.size && sourceExprReferenceCounts[exprId] >= 2
+        val position = -exprId - 1
+        return position < customExprReferenceCounts.size && customExprReferenceCounts[position] >= 2
     }
 
     private fun localCtxStepId(headTypeExprId: Int, headValueExprId: Int?, tailCtxId: Int): Int {
@@ -607,6 +627,7 @@ class Environment {
         expressions.clearNegative()
         nextExprIndex = -100
         customExprIntern = ExpressionInterner()
+        customExprReferenceCounts = ByteArray(16)
         whnfCacheNoLevelSubst = mutableMapOf()
         whnfCacheWithCtxNoLevelSubst = mutableMapOf()
         natLiteralCacheNoLevelSubst = mutableMapOf()
