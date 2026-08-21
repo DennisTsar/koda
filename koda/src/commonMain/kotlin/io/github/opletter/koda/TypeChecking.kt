@@ -150,7 +150,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             )
         }
         if (data is Declaration || data is Inductive) {
-            env.clearCustom()
             if (data is Declaration) {
                 val declarationElapsed = env.clock.elapsedNow() - itemStart
                 if (declarationElapsed.inWholeMilliseconds >= 1_000) {
@@ -167,6 +166,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                     )
                 }
             }
+            env.clearCustom()
         }
 //        if (env.shouldLog) {
 //            println("ended: ${env.clock.elapsedNow()}")
