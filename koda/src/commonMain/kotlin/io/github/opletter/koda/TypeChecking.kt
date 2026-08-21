@@ -1696,7 +1696,6 @@ context(env: Environment)
 private fun Expression.Const.instantiatedValue(): Expression? {
     val value = when (val declaration = this.decl) {
         is Declaration.Def -> declaration.valueExpr
-        is Declaration.Opaque -> declaration.valueExpr
         is Declaration.Thm -> declaration.valueExpr
         else -> return null
     }
@@ -2277,7 +2276,7 @@ private fun Expression.lazyDeltaStepInfo(expression: Expression = this): LazyDel
                 is Declaration.Def.Hints.Regular -> LazyDeltaStep(expression, LazyDeltaStepKind.Regular, hints.value)
             }
 
-            is Declaration.Opaque, is Declaration.Thm -> LazyDeltaStep(expression, LazyDeltaStepKind.Opaque)
+            is Declaration.Thm -> LazyDeltaStep(expression, LazyDeltaStepKind.Opaque)
             else -> null
         }
     }
