@@ -172,6 +172,10 @@ data class ReduceCacheKey(
 
 data class ExprPairKey(val firstExprId: Int, val second: Int)
 
+data class ApplySubstCacheKey(val exprId: Int, val substExprIds: List<Int>)
+
+data class InstantiateLevelParamsCacheKey(val exprId: Int, val subst: List<Pair<Int, Int>>)
+
 data class ProjectionReductionInfo(
     val inductiveNameIndex: Int,
     val fieldIndex: Int,
@@ -335,6 +339,8 @@ class Environment {
     var natLiteralCacheNoLevelSubst: MutableMap<ReduceCacheKey, NatValue?> = mutableMapOf()
     var liftCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
     var applySubstSingleCache: MutableMap<ExprPairKey, Expression> = mutableMapOf()
+    var applySubstCache: MutableMap<ApplySubstCacheKey, Expression> = mutableMapOf()
+    var instantiateLevelParamsCache: MutableMap<InstantiateLevelParamsCacheKey, Expression> = mutableMapOf()
     var unfoldedDefinitionCache: MutableMap<Int, Expression> = mutableMapOf()
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
@@ -671,6 +677,8 @@ class Environment {
         natLiteralCacheNoLevelSubst = mutableMapOf()
         liftCache = mutableMapOf()
         applySubstSingleCache = mutableMapOf()
+        applySubstCache = mutableMapOf()
+        instantiateLevelParamsCache = mutableMapOf()
         unfoldedDefinitionCache = mutableMapOf()
         defEqCache = mutableMapOf()
         defEqAppFailures = mutableSetOf()

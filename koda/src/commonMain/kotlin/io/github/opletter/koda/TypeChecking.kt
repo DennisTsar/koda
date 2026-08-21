@@ -3765,6 +3765,11 @@ fun Expression.lift(amount: Int): Expression {
 context(env: Environment)
 fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
     if (subst.isEmpty()) return this
+    val cacheKey = InstantiateLevelParamsCacheKey(
+        this.ie,
+        subst.entries.map { entry -> entry.key to entry.value.il }.sortedBy { it.first },
+    )
+    env.instantiateLevelParamsCache[cacheKey]?.let { return it }
 
     val cache = mutableMapOf<Int, Expression>()
     this.evaluatePostorder(
@@ -3831,7 +3836,9 @@ fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
         }
         cache[expr.ie] = result
     }
-    return cache[this.ie] ?: this
+    return (cache[this.ie] ?: this).also { result ->
+        env.instantiateLevelParamsCache[cacheKey] = result
+    }
 }
 
 context(env: Environment)
@@ -3840,6 +3847,14 @@ fun Expression.applySubst(subst: List<Expression>): Expression {
     val singleSubstKey = subst.singleOrNull()?.let { ExprPairKey(this.ie, it.ie) }
     if (singleSubstKey != null) {
         env.applySubstSingleCache[singleSubstKey]?.let { return it }
+    }
+    val multiSubstKey = if (subst.size > 1) {
+        ApplySubstCacheKey(this.ie, subst.map { it.ie })
+    } else {
+        null
+    }
+    if (multiSubstKey != null) {
+        env.applySubstCache[multiSubstKey]?.let { return it }
     }
     val liftedSubstCache = mutableMapOf<Long, Expression>()
     fun getLiftedSubst(index: Int, depth: Int): Expression {
@@ -3863,6 +3878,7 @@ fun Expression.applySubst(subst: List<Expression>): Expression {
         }
     }
     if (singleSubstKey != null) env.applySubstSingleCache[singleSubstKey] = result
+    if (multiSubstKey != null) env.applySubstCache[multiSubstKey] = result
     return result
 }
 
