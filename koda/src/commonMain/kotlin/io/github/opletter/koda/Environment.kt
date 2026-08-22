@@ -17,16 +17,16 @@ class DefEqEquivalenceManager {
     private var nodeCount = 0
     private var entryCount = 0
 
-    fun areEquivalent(key: DefEqCacheKey): Boolean {
-        val leftNode = findNode(contextualKey(key.leftExprId, key.leftCtxId))
+    fun areEquivalent(leftExprId: Int, leftCtxId: Int, rightExprId: Int, rightCtxId: Int): Boolean {
+        val leftNode = findNode(contextualKey(leftExprId, leftCtxId))
         if (leftNode < 0) return false
-        val rightNode = findNode(contextualKey(key.rightExprId, key.rightCtxId))
+        val rightNode = findNode(contextualKey(rightExprId, rightCtxId))
         return rightNode >= 0 && findRoot(leftNode) == findRoot(rightNode)
     }
 
-    fun addEquivalent(key: DefEqCacheKey) {
-        val leftNode = getOrCreateNode(contextualKey(key.leftExprId, key.leftCtxId))
-        val rightNode = getOrCreateNode(contextualKey(key.rightExprId, key.rightCtxId))
+    fun addEquivalent(leftExprId: Int, leftCtxId: Int, rightExprId: Int, rightCtxId: Int) {
+        val leftNode = getOrCreateNode(contextualKey(leftExprId, leftCtxId))
+        val rightNode = getOrCreateNode(contextualKey(rightExprId, rightCtxId))
         union(leftNode, rightNode)
     }
 
@@ -345,14 +345,14 @@ class Environment {
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
-    var defEqCache: MutableMap<DefEqCacheKey, Boolean> = mutableMapOf()
+    var defEqFailures: MutableSet<DefEqCacheKey>? = null
     var defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
     var defEqEquivalences = DefEqEquivalenceManager()
     var inferTypeCacheNoLevelSubst: MutableMap<InferTypeCacheKey, Expression> = mutableMapOf()
     private var localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
     var defEqCalls: Long = 0
-    var defEqCacheHits: Long = 0
+    var defEqFailureCacheHits: Long = 0
     var inferTypeCacheHits: Long = 0
     var proofIrrelevanceAttempts: Long = 0
     var proofIrrelevanceSuccesses: Long = 0
@@ -680,14 +680,14 @@ class Environment {
         applySubstCache = mutableMapOf()
         instantiateLevelParamsCache = mutableMapOf()
         unfoldedDefinitionCache = mutableMapOf()
-        defEqCache = mutableMapOf()
+        defEqFailures = null
         defEqAppFailures = mutableSetOf()
         defEqEquivalences = DefEqEquivalenceManager()
         inferTypeCacheNoLevelSubst = mutableMapOf()
         localCtxIntern = mutableMapOf()
         nextLocalCtxId = 1
         defEqCalls = 0
-        defEqCacheHits = 0
+        defEqFailureCacheHits = 0
         inferTypeCacheHits = 0
         proofIrrelevanceAttempts = 0
         proofIrrelevanceSuccesses = 0

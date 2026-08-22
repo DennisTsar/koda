@@ -145,8 +145,8 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
         }
         if (env.shouldLog) {
             println(
-                "stats: defEqCalls=${env.defEqCalls} defEqCacheHits=${env.defEqCacheHits} " +
-                        "defEqCacheSize=${env.defEqCache.size}"
+                "stats: defEqCalls=${env.defEqCalls} defEqFailureCacheHits=${env.defEqFailureCacheHits} " +
+                        "defEqFailures=${env.defEqFailures?.size ?: 0}"
             )
         }
         if (data is Declaration || data is Inductive) {
@@ -154,7 +154,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 val declarationElapsed = env.clock.elapsedNow() - itemStart
                 if (declarationElapsed.inWholeMilliseconds >= 1_000) {
                     val declarationStats = """
-                        defEqCalls=${env.defEqCalls} defEqCache=${env.defEqCache.size}
+                        defEqCalls=${env.defEqCalls} defEqFailures=${env.defEqFailures?.size ?: 0}
                         inferCache=${env.inferTypeCacheNoLevelSubst.size}
                         whnfCache=${env.whnfCacheNoLevelSubst.size + env.whnfCacheWithCtxNoLevelSubst.size}
                         proofIrrelevance=${env.proofIrrelevanceSuccesses}/${env.proofIrrelevanceAttempts}
@@ -252,15 +252,22 @@ fun Expression.isDefEq(
 //    val traceDefEq = false
 //    if (traceDefEq) println("debug defeq phase: start")
     if (this === other) return true
-    val cacheKey = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
-    if (env.defEqEquivalences.areEquivalent(cacheKey)) return true
-    env.defEqCache[cacheKey]?.let { cached ->
-        env.defEqCacheHits += 1
-        return cached
+    val leftCtxId = if (this.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
+    val rightCtxId = if (other.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxRight)
+    if (env.defEqEquivalences.areEquivalent(this.ie, leftCtxId, other.ie, rightCtxId)) return true
+    env.defEqFailures?.let { failures ->
+        if (this.defEqCacheKey(other, leftCtxId, rightCtxId) in failures) {
+            env.defEqFailureCacheHits += 1
+            return false
+        }
     }
     fun finish(value: Boolean): Boolean {
-        env.defEqCache[cacheKey] = value
-        if (value) env.defEqEquivalences.addEquivalent(cacheKey)
+        if (value) {
+            env.defEqEquivalences.addEquivalent(this.ie, leftCtxId, other.ie, rightCtxId)
+        } else {
+            val failures = env.defEqFailures ?: mutableSetOf<DefEqCacheKey>().also { env.defEqFailures = it }
+            failures += this.defEqCacheKey(other, leftCtxId, rightCtxId)
+        }
         return value
     }
 
@@ -1602,11 +1609,9 @@ private fun Expression.Proj.lazyProjectionDefEq(
 context(env: Environment)
 private fun Expression.defEqCacheKey(
     other: Expression,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
+    leftCtxId: Int,
+    rightCtxId: Int,
 ): DefEqCacheKey {
-    val leftCtxId = if (this.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
-    val rightCtxId = if (other.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxRight)
     return if (this.ie < other.ie || (this.ie == other.ie && leftCtxId <= rightCtxId)) {
         DefEqCacheKey(this.ie, other.ie, leftCtxId, rightCtxId)
     } else {
@@ -1621,8 +1626,9 @@ private fun Expression.tryKnownDefEqCongruence(
     localCtxRight: List<Expression>,
 ): Boolean {
     if (this === other) return true
-    val key = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
-    if (env.defEqEquivalences.areEquivalent(key)) return true
+    val leftCtxId = if (this.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
+    val rightCtxId = if (other.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxRight)
+    if (env.defEqEquivalences.areEquivalent(this.ie, leftCtxId, other.ie, rightCtxId)) return true
 
     val result = when (this) {
         is Expression.App -> other is Expression.App &&
@@ -1645,7 +1651,7 @@ private fun Expression.tryKnownDefEqCongruence(
         is Expression.StrVal -> other is Expression.StrVal && this.strVal == other.strVal
         is Expression.ForallE, is Expression.Lam, is Expression.LetE -> false
     }
-    if (result) env.defEqEquivalences.addEquivalent(key)
+    if (result) env.defEqEquivalences.addEquivalent(this.ie, leftCtxId, other.ie, rightCtxId)
     return result
 }
 
@@ -2086,7 +2092,9 @@ private fun Expression.tryRegularDefinitionCongruence(
         leftHints.value != rightHints.value
     ) return null
 
-    val failureKey = this.defEqCacheKey(other, localCtxLeft, localCtxRight)
+    val leftCtxId = if (this.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
+    val rightCtxId = if (other.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxRight)
+    val failureKey = this.defEqCacheKey(other, leftCtxId, rightCtxId)
     if (failureKey in env.defEqAppFailures) return null
     if (leftApp.tryConstantApplicationCongruence(rightApp, localCtxLeft, localCtxRight) == true) {
         return true
