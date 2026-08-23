@@ -226,34 +226,6 @@ private fun Expression.Const.proofArgumentMask(arity: Int): BooleanArray? {
 }
 
 context(env: Environment)
-private fun Expression.tryProofErasedConstantCongruence(other: Expression): Boolean {
-    val left = this as? Expression.App ?: return false
-    val right = other as? Expression.App ?: return false
-    val leftSpine = left.unfoldApp()
-    val rightSpine = right.unfoldApp()
-    val leftHead = leftSpine.first as? Expression.Const ?: return false
-    val rightHead = rightSpine.first as? Expression.Const ?: return false
-    if (
-        !leftHead.hasSameNameAndLevels(rightHead) ||
-        leftSpine.second.size != rightSpine.second.size
-    ) return false
-    val proofArguments = leftHead.proofArgumentMask(leftSpine.second.size) ?: return false
-    var skippedProofs = 0
-    for (index in leftSpine.second.indices) {
-        val leftArgument = leftSpine.second[index]
-        val rightArgument = rightSpine.second[index]
-        if (leftArgument === rightArgument) continue
-        if (proofArguments[index]) {
-            skippedProofs += 1
-        } else if (leftArgument.tryStructuralDefEq(rightArgument) != true) {
-            return false
-        }
-    }
-    env.typedCongruenceProofSkips += skippedProofs
-    return skippedProofs > 0
-}
-
-context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     if (env.shouldLog) println("found value: ${value/*.toStringDetailed()*/}")
     var valueExpr = value
@@ -332,7 +304,6 @@ fun Expression.isDefEq(
     other.tryClosedBoolTrueDefEq(this, localCtxRight)?.let { return finish(it) }
 //    if (traceDefEq) println("debug defeq phase: structural")
     this.tryStructuralDefEq(other)?.let { return finish(it) }
-    if (this.tryProofErasedConstantCongruence(other)) return finish(true)
     if (this.tryKnownDefEqCongruence(other, localCtxLeft, localCtxRight)) return finish(true)
     if (this.tryProofIrrelevanceDefEqNoLog(other, localCtxLeft, localCtxRight)) return finish(true)
 
@@ -342,7 +313,6 @@ fun Expression.isDefEq(
 //    if (traceDefEq) println("debug defeq phase: core quick")
     leftCore.quickIsDefEq(rightCore, localCtxLeft, localCtxRight)?.let { return finish(it) }
     leftCore.tryStructuralDefEq(rightCore)?.let { return finish(it) }
-    if (leftCore.tryProofErasedConstantCongruence(rightCore)) return finish(true)
     if (leftCore.tryKnownDefEqCongruence(rightCore, localCtxLeft, localCtxRight)) return finish(true)
 
 //    if (traceDefEq) println("debug defeq phase: lazy delta")
