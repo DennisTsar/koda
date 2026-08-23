@@ -206,26 +206,6 @@ private fun Expression.rigidProofStatus(): Boolean? {
 }
 
 context(env: Environment)
-private fun Expression.Const.proofArgumentMask(arity: Int): BooleanArray? {
-    val key = (this.ie.toLong() shl 32) xor (arity.toLong() and 0xffffffffL)
-    if (env.proofArgumentMaskCache.containsKey(key)) return env.proofArgumentMaskCache[key]
-    var type = this.inferType(validate = false)
-    var localCtx = emptyList<Expression>()
-    val result = BooleanArray(arity) {
-        val forall = type.whnf(localCtx = localCtx) as? Expression.ForallE
-            ?: return run { env.proofArgumentMaskCache[key] = null; null }
-        val domainIsProp = forall.typeExpr
-            .inferSort(localCtx = localCtx, validate = false)
-            .isLessOrEqual(Level.Zero)
-        localCtx = env.consLocalCtx(forall.typeExpr, localCtx)
-        type = forall.bodyExpr
-        domainIsProp
-    }
-    env.proofArgumentMaskCache[key] = result
-    return result
-}
-
-context(env: Environment)
 fun typeCheckDeclaration(value: Expression, expectedType: Expression): Boolean {
     if (env.shouldLog) println("found value: ${value/*.toStringDetailed()*/}")
     var valueExpr = value
@@ -509,6 +489,7 @@ private fun ClosedClosure.closedDefEq(
     val visited = mutableSetOf<ClosedDefEqState>()
     val instantiatedRecursorRules = mutableMapOf<ClosedRecursorRuleKey, Expression>()
     val looseBvarIndices = mutableMapOf<Int, List<Int>>()
+    val proofArgumentMasks = mutableMapOf<Long, BooleanArray?>()
 
     fun bindingAt(locals: ClosedEvalEnv, index: Int): ClosedClosure? {
         var current = locals
@@ -591,6 +572,26 @@ private fun ClosedClosure.closedDefEq(
             }
         }
         return true
+    }
+
+    fun proofArgumentMask(head: ClosedClosure, arity: Int): BooleanArray? {
+        val constant = head.expression as? Expression.Const ?: return null
+        val key = (constant.ie.toLong() shl 32) xor (arity.toLong() and 0xffffffffL)
+        if (proofArgumentMasks.containsKey(key)) return proofArgumentMasks[key]
+        var type = constant.inferType(validate = false)
+        var localCtx = emptyList<Expression>()
+        val result = BooleanArray(arity) {
+            val forall = type.whnf(localCtx = localCtx) as? Expression.ForallE
+                ?: return run { proofArgumentMasks[key] = null; null }
+            val domainIsProp = forall.typeExpr
+                .inferSort(localCtx = localCtx, validate = false)
+                .isLessOrEqual(Level.Zero)
+            localCtx = env.consLocalCtx(forall.typeExpr, localCtx)
+            type = forall.bodyExpr
+            domainIsProp
+        }
+        proofArgumentMasks[key] = result
+        return result
     }
 
     fun structureEtaInfo(value: ClosedValue): Pair<Int, Inductive.ConstructorVal>? {
@@ -1012,8 +1013,7 @@ private fun ClosedClosure.closedDefEq(
             else -> false
         }
         if (!headsMatch) return fail("neutral heads", left, right)
-        val proofArguments = (left.head.expression as? Expression.Const)
-            ?.proofArgumentMask(left.arguments.size)
+        val proofArguments = proofArgumentMask(left.head, left.arguments.size)
         for (index in left.arguments.indices) {
             if (proofArguments?.get(index) == true) continue
             val expectedType = (leftHead as? Expression.Const)?.let { head ->
@@ -1936,12 +1936,6 @@ private fun Expression.App.isDefEqWhnfSpine(
     if (!leftSpine.first.isDefEq(rightSpine.first, localCtxLeft, localCtxRight)) {
         return false
     }
-    val leftConst = leftSpine.first as? Expression.Const
-    val rightConst = rightSpine.first as? Expression.Const
-    val canReuseBinderKinds = leftConst != null && rightConst != null &&
-        leftConst.hasSameNameAndLevels(rightConst)
-    var proofArguments: BooleanArray? = null
-    var proofArgumentsComputed = false
     var functionType: Expression.ForallE? = null
     val pendingSubst = ArrayDeque<Expression>()
 
@@ -1965,18 +1959,6 @@ private fun Expression.App.isDefEqWhnfSpine(
 //            )
 //        }
         if (leftArgument !== rightArgument) {
-            if (canReuseBinderKinds && !proofArgumentsComputed) {
-                proofArguments = leftConst.proofArgumentMask(leftArgs.size)
-                proofArgumentsComputed = true
-            }
-            if (proofArguments?.get(index) == true) {
-                env.typedCongruenceProofSkips += 1
-                continue
-            }
-            if (proofArguments != null) {
-                if (!leftArgument.isDefEq(rightArgument, localCtxLeft, localCtxRight)) return false
-                continue
-            }
 //            if (
 //                debugTargetDeclaration &&
 //                (leftArgument.debugContainsConstant("Nat.decLe") || rightArgument.debugContainsConstant("Nat.decLe"))
