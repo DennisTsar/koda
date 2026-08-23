@@ -345,6 +345,7 @@ class Environment {
     val projectionReductionInfoByNameIndex: MutableMap<Int, ProjectionReductionInfo?> = mutableMapOf()
     internal val natLiteralRecursorRulesCache: MutableMap<Name, NatLiteralRecursorRules?> = mutableMapOf()
     internal val structureEtaRecursorCache: MutableMap<Name, StructureEtaRecursorInfo?> = mutableMapOf()
+    internal var proofArgumentMaskCache: MutableMap<Long, BooleanArray?> = mutableMapOf()
     var defEqFailures: MutableSet<DefEqCacheKey>? = null
     var defEqAppFailures: MutableSet<DefEqCacheKey> = mutableSetOf()
     var defEqEquivalences = DefEqEquivalenceManager()
@@ -683,6 +684,7 @@ class Environment {
         defEqFailures = null
         defEqAppFailures = mutableSetOf()
         defEqEquivalences = DefEqEquivalenceManager()
+        proofArgumentMaskCache = mutableMapOf()
         inferTypeCacheNoLevelSubst = mutableMapOf()
         localCtxIntern = mutableMapOf()
         nextLocalCtxId = 1
