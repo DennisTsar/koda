@@ -391,6 +391,53 @@ private class ClosedClosure(
     var cachedArguments: List<ClosedClosure>? = null
 }
 
+context(env: Environment)
+private fun ClosedClosure.reifyClosed(): Expression? {
+    val cached = mutableMapOf<ClosedClosure, Expression>()
+    val active = mutableSetOf<ClosedClosure>()
+
+    fun reify(closure: ClosedClosure): Expression? {
+        cached[closure]?.let { return it }
+        if (!active.add(closure)) return null
+
+        var result = closure.expression
+        if (result.ie == Int.MIN_VALUE) {
+            val transient = result
+            result = when (transient) {
+                is Expression.NatVal -> env.addCustomExpr { transient.copy(ie = it) }
+                is Expression.Bvar -> {
+                    if (transient.bvar < 0) return null
+                    env.addCustomExpr { transient.copy(ie = it) }
+                }
+                else -> return null
+            }
+        }
+
+        val looseBvarCount = result.maxLooseBVarIndex() + 1
+        if (looseBvarCount > 0) {
+            val substitutions = ArrayList<Expression>(looseBvarCount)
+            var locals = closure.locals
+            repeat(looseBvarCount) {
+                val binding = locals as? ClosedEvalEnv.Bind ?: return null
+                substitutions += reify(binding.value) ?: return null
+                locals = binding.tail
+            }
+            result = result.applySubst(substitutions)
+        }
+
+        val arguments = closure.cachedArguments ?: closure.pendingArguments
+        if (arguments.isNotEmpty()) {
+            val reifiedArguments = arguments.map { reify(it) ?: return null }
+            result = result.applyArgs(reifiedArguments)
+        }
+        active.remove(closure)
+        cached[closure] = result
+        return result
+    }
+
+    return reify(this)
+}
+
 private data class ClosedValue(
     val head: ClosedClosure,
     val arguments: List<ClosedClosure>,
@@ -1120,50 +1167,11 @@ private fun ClosedClosure.closedWhnf(
         if (!recursor.k) return null
         val rule = recursor.rules.singleOrNull() ?: return fail("rule count")
         if (rule.nfields != 0) return fail("rule fields")
-        val constructor = env.constructorByName[rule.ctorName] ?: return fail("constructor")
-        if (constructor.numFields != 0 || constructor.numParams != recursor.numParams) {
-            return fail("constructor shape")
-        }
         val prefixSize = recursor.numParams + recursor.numMotives + recursor.numMinors
         val majorIndex = prefixSize + recursor.numIndices
         if (majorIndex >= recursorArgs.size) return fail("major index")
-
-        val levelSubst = recursorConst.composeLevelSubst(emptyMap())
-        var constructorResult = ClosedClosure(
-            constructor.typeExpr.instantiateLevelParams(levelSubst),
-            ClosedEvalEnv.Empty,
-        )
-        repeat(recursor.numParams) { parameterIndex ->
-            val forall = constructorResult.expression as? Expression.ForallE ?: return fail("constructor parameter")
-            if (forall.typeExpr.rigidTypeIsProp()) recursorArgs[parameterIndex].isProof = true
-            constructorResult = ClosedClosure(
-                forall.bodyExpr,
-                ClosedEvalEnv.Bind(recursorArgs[parameterIndex], constructorResult.locals),
-            )
-        }
-
-        val resultType = constructorResult.closedWhnf(instantiatedRecursorRules)
-            ?: return fail("constructor result reduction")
-        val resultHead = resultType.head.expression as? Expression.Const ?: return fail("constructor result head")
-        if (resultHead.name != constructor.inductName) return fail("constructor result inductive")
-        val actualTypeArgs = recursorArgs.take(recursor.numParams) +
-                recursorArgs.subList(prefixSize, majorIndex)
-        if (resultType.arguments.size != actualTypeArgs.size) return fail("constructor result arity")
-        resultType.arguments.indices.forEach { index ->
-            if (
-                !resultType.arguments[index].closedDefEq(
-                    actualTypeArgs[index],
-                    trace = trace,
-                    expectedType = ClosedExpectedType.ConstantArgument(
-                        resultHead,
-                        resultType.arguments,
-                        index,
-                    ),
-                )
-            ) {
-                return fail("type argument $index")
-            }
-        }
+        val major = recursorArgs[majorIndex].reifyClosed() ?: return fail("open major")
+        if (recursor.kRuleForMajor(major, emptyList()) == null) return fail("major type")
         if (debugClosedEvaluation || trace) println("closed K reduced: ${recursorConst.name.toStringDetailed()}")
         return rule
     }
@@ -3387,6 +3395,39 @@ private fun Expression.containsProjectionOf(typeName: Name, projIndices: Set<Int
 }
 
 context(env: Environment)
+private fun Inductive.RecursorVal.kRuleForMajor(
+    majorExpr: Expression,
+    localCtx: List<Expression>,
+): Inductive.RecursorVal.RecursorRule? {
+    if (!k) return null
+    val rule = rules.singleOrNull() ?: return null
+    if (rule.nfields != 0) return null
+    val constructor = env.constructorByName[rule.ctorName] ?: return null
+    if (constructor.numFields != 0 || constructor.numParams != numParams) return null
+
+    val majorType = majorExpr.inferType(localCtx = localCtx, validate = false).whnf(localCtx = localCtx)
+    val [majorTypeHead, majorTypeArgs] = majorType.unfoldApp()
+    val majorTypeConst = majorTypeHead as? Expression.Const ?: return null
+    if (majorTypeConst.name != constructor.inductName) return null
+    if (majorTypeArgs.size != numParams + numIndices) return null
+
+    val constructorIndex = env.nameIndices[constructor.name] ?: return null
+    val constructorConst = env.addCustomExpr {
+        Expression.Const(
+            _name = constructorIndex,
+            us = majorTypeConst.levels.map { level -> level.il },
+            ie = it,
+        )
+    }
+    val constructorType = constructorConst.applyArgs(majorTypeArgs.take(numParams))
+        .inferType(localCtx = localCtx, validate = false)
+    val closedTypesEqual = majorType.maxLooseBVarIndex() < 0 &&
+            constructorType.maxLooseBVarIndex() < 0 && majorType.closedDefEq(constructorType)
+    if (!closedTypesEqual && !majorType.isDefEq(constructorType, localCtx, localCtx)) return null
+    return rule
+}
+
+context(env: Environment)
 private fun Expression.App.tryReduceRecursorHead(
     levelSubst: Map<Int, Level>,
     localCtx: List<Expression>,
@@ -3415,32 +3456,8 @@ private fun Expression.App.tryReduceRecursorHead(
     }
 
     fun tryReduceKRule(): Expression? {
-        if (!recursorDecl.k) return null
-        val kRule = recursorDecl.rules.singleOrNull() ?: return null
-        if (kRule.nfields != 0) return null
-        val kCtorDecl = env.constructorByName[kRule.ctorName] ?: return null
-        if (kCtorDecl.numFields != 0 || kCtorDecl.numParams != recursorDecl.numParams) return null
         val majorExpr = args[majorArgIndex].instantiateLevelParams(levelSubst)
-        val majorType = majorExpr.inferType(localCtx = localCtx, validate = false).whnf(localCtx = localCtx)
-        val [majorTypeHead, majorTypeArgs] = majorType.unfoldApp()
-        val majorTypeConst = majorTypeHead as? Expression.Const ?: return null
-        if (majorTypeConst.name != kCtorDecl.inductName) return null
-        if (majorTypeArgs.size != recursorDecl.numParams + recursorDecl.numIndices) return null
-
-        val ctorNameIndex = env.nameIndices[kCtorDecl.name] ?: return null
-        val ctorConst = env.addCustomExpr {
-            Expression.Const(
-                _name = ctorNameIndex,
-                us = majorTypeConst.levels.map { level -> level.il },
-                ie = it,
-            )
-        }
-        val ctorExpr = ctorConst.applyArgs(majorTypeArgs.take(recursorDecl.numParams))
-        val ctorType = ctorExpr.inferType(localCtx = localCtx, validate = false)
-        val closedTypesEqual = majorType.maxLooseBVarIndex() < 0 &&
-                ctorType.maxLooseBVarIndex() < 0 && majorType.closedDefEq(ctorType)
-        if (!closedTypesEqual && !majorType.isDefEq(ctorType, localCtx, localCtx)) return null
-
+        val kRule = recursorDecl.kRuleForMajor(majorExpr, localCtx) ?: return null
         return applyRule(kRule, emptyList())
     }
 
