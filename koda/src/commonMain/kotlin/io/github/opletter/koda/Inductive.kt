@@ -13,6 +13,7 @@ fun checkInductive(data: Inductive) {
 
     val inductives = data.types
     val blockNumParams = inductives.first().numParams
+    val blockNumNested = inductives.first().numNested
     val blockLevelParams = inductives.first().levelParams
     val blockNameIndices = inductives.map { inductive ->
         env.nameIndices[inductive.name]
@@ -33,6 +34,9 @@ fun checkInductive(data: Inductive) {
         check(inductive.numParams == blockNumParams) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has wrong numParams: expected $blockNumParams, got ${inductive.numParams}"
         }
+        check(inductive.numNested == blockNumNested) {
+            "Mutual inductive ${inductive.name.toStringDetailed()} has wrong numNested: expected $blockNumNested, got ${inductive.numNested}"
+        }
         check(inductive.all == blockNameIndices) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has wrong all list: expected $blockNameIndices, got ${inductive.all}"
         }
@@ -51,7 +55,7 @@ fun checkInductive(data: Inductive) {
             "Mutual inductive ${inductive.name.toStringDetailed()} lives in a different universe than ${firstInductive.name.toStringDetailed()}"
         }
     }
-    val motiveCount = inductives.sumOf { 1 + it.numNested }
+    val motiveCount = inductives.size + blockNumNested
 
     data.registerInto(env)
     inductives.forEach { inductive ->
