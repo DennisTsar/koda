@@ -2,7 +2,6 @@ package io.github.opletter.koda
 
 private data class InductiveTypeInfo(
     val paramTypes: List<Expression>,
-    val paramSortLevels: List<Level>,
     val sortLevel: Level,
 )
 
@@ -30,6 +29,7 @@ fun checkInductive(data: Inductive) {
         check(inductive.hasDistinctLevelParams()) {
             "Duplicate universe parameters in $inductive"
         }
+        inductive.checkLevelParams(listOf(inductive.typeExpr))
         check(inductive.numParams == blockNumParams) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has wrong numParams: expected $blockNumParams, got ${inductive.numParams}"
         }
@@ -45,10 +45,12 @@ fun checkInductive(data: Inductive) {
     val firstInductive = inductives.first()
     val firstInfo = inductiveInfos.getValue(firstInductive)
     inductives.drop(1).forEach { inductive ->
-        checkSharedParams(firstInductive, firstInfo, inductive, inductiveInfos.getValue(inductive))
+        val inductiveInfo = inductiveInfos.getValue(inductive)
+        checkSharedParams(firstInductive, firstInfo, inductive, inductiveInfo)
+        check(inductiveInfo.sortLevel.isEqual(firstInfo.sortLevel)) {
+            "Mutual inductive ${inductive.name.toStringDetailed()} lives in a different universe than ${firstInductive.name.toStringDetailed()}"
+        }
     }
-    val maxFieldSortLevel = (inductives.map { inductiveInfos.getValue(it).sortLevel } + firstInfo.paramSortLevels)
-        .reduce { acc, level -> makeLevelMax(acc, level) }
     val motiveCount = inductives.sumOf { 1 + it.numNested }
 
     data.registerInto(env)
@@ -68,6 +70,7 @@ fun checkInductive(data: Inductive) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has wrong constructor count: expected ${inductive.ctors.size}, got ${constructors.size}"
         }
         val singletonEliminationChecks = constructors.mapIndexed { ctorIndex, constructor ->
+            constructor.checkLevelParams(listOf(constructor.typeExpr))
             check(constructor.cidx == ctorIndex) {
                 "Constructor ${constructor.name.toStringDetailed()} has wrong cidx: expected $ctorIndex, got ${constructor.cidx}"
             }
@@ -77,7 +80,7 @@ fun checkInductive(data: Inductive) {
                 "Mutual inductive ${inductive.name.toStringDetailed()} constructor list mismatch at #$ctorIndex"
             }
             val supportsSingletonElimination =
-                checkConstructor(constructor, inductive, inductiveInfo, blockNameSet, maxFieldSortLevel)
+                checkConstructor(constructor, inductive, inductiveInfo, blockNameSet)
             env.declTypeByName[constructor.name] = constructor.typeExpr
             supportsSingletonElimination
         }
@@ -107,6 +110,12 @@ fun checkInductive(data: Inductive) {
         check(recursor.hasDistinctLevelParams()) {
             "Duplicate universe parameters in recursor $recursor"
         }
+        recursor.checkLevelParams(
+            buildList {
+                add(recursor.typeExpr)
+                recursor.rules.forEach { add(it.rhsExpr) }
+            }
+        )
 
         val recName = recursor.name as? Name.Str
             ?: error("Recursor name must be a string name, got ${recursor.name}")
@@ -134,23 +143,21 @@ context(env: Environment)
 private fun analyzeInductiveType(inductive: Inductive.InductiveVal): InductiveTypeInfo {
     val typeBinderCount = inductive.numParams + inductive.numIndices
     val inductiveParamTypes = mutableListOf<Expression>()
-    val inductiveParamSortLevels = mutableListOf<Level>()
 
     val typeTailWhnf = walkForalls(
         expr = inductive.typeExpr,
         expectedBinders = typeBinderCount,
         owner = "Inductive type ${inductive.name}",
     ) { binderIndex, binderType, localCtx ->
-        val binderSort = binderType.inferSort(localCtx = localCtx)
+        val _ = binderType.inferSort(localCtx = localCtx)
         if (binderIndex < inductive.numParams) {
             inductiveParamTypes += binderType
-            inductiveParamSortLevels += binderSort
         }
     }.first
 
     val typeSort = typeTailWhnf as? Expression.Sort
         ?: error("Inductive type must reduce to Sort after $typeBinderCount binders, got ${typeTailWhnf.toStringDetailed()}")
-    return InductiveTypeInfo(inductiveParamTypes, inductiveParamSortLevels, typeSort.level)
+    return InductiveTypeInfo(inductiveParamTypes, typeSort.level)
 }
 
 context(env: Environment)
@@ -179,8 +186,8 @@ private fun checkConstructor(
     inductive: Inductive.InductiveVal,
     inductiveInfo: InductiveTypeInfo,
     mutualInductiveNames: Set<Name>,
-    maxFieldSortLevel: Level,
 ): Boolean {
+    val _ = constructor.typeExpr.inferSort()
     check(constructor.inductName == inductive.name) {
         "Constructor ${constructor.name.toStringDetailed()} has wrong inductive target: expected ${inductive.name.toStringDetailed()}, got ${constructor.inductName.toStringDetailed()}"
     }
@@ -212,8 +219,8 @@ private fun checkConstructor(
         } else {
             val fieldSort = binderType.inferSort(localCtx = localCtx)
             fieldSortLevels += fieldSort
-            check(isInductiveProp || fieldSort.isLessOrEqual(maxFieldSortLevel)) {
-                "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above allowed sort ${maxFieldSortLevel.toStringDetailed()}"
+            check(isInductiveProp || fieldSort.isLessOrEqual(inductiveInfo.sortLevel)) {
+                "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above allowed sort ${inductiveInfo.sortLevel.toStringDetailed()}"
             }
             check(!binderType.hasNegativeOccurrenceOf(mutualInductiveNames)) {
                 "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} contains a non-positive occurrence of a mutual inductive"
@@ -286,6 +293,7 @@ fun Inductive.RecursorVal.getMajorBinder(): Expression.ForallE {
 
 context(env: Environment)
 private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
+    val _ = recursor.typeExpr.inferSort()
     val majorType = recursor.getMajorBinder().typeExpr
     val [majorTypeHead, majorTypeArgs] = majorType.unfoldApp()
     val majorTypeConst = majorTypeHead as? Expression.Const

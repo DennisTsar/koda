@@ -7,6 +7,51 @@ private const val debugTargetIndex = -1//21_000_000///51_500_000
 fun NamedDecl.hasDistinctLevelParams(): Boolean =
     levelParamIndices.toSet().size == levelParamIndices.size
 
+context(env: Environment)
+internal fun NamedDecl.checkLevelParams(expressions: List<Expression>) {
+    val allowedParams = levelParamIndices.toSet()
+    val seenExpressions = mutableSetOf<Int>()
+    val seenLevels = mutableSetOf<Int>()
+
+    fun checkLevel(root: Level) {
+        val pending = ArrayDeque<Level>()
+        pending.addLast(root)
+        while (pending.isNotEmpty()) {
+            when (val level = pending.removeLast()) {
+                Level.Zero -> {}
+                is Level.Param -> check(level.nameIndex in allowedParams) {
+                    "Undeclared universe parameter ${level.name.toStringDetailed()} in ${name.toStringDetailed()}"
+                }
+
+                is Level.Succ -> if (seenLevels.add(level.il)) pending.addLast(level.level)
+                is Level.Max -> if (seenLevels.add(level.il)) {
+                    pending.addLast(level.left)
+                    pending.addLast(level.right)
+                }
+
+                is Level.Imax -> if (seenLevels.add(level.il)) {
+                    pending.addLast(level.left)
+                    pending.addLast(level.right)
+                }
+            }
+        }
+    }
+
+    expressions.forEach { expression ->
+        expression.evaluatePostorder(
+            isEvaluated = { it.ie in seenExpressions },
+            evaluate = {
+                seenExpressions += it.ie
+                when (it) {
+                    is Expression.Const -> it.levels.forEach(::checkLevel)
+                    is Expression.Sort -> checkLevel(it.level)
+                    else -> {}
+                }
+            },
+        )
+    }
+}
+
 internal data class StructureEtaRecursorInfo(
     val inductiveDeclIndex: Int,
     val inductiveDecl: Inductive.InductiveVal,
@@ -99,17 +144,18 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 // (2): "has no duplicate universe parameters"
                 // not the most efficient check but probably doesn't matter?
                 check(data.hasDistinctLevelParams()) { "Duplicate universe parameters in $data" }
+                val value = when (data) {
+                    is Declaration.Def -> data.valueExpr
+                    is Declaration.Opaque -> data.valueExpr // TODO: treat opqaue differently
+                    is Declaration.Thm -> data.valueExpr
+                    is Declaration.Axiom, is Declaration.Quot -> null
+                }
+                data.checkLevelParams(listOfNotNull(data.typeExpr, value))
                 // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
 //                println("found type: ${data.typeExpr.toStringDetailed()}")
 //                val debugStart = env.clock.elapsedNow()
                 try {
                     val declaredTypeSortLevel = data.typeExpr.inferSort()
-                    val value = when (data) {
-                        is Declaration.Def -> data.valueExpr
-                        is Declaration.Opaque -> data.valueExpr // TODO: treat opqaue differently
-                        is Declaration.Thm -> data.valueExpr
-                        is Declaration.Axiom, is Declaration.Quot -> null
-                    }
                     if (value != null) {
                         check(typeCheckDeclaration(value, data.typeExpr)) {
                             "value not defeq to type for ${data.name.toStringDetailed()} $data"
