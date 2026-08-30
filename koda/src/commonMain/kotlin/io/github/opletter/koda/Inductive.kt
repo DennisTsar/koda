@@ -49,6 +49,7 @@ fun checkInductive(data: Inductive) {
     }
     val maxFieldSortLevel = (inductives.map { inductiveInfos.getValue(it).sortLevel } + firstInfo.paramSortLevels)
         .reduce { acc, level -> makeLevelMax(acc, level) }
+    val motiveCount = inductives.sumOf { 1 + it.numNested }
 
     data.registerInto(env)
     inductives.forEach { inductive ->
@@ -59,13 +60,14 @@ fun checkInductive(data: Inductive) {
     check(ctorsByInductive.keys.all { it in blockNameSet }) {
         "Mutual inductive block has constructor for an unrelated type: ${ctorsByInductive.keys.map { it.toStringDetailed() }}"
     }
+    val singletonEliminationByInductive = mutableMapOf<Inductive.InductiveVal, Boolean>()
     inductives.forEach { inductive ->
         val inductiveInfo = inductiveInfos.getValue(inductive)
         val constructors = (ctorsByInductive[inductive.name] ?: emptyList()).sortedBy { it.cidx }
         check(constructors.size == inductive.ctors.size) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has wrong constructor count: expected ${inductive.ctors.size}, got ${constructors.size}"
         }
-        constructors.forEachIndexed { ctorIndex, constructor ->
+        val singletonEliminationChecks = constructors.mapIndexed { ctorIndex, constructor ->
             check(constructor.cidx == ctorIndex) {
                 "Constructor ${constructor.name.toStringDetailed()} has wrong cidx: expected $ctorIndex, got ${constructor.cidx}"
             }
@@ -74,9 +76,21 @@ fun checkInductive(data: Inductive) {
             check(inductive.ctors[ctorIndex] == constructorNameIndex) {
                 "Mutual inductive ${inductive.name.toStringDetailed()} constructor list mismatch at #$ctorIndex"
             }
-            checkConstructor(constructor, inductive, inductiveInfo, blockNameSet, maxFieldSortLevel)
+            val supportsSingletonElimination =
+                checkConstructor(constructor, inductive, inductiveInfo, blockNameSet, maxFieldSortLevel)
             env.declTypeByName[constructor.name] = constructor.typeExpr
+            supportsSingletonElimination
         }
+        singletonEliminationByInductive[inductive] = when (constructors.size) {
+            0 -> true
+            1 -> singletonEliminationChecks.single()
+            else -> false
+        }
+    }
+    val eliminatesToSort = inductives.all { inductiveInfos.getValue(it).sortLevel.isDefinitelyNonzero() } ||
+            motiveCount == 1 && singletonEliminationByInductive.getValue(firstInductive)
+    inductives.forEach { inductive ->
+        env.eliminatesToSortByInductive[inductive.name] = eliminatesToSort
     }
 
     val inductivesMissingRecursor = blockNameSet.toMutableSet()
@@ -86,6 +100,12 @@ fun checkInductive(data: Inductive) {
         }
         check(recursor.numParams == blockNumParams) {
             "Recursor ${recursor.name.toStringDetailed()} has wrong numParams: expected $blockNumParams, got ${recursor.numParams}"
+        }
+        check(recursor.numMotives == motiveCount) {
+            "Recursor ${recursor.name.toStringDetailed()} has wrong numMotives: expected $motiveCount, got ${recursor.numMotives}"
+        }
+        check(recursor.hasDistinctLevelParams()) {
+            "Duplicate universe parameters in recursor $recursor"
         }
 
         val recName = recursor.name as? Name.Str
@@ -160,7 +180,7 @@ private fun checkConstructor(
     inductiveInfo: InductiveTypeInfo,
     mutualInductiveNames: Set<Name>,
     maxFieldSortLevel: Level,
-) {
+): Boolean {
     check(constructor.inductName == inductive.name) {
         "Constructor ${constructor.name.toStringDetailed()} has wrong inductive target: expected ${inductive.name.toStringDetailed()}, got ${constructor.inductName.toStringDetailed()}"
     }
@@ -176,6 +196,7 @@ private fun checkConstructor(
 
     val isInductiveProp = inductiveInfo.sortLevel.isLessOrEqual(Level.Zero)
     val ctorBinderCount = constructor.numParams + constructor.numFields
+    val fieldSortLevels = mutableListOf<Level>()
     val ctorTailExpr = walkForalls(
         expr = constructor.typeExpr,
         expectedBinders = ctorBinderCount,
@@ -190,6 +211,7 @@ private fun checkConstructor(
             }
         } else {
             val fieldSort = binderType.inferSort(localCtx = localCtx)
+            fieldSortLevels += fieldSort
             check(isInductiveProp || fieldSort.isLessOrEqual(maxFieldSortLevel)) {
                 "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above allowed sort ${maxFieldSortLevel.toStringDetailed()}"
             }
@@ -220,6 +242,12 @@ private fun checkConstructor(
     resultArgs.drop(inductive.numParams).forEach { indexArg ->
         check(!indexArg.containsConst(mutualInductiveNames)) {
             "Constructor ${constructor.name} index argument contains a mutual inductive: ${indexArg.toStringDetailed()}"
+        }
+    }
+
+    return fieldSortLevels.withIndex().all { field ->
+        field.value.isLessOrEqual(Level.Zero) || resultArgs.any { resultArg ->
+            resultArg is Expression.Bvar && resultArg.bvar == constructor.numFields - 1 - field.index
         }
     }
 }
@@ -267,6 +295,38 @@ private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
         ?: error("Major inductive name index for ${majorInductName.toStringDetailed()} not found")
     val majorInductive = env.declarations[majorInductNameIndex] as? Inductive.InductiveVal
         ?: error("Recursor ${recursor.name} major premise type ${majorInductName.toStringDetailed()} is not an inductive")
+    val canEliminateToSort = env.eliminatesToSortByInductive[majorInductName]
+        ?: error("Missing elimination information for inductive ${majorInductName.toStringDetailed()}")
+    val recursorName = recursor.name as? Name.Str
+        ?: error("Recursor name must be a string name, got ${recursor.name}")
+    if (recursorName.str == "rec" && env.names[recursorName.pre] == majorInductName) {
+        val inductiveLevelParams = majorInductive.levelParams
+        val recursorLevelParams = recursor.levelParams
+        val hasExpectedLevelParams = if (canEliminateToSort) {
+            recursorLevelParams.size == inductiveLevelParams.size + 1 &&
+                    recursorLevelParams.drop(1).isEqual(inductiveLevelParams)
+        } else {
+            recursorLevelParams.isEqual(inductiveLevelParams)
+        }
+        check(hasExpectedLevelParams) {
+            "Recursor ${recursor.name} has universe parameters incompatible with its elimination level"
+        }
+    }
+    if (!canEliminateToSort) {
+        walkForalls(
+            recursor.typeExpr,
+            recursor.numParams + recursor.numMotives,
+            "Recursor ${recursor.name}",
+            reduceExpr = false,
+        ) { binderIndex, binderType, localCtx ->
+            if (binderIndex >= recursor.numParams) {
+                val motiveLevel = binderType.resultSortLevel(localCtx, "Recursor ${recursor.name} motive")
+                check(motiveLevel.isLessOrEqual(Level.Zero)) {
+                    "Recursor ${recursor.name} cannot eliminate into ${motiveLevel.toStringDetailed()}"
+                }
+            }
+        }
+    }
     check(majorInductive.numIndices == recursor.numIndices) {
         "Recursor ${recursor.name} has wrong numIndices for major inductive ${majorInductName.toStringDetailed()}: expected ${majorInductive.numIndices}, got ${recursor.numIndices}"
     }
@@ -291,6 +351,23 @@ private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
     }.toSet()
     check(seenCtorNames == expectedCtorNames) {
         "Recursor ${recursor.name} has wrong rule set: expected ${expectedCtorNames.map { it.toStringDetailed() }}, got ${seenCtorNames.map { it.toStringDetailed() }}"
+    }
+}
+
+context(env: Environment)
+private fun Expression.resultSortLevel(initialLocalCtx: List<Expression>, owner: String): Level {
+    var current = this
+    var localCtx = initialLocalCtx
+    while (true) {
+        when (val normalized = current.whnf(localCtx = localCtx)) {
+            is Expression.ForallE -> {
+                localCtx = env.consLocalCtx(normalized.typeExpr, localCtx)
+                current = normalized.bodyExpr
+            }
+
+            is Expression.Sort -> return normalized.level
+            else -> error("$owner must end in a sort, got ${normalized.toStringDetailed()}")
+        }
     }
 }
 

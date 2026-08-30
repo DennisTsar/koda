@@ -326,6 +326,7 @@ class Environment {
     val declarations: IntObjectStore<NamedDecl> = IntObjectStore()
     val levelParamByNameIndex: MutableMap<Int, Level.Param> = mutableMapOf()
     val constructorByName: MutableMap<Name, Inductive.ConstructorVal> = mutableMapOf()
+    val eliminatesToSortByInductive: MutableMap<Name, Boolean> = mutableMapOf()
     val rootInductiveByShortName: MutableMap<String, Pair<Int, Inductive.InductiveVal>> = mutableMapOf()
     val expressions: IntObjectStore<Expression> = IntObjectStore()
     val levels: IntObjectStore<Level> = IntObjectStore(listOf(0 to Level.Zero))

@@ -227,7 +227,7 @@ private fun makeNormalizedMax(arguments: List<Level>): Level {
 }
 
 context(env: Environment)
-private fun Level.isDefinitelyNonzero(): Boolean = when (this) {
+internal fun Level.isDefinitelyNonzero(): Boolean = when (this) {
     Level.Zero, is Level.Param -> false
     is Level.Succ -> true
     is Level.Max -> this.left.isDefinitelyNonzero() || this.right.isDefinitelyNonzero()
