@@ -3,6 +3,7 @@ package io.github.opletter.koda
 private var debugClosedEvaluation = false
 private var debugTargetDeclaration = false
 private const val debugTargetIndex = -1//21_000_000///51_500_000
+private const val MAX_DEF_EQ_DEPTH = 32
 
 fun NamedDecl.hasDistinctLevelParams(): Boolean =
     levelParamIndices.toSet().size == levelParamIndices.size
@@ -293,6 +294,20 @@ fun Expression.isDefEq(
     other: Expression,
     localCtxLeft: List<Expression> = emptyList(),
     localCtxRight: List<Expression> = emptyList(),
+): Boolean {
+    env.defEqDepth += 1
+    return try {
+        this.isDefEqCore(other, localCtxLeft, localCtxRight)
+    } finally {
+        env.defEqDepth -= 1
+    }
+}
+
+context(env: Environment)
+private fun Expression.isDefEqCore(
+    other: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
 ): Boolean {
     env.defEqCalls += 1
 //    val traceDefEq = false
@@ -1129,8 +1144,17 @@ private fun ClosedClosure.closedDefEq(
 context(env: Environment)
 private fun Expression.closedDefEq(other: Expression): Boolean {
     if (this.maxLooseBVarIndex() >= 0 || other.maxLooseBVarIndex() >= 0) return false
-    return ClosedClosure(this, ClosedEvalEnv.Empty).closedDefEq(
-        ClosedClosure(other, ClosedEvalEnv.Empty)
+    return this.closedDefEq(other, emptyList(), emptyList())
+}
+
+context(env: Environment)
+private fun Expression.closedDefEq(
+    other: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean {
+    return ClosedClosure(this, localCtxLeft.closedEvalEnv()).closedDefEq(
+        ClosedClosure(other, localCtxRight.closedEvalEnv())
     )
 }
 
@@ -2064,7 +2088,11 @@ private fun Expression.App.isDefEqWhnfSpine(
                         .isLessOrEqual(Level.Zero)
             if (domainIsProp) {
                 env.typedCongruenceProofSkips += 1
-            } else if (!leftArgument.isDefEq(rightArgument, localCtxLeft, localCtxRight)) {
+            } else if (
+                !(env.defEqDepth >= MAX_DEF_EQ_DEPTH &&
+                        leftArgument.closedDefEq(rightArgument, localCtxLeft, localCtxRight)) &&
+                !leftArgument.isDefEq(rightArgument, localCtxLeft, localCtxRight)
+            ) {
 //                if (debugTargetDeclaration) {
 //                    println(
 //                        "debug congruence failure: index=$index " +

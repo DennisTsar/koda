@@ -354,6 +354,7 @@ class Environment {
     private var localCtxIntern: MutableMap<LocalCtxStepKey, Int> = mutableMapOf()
     private var nextLocalCtxId: Int = 1
     var defEqCalls: Long = 0
+    var defEqDepth: Int = 0
     var defEqFailureCacheHits: Long = 0
     var inferTypeCacheHits: Long = 0
     var proofIrrelevanceAttempts: Long = 0
@@ -689,6 +690,7 @@ class Environment {
         localCtxIntern = mutableMapOf()
         nextLocalCtxId = 1
         defEqCalls = 0
+        defEqDepth = 0
         defEqFailureCacheHits = 0
         inferTypeCacheHits = 0
         proofIrrelevanceAttempts = 0
