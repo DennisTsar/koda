@@ -490,7 +490,58 @@ private fun checkRecursorRuleType(
     }
 }
 
-private data class RecursorCallFrame(val expression: Expression, val binderDepth: Int)
+private data class SyntaxFrame(val expression: Expression, val binderDepth: Int)
+
+private enum class SyntaxVisit { Descend, Arguments, Skip }
+
+context(env: Environment)
+private inline fun Expression.walkSyntax(
+    visit: (expression: Expression, binderDepth: Int, head: Expression, args: List<Expression>) -> SyntaxVisit,
+) {
+    val stack = ArrayDeque<SyntaxFrame>()
+    stack.add(SyntaxFrame(this, 0))
+    while (stack.isNotEmpty()) {
+        val [expression, binderDepth] = stack.removeLast()
+        val [head, args] = expression.unfoldApp()
+        when (visit(expression, binderDepth, head, args)) {
+            SyntaxVisit.Skip -> continue
+            SyntaxVisit.Arguments -> {
+                args.forEach { stack.add(SyntaxFrame(it, binderDepth)) }
+                continue
+            }
+
+            SyntaxVisit.Descend -> {}
+        }
+
+        if (expression is Expression.App) {
+            stack.add(SyntaxFrame(head, binderDepth))
+            args.forEach { stack.add(SyntaxFrame(it, binderDepth)) }
+            continue
+        }
+        when (expression) {
+            is Expression.ForallE -> {
+                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+            }
+
+            is Expression.Lam -> {
+                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+            }
+
+            is Expression.LetE -> {
+                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.valueExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+            }
+
+            is Expression.Mdata -> stack.add(SyntaxFrame(expression.expr, binderDepth))
+            is Expression.Proj -> stack.add(SyntaxFrame(expression.structExpr, binderDepth))
+            is Expression.App, is Expression.Bvar, is Expression.Const, is Expression.NatVal,
+            is Expression.Sort, is Expression.StrVal -> {}
+        }
+    }
+}
 
 context(env: Environment)
 private fun checkStructuralRecursorCalls(
@@ -500,15 +551,10 @@ private fun checkStructuralRecursorCalls(
     numFields: Int,
     owner: String,
 ) {
-    val stack = ArrayDeque<RecursorCallFrame>()
     val seen = mutableSetOf<Long>()
-    stack.add(RecursorCallFrame(expression, 0))
-    while (stack.isNotEmpty()) {
-        val frame = stack.removeLast()
-        val key = (frame.binderDepth.toLong() shl 32) xor (frame.expression.ie.toLong() and 0xffffffffL)
-        if (!seen.add(key)) continue
-
-        val [head, args] = frame.expression.unfoldApp()
+    expression.walkSyntax { current, binderDepth, head, args ->
+        val key = (binderDepth.toLong() shl 32) xor (current.ie.toLong() and 0xffffffffL)
+        if (!seen.add(key)) return@walkSyntax SyntaxVisit.Skip
         val calledRecursor = (head as? Expression.Const)?.let { recursorsByName[it.name] }
         if (calledRecursor != null) {
             val majorIndex = calledRecursor.numParams + calledRecursor.numMotives +
@@ -519,43 +565,16 @@ private fun checkStructuralRecursorCalls(
             val [majorHead] = args[majorIndex].unfoldApp()
             val majorBvar = majorHead as? Expression.Bvar
             val isConstructorField = majorBvar != null &&
-                    frame.binderDepth >= prefixBinderCount + numFields &&
+                    binderDepth >= prefixBinderCount + numFields &&
                     (0 until numFields).any { fieldIndex ->
-                        majorBvar.bvar == frame.binderDepth - 1 - prefixBinderCount - fieldIndex
+                        majorBvar.bvar == binderDepth - 1 - prefixBinderCount - fieldIndex
                     }
             check(isConstructorField) {
                 "$owner calls ${calledRecursor.name} on an expression that is not a constructor field"
             }
-            args.forEach { stack.add(RecursorCallFrame(it, frame.binderDepth)) }
-            continue
-        }
-        if (frame.expression is Expression.App) {
-            stack.add(RecursorCallFrame(head, frame.binderDepth))
-            args.forEach { stack.add(RecursorCallFrame(it, frame.binderDepth)) }
-            continue
-        }
-
-        when (val current = frame.expression) {
-            is Expression.ForallE -> {
-                stack.add(RecursorCallFrame(current.typeExpr, frame.binderDepth))
-                stack.add(RecursorCallFrame(current.bodyExpr, frame.binderDepth + 1))
-            }
-
-            is Expression.Lam -> {
-                stack.add(RecursorCallFrame(current.typeExpr, frame.binderDepth))
-                stack.add(RecursorCallFrame(current.bodyExpr, frame.binderDepth + 1))
-            }
-
-            is Expression.LetE -> {
-                stack.add(RecursorCallFrame(current.typeExpr, frame.binderDepth))
-                stack.add(RecursorCallFrame(current.valueExpr, frame.binderDepth))
-                stack.add(RecursorCallFrame(current.bodyExpr, frame.binderDepth + 1))
-            }
-
-            is Expression.Mdata -> stack.add(RecursorCallFrame(current.expr, frame.binderDepth))
-            is Expression.Proj -> stack.add(RecursorCallFrame(current.structExpr, frame.binderDepth))
-            is Expression.App, is Expression.Bvar, is Expression.Const, is Expression.NatVal,
-            is Expression.Sort, is Expression.StrVal -> {}
+            SyntaxVisit.Arguments
+        } else {
+            SyntaxVisit.Descend
         }
     }
 }
@@ -581,8 +600,6 @@ fun Expression.unfoldApp(): Pair<Expression, List<Expression>> {
     return head to args.asReversed()
 }
 
-private data class SyntaxFrame(val expression: Expression, val binderDepth: Int)
-
 context(env: Environment)
 private fun checkUniformInductiveOccurrences(
     constructors: List<Inductive.ConstructorVal>,
@@ -590,16 +607,13 @@ private fun checkUniformInductiveOccurrences(
     numParams: Int,
     levelParams: List<Level.Param>,
 ) {
+    val levelParamIndices = levelParams.map { it.il }
     constructors.forEach { constructor ->
-        val stack = ArrayDeque<SyntaxFrame>()
-        stack.add(SyntaxFrame(constructor.typeExpr, 0))
-        while (stack.isNotEmpty()) {
-            val (expression, binderDepth) = stack.removeLast()
-            val [head, args] = expression.unfoldApp()
-            if (head is Expression.Const && head.name in inductiveNames && args.size <= numParams) {
-                val isUniform = args.size == numParams && binderDepth >= numParams &&
-                        head.levels.map { it.il } == levelParams.map { it.il } &&
-                        args.indices.all { paramIndex ->
+        constructor.typeExpr.walkSyntax { _, binderDepth, head, args ->
+            if (head is Expression.Const && head.name in inductiveNames) {
+                val isUniform = args.size >= numParams && binderDepth >= numParams &&
+                        head.levels.map { it.il } == levelParamIndices &&
+                        (0 until numParams).all { paramIndex ->
                             val arg = args[paramIndex]
                             arg is Expression.Bvar && arg.bvar == binderDepth - 1 - paramIndex
                         }
@@ -607,35 +621,9 @@ private fun checkUniformInductiveOccurrences(
                     "Invalid occurrence of ${head.name.toStringDetailed()} in constructor ${constructor.name}: " +
                             "it must use the mutual declaration's parameters and universe levels"
                 }
-                continue
-            }
-
-            when (expression) {
-                is Expression.App -> {
-                    stack.add(SyntaxFrame(expression.fnExpr, binderDepth))
-                    stack.add(SyntaxFrame(expression.argExpr, binderDepth))
-                }
-
-                is Expression.ForallE -> {
-                    stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
-                    stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
-                }
-
-                is Expression.Lam -> {
-                    stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
-                    stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
-                }
-
-                is Expression.LetE -> {
-                    stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
-                    stack.add(SyntaxFrame(expression.valueExpr, binderDepth))
-                    stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
-                }
-
-                is Expression.Mdata -> stack.add(SyntaxFrame(expression.expr, binderDepth))
-                is Expression.Proj -> stack.add(SyntaxFrame(expression.structExpr, binderDepth))
-                is Expression.Bvar, is Expression.Const, is Expression.NatVal,
-                is Expression.Sort, is Expression.StrVal -> {}
+                SyntaxVisit.Arguments
+            } else {
+                SyntaxVisit.Descend
             }
         }
     }
@@ -660,48 +648,16 @@ private fun PositivityTarget.underBinder(): PositivityTarget = when (this) {
 
 context(env: Environment)
 private fun Expression.containsTarget(target: PositivityTarget): Boolean {
-    val stack = ArrayDeque<SyntaxFrame>()
-    stack.add(SyntaxFrame(this, 0))
-    while (stack.isNotEmpty()) {
-        val (expression, binderDepth) = stack.removeLast()
-        when (expression) {
-            is Expression.Bvar -> {
-                if (target is PositivityTarget.Parameter && expression.bvar == target.bvar + binderDepth) {
-                    return true
-                }
-            }
-
-            is Expression.Const -> {
-                if (target is PositivityTarget.Inductives && expression.name in target.names) return true
-            }
-
-            is Expression.App -> {
-                stack.add(SyntaxFrame(expression.fnExpr, binderDepth))
-                stack.add(SyntaxFrame(expression.argExpr, binderDepth))
-            }
-
-            is Expression.ForallE -> {
-                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
-                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
-            }
-
-            is Expression.Lam -> {
-                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
-                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
-            }
-
-            is Expression.LetE -> {
-                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
-                stack.add(SyntaxFrame(expression.valueExpr, binderDepth))
-                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
-            }
-
-            is Expression.Mdata -> stack.add(SyntaxFrame(expression.expr, binderDepth))
-            is Expression.Proj -> stack.add(SyntaxFrame(expression.structExpr, binderDepth))
-            is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
+    var found = false
+    walkSyntax { expression, binderDepth, _, _ ->
+        found = found || when (target) {
+            is PositivityTarget.Inductives -> expression is Expression.Const && expression.name in target.names
+            is PositivityTarget.Parameter ->
+                expression is Expression.Bvar && expression.bvar == target.bvar + binderDepth
         }
+        if (found) SyntaxVisit.Skip else SyntaxVisit.Descend
     }
-    return false
+    return found
 }
 
 context(env: Environment)
