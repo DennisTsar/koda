@@ -45,6 +45,8 @@ fun checkInductive(data: Inductive) {
         }
     }
 
+    checkUniformInductiveOccurrences(data.ctors, blockNameSet, blockNumParams, blockLevelParams)
+
     val inductiveInfos = inductives.associateWith { analyzeInductiveType(it) }
     val firstInductive = inductives.first()
     val firstInfo = inductiveInfos.getValue(firstInductive)
@@ -226,7 +228,23 @@ private fun checkConstructor(
             check(isInductiveProp || fieldSort.isLessOrEqual(inductiveInfo.sortLevel)) {
                 "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} has sort ${fieldSort.toStringDetailed()} above allowed sort ${inductiveInfo.sortLevel.toStringDetailed()}"
             }
-            check(!binderType.hasNegativeOccurrenceOf(mutualInductiveNames)) {
+            check(
+                inductive.isRec ||
+                        !binderType.whnf(localCtx = localCtx)
+                            .containsTarget(PositivityTarget.Inductives(mutualInductiveNames, emptyList()))
+            ) {
+                "Recursive inductive ${inductive.name.toStringDetailed()} is marked nonrecursive"
+            }
+            check(
+                binderType.isStrictlyPositive(
+                    PositivityTarget.Inductives(
+                        mutualInductiveNames,
+                        List(inductive.numParams) { localCtx.lastIndex - it },
+                    ),
+                    localCtx,
+                    mutualInductiveNames,
+                )
+            ) {
                 "Constructor ${constructor.name} field #${binderIndex - constructor.numParams} contains a non-positive occurrence of a mutual inductive"
             }
         }
@@ -251,7 +269,7 @@ private fun checkConstructor(
     }
 
     resultArgs.drop(inductive.numParams).forEach { indexArg ->
-        check(!indexArg.containsConst(mutualInductiveNames)) {
+        check(!indexArg.containsTarget(PositivityTarget.Inductives(mutualInductiveNames, emptyList()))) {
             "Constructor ${constructor.name} index argument contains a mutual inductive: ${indexArg.toStringDetailed()}"
         }
     }
@@ -473,30 +491,249 @@ fun Expression.unfoldApp(): Pair<Expression, List<Expression>> {
     return head to args.asReversed()
 }
 
+private data class SyntaxFrame(val expression: Expression, val binderDepth: Int)
+
 context(env: Environment)
-private fun Expression.containsConst(targetNames: Set<Name>, polarity: Int = 0): Boolean {
-    return when (this) {
-        is Expression.App ->
-            this.fnExpr.containsConst(targetNames, polarity) || this.argExpr.containsConst(targetNames, polarity)
+private fun checkUniformInductiveOccurrences(
+    constructors: List<Inductive.ConstructorVal>,
+    inductiveNames: Set<Name>,
+    numParams: Int,
+    levelParams: List<Level.Param>,
+) {
+    constructors.forEach { constructor ->
+        val stack = ArrayDeque<SyntaxFrame>()
+        stack.add(SyntaxFrame(constructor.typeExpr, 0))
+        while (stack.isNotEmpty()) {
+            val (expression, binderDepth) = stack.removeLast()
+            val [head, args] = expression.unfoldApp()
+            if (head is Expression.Const && head.name in inductiveNames && args.size <= numParams) {
+                val isUniform = args.size == numParams && binderDepth >= numParams &&
+                        head.levels.map { it.il } == levelParams.map { it.il } &&
+                        args.indices.all { paramIndex ->
+                            val arg = args[paramIndex]
+                            arg is Expression.Bvar && arg.bvar == binderDepth - 1 - paramIndex
+                        }
+                check(isUniform) {
+                    "Invalid occurrence of ${head.name.toStringDetailed()} in constructor ${constructor.name}: " +
+                            "it must use the mutual declaration's parameters and universe levels"
+                }
+                continue
+            }
 
-        is Expression.Const -> this.name in targetNames && polarity <= 0
-        is Expression.ForallE ->
-            this.typeExpr.containsConst(targetNames, -polarity) || this.bodyExpr.containsConst(targetNames, polarity)
+            when (expression) {
+                is Expression.App -> {
+                    stack.add(SyntaxFrame(expression.fnExpr, binderDepth))
+                    stack.add(SyntaxFrame(expression.argExpr, binderDepth))
+                }
 
-        is Expression.Lam ->
-            this.typeExpr.containsConst(targetNames, -polarity) || this.bodyExpr.containsConst(targetNames, polarity)
+                is Expression.ForallE -> {
+                    stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                    stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+                }
 
-        is Expression.LetE ->
-            this.typeExpr.containsConst(targetNames, polarity) ||
-                    this.valueExpr.containsConst(targetNames, polarity) ||
-                    this.bodyExpr.containsConst(targetNames, polarity)
+                is Expression.Lam -> {
+                    stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                    stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+                }
 
-        is Expression.Mdata -> this.expr.containsConst(targetNames, polarity)
-        is Expression.Proj -> this.structExpr.containsConst(targetNames, polarity)
-        is Expression.Bvar, is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> false
+                is Expression.LetE -> {
+                    stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                    stack.add(SyntaxFrame(expression.valueExpr, binderDepth))
+                    stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+                }
+
+                is Expression.Mdata -> stack.add(SyntaxFrame(expression.expr, binderDepth))
+                is Expression.Proj -> stack.add(SyntaxFrame(expression.structExpr, binderDepth))
+                is Expression.Bvar, is Expression.Const, is Expression.NatVal,
+                is Expression.Sort, is Expression.StrVal -> {}
+            }
+        }
     }
 }
 
+private sealed interface PositivityTarget {
+    data class Inductives(val names: Set<Name>, val paramBvars: List<Int>) : PositivityTarget
+    data class Parameter(val bvar: Int) : PositivityTarget
+}
+
+private data class PositivityRequest(
+    val expression: Expression,
+    val localCtx: List<Expression>,
+    val target: PositivityTarget,
+    val currentInductiveNames: Set<Name>,
+)
+
+private fun PositivityTarget.underBinder(): PositivityTarget = when (this) {
+    is PositivityTarget.Inductives -> copy(paramBvars = paramBvars.map { it + 1 })
+    is PositivityTarget.Parameter -> copy(bvar = bvar + 1)
+}
+
 context(env: Environment)
-private fun Expression.hasNegativeOccurrenceOf(targetNames: Set<Name>): Boolean =
-    this.containsConst(targetNames, polarity = 1)
+private fun Expression.containsTarget(target: PositivityTarget): Boolean {
+    val stack = ArrayDeque<SyntaxFrame>()
+    stack.add(SyntaxFrame(this, 0))
+    while (stack.isNotEmpty()) {
+        val (expression, binderDepth) = stack.removeLast()
+        when (expression) {
+            is Expression.Bvar -> {
+                if (target is PositivityTarget.Parameter && expression.bvar == target.bvar + binderDepth) {
+                    return true
+                }
+            }
+
+            is Expression.Const -> {
+                if (target is PositivityTarget.Inductives && expression.name in target.names) return true
+            }
+
+            is Expression.App -> {
+                stack.add(SyntaxFrame(expression.fnExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.argExpr, binderDepth))
+            }
+
+            is Expression.ForallE -> {
+                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+            }
+
+            is Expression.Lam -> {
+                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+            }
+
+            is Expression.LetE -> {
+                stack.add(SyntaxFrame(expression.typeExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.valueExpr, binderDepth))
+                stack.add(SyntaxFrame(expression.bodyExpr, binderDepth + 1))
+            }
+
+            is Expression.Mdata -> stack.add(SyntaxFrame(expression.expr, binderDepth))
+            is Expression.Proj -> stack.add(SyntaxFrame(expression.structExpr, binderDepth))
+            is Expression.NatVal, is Expression.Sort, is Expression.StrVal -> {}
+        }
+    }
+    return false
+}
+
+context(env: Environment)
+private fun Expression.isStrictlyPositive(
+    target: PositivityTarget,
+    localCtx: List<Expression>,
+    currentInductiveNames: Set<Name>,
+): Boolean {
+    val check = DeepRecursiveFunction<PositivityRequest, Boolean> { request ->
+        val expression = request.expression.whnf(localCtx = request.localCtx)
+        if (
+            request.target is PositivityTarget.Parameter && expression is Expression.Bvar &&
+            expression.bvar == request.target.bvar
+        ) {
+            return@DeepRecursiveFunction true
+        }
+
+        val [head, args] = expression.unfoldApp()
+        if (
+            request.target is PositivityTarget.Parameter && head is Expression.Bvar &&
+            head.bvar == request.target.bvar
+        ) {
+            return@DeepRecursiveFunction args.none { it.containsTarget(request.target) }
+        }
+        val headConst = head as? Expression.Const
+        val currentInductive = if (headConst?.name in request.currentInductiveNames) {
+            headConst?.decl as? Inductive.InductiveVal
+        } else {
+            null
+        }
+        if (currentInductive != null) {
+            if (
+                args.size != currentInductive.numParams + currentInductive.numIndices ||
+                args.drop(currentInductive.numParams).any { it.containsTarget(request.target) }
+            ) {
+                return@DeepRecursiveFunction false
+            }
+            if (request.target is PositivityTarget.Inductives) {
+                if (request.target.paramBvars.size != currentInductive.numParams) {
+                    return@DeepRecursiveFunction false
+                }
+                for (paramIndex in request.target.paramBvars.indices) {
+                    val arg = args[paramIndex]
+                    if (arg !is Expression.Bvar || arg.bvar != request.target.paramBvars[paramIndex]) {
+                        return@DeepRecursiveFunction false
+                    }
+                }
+            }
+            return@DeepRecursiveFunction true
+        }
+
+        if (!expression.containsTarget(request.target)) return@DeepRecursiveFunction true
+        if (expression is Expression.ForallE || expression is Expression.Lam) {
+            val binderType = when (expression) {
+                is Expression.ForallE -> expression.typeExpr
+                is Expression.Lam -> expression.typeExpr
+            }
+            val binderBody = when (expression) {
+                is Expression.ForallE -> expression.bodyExpr
+                is Expression.Lam -> expression.bodyExpr
+            }
+            if (binderType.containsTarget(request.target)) return@DeepRecursiveFunction false
+            return@DeepRecursiveFunction callRecursive(
+                request.copy(
+                    expression = binderBody,
+                    localCtx = env.consLocalCtx(binderType, request.localCtx),
+                    target = request.target.underBinder(),
+                )
+            )
+        }
+
+        val container = headConst?.decl as? Inductive.InductiveVal
+            ?: return@DeepRecursiveFunction false
+        if (args.size != container.numParams + container.numIndices) return@DeepRecursiveFunction false
+        for (argIndex in args.indices) {
+            val arg = args[argIndex]
+            if (!arg.containsTarget(request.target)) continue
+            if (
+                argIndex >= container.numParams ||
+                !container.isStrictlyPositiveInParameter(argIndex) ||
+                !callRecursive(request.copy(expression = arg))
+            ) {
+                return@DeepRecursiveFunction false
+            }
+        }
+        true
+    }
+
+    return check(PositivityRequest(this, localCtx, target, currentInductiveNames))
+}
+
+context(env: Environment)
+private fun Inductive.InductiveVal.isStrictlyPositiveInParameter(paramIndex: Int): Boolean {
+    val key = name to paramIndex
+    env.strictlyPositiveInductiveParams[key]?.let { return it }
+    if (paramIndex !in 0 until numParams) return false
+
+    val mutualInductives = all.map { nameIndex ->
+        env.declarations[nameIndex] as? Inductive.InductiveVal ?: return false
+    }
+    val mutualNames = mutualInductives.mapTo(mutableSetOf()) { it.name }
+    val result = mutualInductives.all { mutual ->
+        mutual.ctors.all { constructorIndex ->
+            val constructor = env.declarations[constructorIndex] as? Inductive.ConstructorVal
+                ?: return@all false
+            var constructorType = constructor.typeExpr
+            var localCtx: List<Expression> = emptyList()
+            (0 until constructor.numParams + constructor.numFields).all { binderIndex ->
+                val binder = constructorType as? Expression.ForallE ?: return@all false
+                val fieldIsPositive = binderIndex < constructor.numParams || binder.typeExpr.isStrictlyPositive(
+                    PositivityTarget.Parameter(localCtx.lastIndex - paramIndex),
+                    localCtx,
+                    mutualNames,
+                )
+                localCtx = env.consLocalCtx(binder.typeExpr, localCtx)
+                constructorType = binder.bodyExpr
+                fieldIsPositive
+            }
+        }
+    }
+    mutualNames.forEach { mutualName ->
+        env.strictlyPositiveInductiveParams[mutualName to paramIndex] = result
+    }
+    return result
+}
