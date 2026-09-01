@@ -1679,34 +1679,61 @@ private fun Expression.tryKnownDefEqCongruence(
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    if (this === other) return true
-    val leftCtxId = if (this.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
-    val rightCtxId = if (other.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxRight)
-    if (env.defEqEquivalences.areEquivalent(this.ie, leftCtxId, other.ie, rightCtxId)) return true
+    val leftRootCtxId = env.localCtxId(localCtxLeft)
+    val rightRootCtxId = env.localCtxId(localCtxRight)
+    val pending = ArrayDeque<Pair<Expression, Expression>>()
+    val newlyEquivalent = mutableSetOf<DefEqCacheKey>()
+    pending.addLast(this to other)
 
-    val result = when (this) {
-        is Expression.App -> other is Expression.App &&
-                this.fnExpr.tryKnownDefEqCongruence(other.fnExpr, localCtxLeft, localCtxRight) &&
-                this.argExpr.tryKnownDefEqCongruence(other.argExpr, localCtxLeft, localCtxRight)
+    while (pending.isNotEmpty()) {
+        val pair = pending.removeLast()
+        val left = pair.first
+        val right = pair.second
+        if (left === right) continue
+        val leftCtxId = if (left.maxLooseBVarIndex() < 0) 0 else leftRootCtxId
+        val rightCtxId = if (right.maxLooseBVarIndex() < 0) 0 else rightRootCtxId
+        if (env.defEqEquivalences.areEquivalent(left.ie, leftCtxId, right.ie, rightCtxId)) continue
+        val key = left.defEqCacheKey(right, leftCtxId, rightCtxId)
+        if (!newlyEquivalent.add(key)) continue
 
-        is Expression.Bvar -> other is Expression.Bvar && this.bvar == other.bvar
-        is Expression.Const -> other is Expression.Const && this.hasSameNameAndLevels(other)
+        when (left) {
+            is Expression.App -> {
+                if (right !is Expression.App) return false
+                pending.addLast(left.argExpr to right.argExpr)
+                pending.addLast(left.fnExpr to right.fnExpr)
+            }
 
-        is Expression.Mdata -> other is Expression.Mdata &&
-                this.expr.tryKnownDefEqCongruence(other.expr, localCtxLeft, localCtxRight)
+            is Expression.Bvar -> if (right !is Expression.Bvar || left.bvar != right.bvar) return false
+            is Expression.Const -> if (right !is Expression.Const || !left.hasSameNameAndLevels(right)) return false
+            is Expression.Mdata -> {
+                if (right !is Expression.Mdata) return false
+                pending.addLast(left.expr to right.expr)
+            }
 
-        is Expression.NatVal -> other is Expression.NatVal && this.natVal == other.natVal
-        is Expression.Proj -> other is Expression.Proj &&
-                this.typeNameExpr == other.typeNameExpr &&
-                this.projIndex == other.projIndex &&
-                this.structExpr.tryKnownDefEqCongruence(other.structExpr, localCtxLeft, localCtxRight)
+            is Expression.NatVal -> if (right !is Expression.NatVal || left.natVal != right.natVal) return false
+            is Expression.Proj -> {
+                if (
+                    right !is Expression.Proj || left.typeNameExpr != right.typeNameExpr ||
+                    left.projIndex != right.projIndex
+                ) return false
+                pending.addLast(left.structExpr to right.structExpr)
+            }
 
-        is Expression.Sort -> other is Expression.Sort && this.level.isEqual(other.level)
-        is Expression.StrVal -> other is Expression.StrVal && this.strVal == other.strVal
-        is Expression.ForallE, is Expression.Lam, is Expression.LetE -> false
+            is Expression.Sort -> if (right !is Expression.Sort || !left.level.isEqual(right.level)) return false
+            is Expression.StrVal -> if (right !is Expression.StrVal || left.strVal != right.strVal) return false
+            is Expression.ForallE, is Expression.Lam, is Expression.LetE -> return false
+        }
     }
-    if (result) env.defEqEquivalences.addEquivalent(this.ie, leftCtxId, other.ie, rightCtxId)
-    return result
+
+    newlyEquivalent.forEach { key ->
+        env.defEqEquivalences.addEquivalent(
+            key.leftExprId,
+            key.leftCtxId,
+            key.rightExprId,
+            key.rightCtxId,
+        )
+    }
+    return true
 }
 
 context(env: Environment)
