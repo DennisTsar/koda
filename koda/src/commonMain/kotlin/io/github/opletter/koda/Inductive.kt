@@ -140,8 +140,9 @@ fun checkInductive(data: Inductive) {
     check(inductivesMissingRecursor.isEmpty()) {
         "Inductives missing a .rec recursor: ${inductivesMissingRecursor.map { it.toStringDetailed() }}"
     }
+    val recursorsByName = data.recs.associateBy { it.name }
     data.recs.forEach { recursor ->
-        checkRecursorRules(recursor)
+        checkRecursorRules(recursor, recursorsByName)
     }
 }
 
@@ -314,7 +315,10 @@ fun Inductive.RecursorVal.getMajorBinder(): Expression.ForallE {
 }
 
 context(env: Environment)
-private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
+private fun checkRecursorRules(
+    recursor: Inductive.RecursorVal,
+    recursorsByName: Map<Name, Inductive.RecursorVal>,
+) {
     val _ = recursor.typeExpr.inferSort()
     val majorType = recursor.getMajorBinder().typeExpr
     val [majorTypeHead, majorTypeArgs] = majorType.unfoldApp()
@@ -374,7 +378,15 @@ private fun checkRecursorRules(recursor: Inductive.RecursorVal) {
         check(rule.nfields == constructor.numFields) {
             "Recursor rule for ${constructor.name} has wrong nfields: expected ${constructor.numFields}, got ${rule.nfields}"
         }
-        checkRecursorRuleType(recursor, constructor, rule, majorInductive, majorTypeConst, majorTypeArgs)
+        checkRecursorRuleType(
+            recursor,
+            constructor,
+            rule,
+            majorInductive,
+            majorTypeConst,
+            majorTypeArgs,
+            recursorsByName,
+        )
     }
     val expectedCtorNames = majorInductive.ctors.map { ctorNameIndex ->
         env.names[ctorNameIndex] ?: error("Constructor name $ctorNameIndex not found")
@@ -409,9 +421,17 @@ private fun checkRecursorRuleType(
     majorInductive: Inductive.InductiveVal,
     majorTypeConst: Expression.Const,
     majorTypeArgs: List<Expression>,
+    recursorsByName: Map<Name, Inductive.RecursorVal>,
 ) {
     val prefixBinderCount = recursor.numParams + recursor.numMotives + recursor.numMinors
     val expectedRuleBinderCount = prefixBinderCount + constructor.numFields
+    checkStructuralRecursorCalls(
+        rule.rhsExpr,
+        recursorsByName,
+        prefixBinderCount,
+        constructor.numFields,
+        "Recursor rule for ${constructor.name}",
+    )
     val inferredRuleType = rule.rhsExpr.inferType()
     val [ruleResultType, ruleLocalCtx] = walkForalls(
         expr = inferredRuleType,
@@ -467,6 +487,76 @@ private fun checkRecursorRuleType(
 
     check(ruleResultType.isDefEq(expectedResultType, ruleLocalCtx, ruleLocalCtx)) {
         "Recursor rule for ${constructor.name} has wrong result type: expected ${expectedResultType.toStringDetailed()}, got ${ruleResultType.toStringDetailed()}"
+    }
+}
+
+private data class RecursorCallFrame(val expression: Expression, val binderDepth: Int)
+
+context(env: Environment)
+private fun checkStructuralRecursorCalls(
+    expression: Expression,
+    recursorsByName: Map<Name, Inductive.RecursorVal>,
+    prefixBinderCount: Int,
+    numFields: Int,
+    owner: String,
+) {
+    val stack = ArrayDeque<RecursorCallFrame>()
+    val seen = mutableSetOf<Long>()
+    stack.add(RecursorCallFrame(expression, 0))
+    while (stack.isNotEmpty()) {
+        val frame = stack.removeLast()
+        val key = (frame.binderDepth.toLong() shl 32) xor (frame.expression.ie.toLong() and 0xffffffffL)
+        if (!seen.add(key)) continue
+
+        val [head, args] = frame.expression.unfoldApp()
+        val calledRecursor = (head as? Expression.Const)?.let { recursorsByName[it.name] }
+        if (calledRecursor != null) {
+            val majorIndex = calledRecursor.numParams + calledRecursor.numMotives +
+                    calledRecursor.numMinors + calledRecursor.numIndices
+            check(args.size > majorIndex) {
+                "$owner contains an under-applied recursive call to ${calledRecursor.name}"
+            }
+            val [majorHead] = args[majorIndex].unfoldApp()
+            val majorBvar = majorHead as? Expression.Bvar
+            val isConstructorField = majorBvar != null &&
+                    frame.binderDepth >= prefixBinderCount + numFields &&
+                    (0 until numFields).any { fieldIndex ->
+                        majorBvar.bvar == frame.binderDepth - 1 - prefixBinderCount - fieldIndex
+                    }
+            check(isConstructorField) {
+                "$owner calls ${calledRecursor.name} on an expression that is not a constructor field"
+            }
+            args.forEach { stack.add(RecursorCallFrame(it, frame.binderDepth)) }
+            continue
+        }
+        if (frame.expression is Expression.App) {
+            stack.add(RecursorCallFrame(head, frame.binderDepth))
+            args.forEach { stack.add(RecursorCallFrame(it, frame.binderDepth)) }
+            continue
+        }
+
+        when (val current = frame.expression) {
+            is Expression.ForallE -> {
+                stack.add(RecursorCallFrame(current.typeExpr, frame.binderDepth))
+                stack.add(RecursorCallFrame(current.bodyExpr, frame.binderDepth + 1))
+            }
+
+            is Expression.Lam -> {
+                stack.add(RecursorCallFrame(current.typeExpr, frame.binderDepth))
+                stack.add(RecursorCallFrame(current.bodyExpr, frame.binderDepth + 1))
+            }
+
+            is Expression.LetE -> {
+                stack.add(RecursorCallFrame(current.typeExpr, frame.binderDepth))
+                stack.add(RecursorCallFrame(current.valueExpr, frame.binderDepth))
+                stack.add(RecursorCallFrame(current.bodyExpr, frame.binderDepth + 1))
+            }
+
+            is Expression.Mdata -> stack.add(RecursorCallFrame(current.expr, frame.binderDepth))
+            is Expression.Proj -> stack.add(RecursorCallFrame(current.structExpr, frame.binderDepth))
+            is Expression.App, is Expression.Bvar, is Expression.Const, is Expression.NatVal,
+            is Expression.Sort, is Expression.StrVal -> {}
+        }
     }
 }
 
