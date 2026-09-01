@@ -1596,16 +1596,19 @@ private fun ClosedClosure.closedWhnf(
 context(env: Environment)
 private fun Expression.Const.natPrimitive(): NatPrimitive? {
     if (this.levels.isNotEmpty()) return null
-    return when (this.name.toStringDetailed()) {
-        "Nat.succ" -> NatPrimitive.Succ
-        "Nat.add" -> NatPrimitive.Add
-        "Nat.sub" -> NatPrimitive.Sub
-        "Nat.mul" -> NatPrimitive.Mul
-        "Nat.pow" -> NatPrimitive.Pow
-        "Nat.div" -> NatPrimitive.Div
-        "Nat.mod" -> NatPrimitive.Mod
-        "Nat.beq" -> NatPrimitive.Beq
-        "Nat.ble" -> NatPrimitive.Ble
+    val name = this.name as? Name.Str ?: return null
+    val namespace = env.names[name.pre] as? Name.Str ?: return null
+    if (namespace.pre != 0 || namespace.str != "Nat") return null
+    return when (name.str) {
+        "succ" -> NatPrimitive.Succ
+        "add" -> NatPrimitive.Add
+        "sub" -> NatPrimitive.Sub
+        "mul" -> NatPrimitive.Mul
+        "pow" -> NatPrimitive.Pow
+        "div" -> NatPrimitive.Div
+        "mod" -> NatPrimitive.Mod
+        "beq" -> NatPrimitive.Beq
+        "ble" -> NatPrimitive.Ble
         else -> null
     }
 }
