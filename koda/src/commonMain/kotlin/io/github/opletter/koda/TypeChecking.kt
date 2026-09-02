@@ -3895,7 +3895,7 @@ fun Expression.lift(amount: Int): Expression {
 
 context(env: Environment)
 fun Expression.instantiateLevelParams(subst: Map<Int, Level>): Expression {
-    if (subst.all { entry -> entry.value is Level.Param && entry.value.il == entry.key }) return this
+    if (subst.isEmpty()) return this
     val cacheKey = InstantiateLevelParamsCacheKey(
         this.ie,
         subst.entries.map { entry -> entry.key to entry.value.il }.sortedBy { it.first },
