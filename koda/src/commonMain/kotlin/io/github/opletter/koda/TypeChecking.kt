@@ -3,7 +3,6 @@ package io.github.opletter.koda
 private var debugClosedEvaluation = false
 private var debugTargetDeclaration = false
 private const val debugTargetIndex = -1//21_000_000///51_500_000
-private const val MAX_DEF_EQ_DEPTH = 32
 
 fun NamedDecl.hasDistinctLevelParams(): Boolean =
     levelParamIndices.toSet().size == levelParamIndices.size
@@ -294,17 +293,36 @@ fun Expression.isDefEq(
     other: Expression,
     localCtxLeft: List<Expression> = emptyList(),
     localCtxRight: List<Expression> = emptyList(),
-): Boolean {
-    env.defEqDepth += 1
-    return try {
-        this.isDefEqCore(other, localCtxLeft, localCtxRight)
-    } finally {
-        env.defEqDepth -= 1
+): Boolean = isDefEqDeep(DefEqRequest(env, this, other, localCtxLeft, localCtxRight))
+
+private class DefEqRequest(
+    val environment: Environment,
+    val left: Expression,
+    val right: Expression,
+    val localCtxLeft: List<Expression>,
+    val localCtxRight: List<Expression>,
+)
+
+private typealias DefEqScope = DeepRecursiveScope<DefEqRequest, Boolean>
+
+context(env: Environment)
+private suspend fun DefEqScope.compare(
+    left: Expression,
+    right: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean = callRecursive(DefEqRequest(env, left, right, localCtxLeft, localCtxRight))
+
+private val isDefEqDeep = DeepRecursiveFunction<DefEqRequest, Boolean> { request ->
+    val env = request.environment
+    context(env) {
+        isDefEqCore(request.left, request.right, request.localCtxLeft, request.localCtxRight)
     }
 }
 
 context(env: Environment)
-private fun Expression.isDefEqCore(
+private suspend fun DefEqScope.isDefEqCore(
+    left: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
@@ -312,52 +330,52 @@ private fun Expression.isDefEqCore(
     env.defEqCalls += 1
 //    val traceDefEq = false
 //    if (traceDefEq) println("debug defeq phase: start")
-    if (this === other) return true
-    val leftCtxId = if (this.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
+    if (left === other) return true
+    val leftCtxId = if (left.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
     val rightCtxId = if (other.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxRight)
-    if (env.defEqEquivalences.areEquivalent(this.ie, leftCtxId, other.ie, rightCtxId)) return true
+    if (env.defEqEquivalences.areEquivalent(left.ie, leftCtxId, other.ie, rightCtxId)) return true
     env.defEqFailures?.let { failures ->
-        if (this.defEqCacheKey(other, leftCtxId, rightCtxId) in failures) {
+        if (left.defEqCacheKey(other, leftCtxId, rightCtxId) in failures) {
             env.defEqFailureCacheHits += 1
             return false
         }
     }
     fun finish(value: Boolean): Boolean {
         if (value) {
-            env.defEqEquivalences.addEquivalent(this.ie, leftCtxId, other.ie, rightCtxId)
+            env.defEqEquivalences.addEquivalent(left.ie, leftCtxId, other.ie, rightCtxId)
         } else {
             val failures = env.defEqFailures ?: mutableSetOf<DefEqCacheKey>().also { env.defEqFailures = it }
-            failures += this.defEqCacheKey(other, leftCtxId, rightCtxId)
+            failures += left.defEqCacheKey(other, leftCtxId, rightCtxId)
         }
         return value
     }
 
 //    if (traceDefEq) println("debug defeq phase: quick")
-    this.quickIsDefEq(other, localCtxLeft, localCtxRight)?.let { return finish(it) }
+    quickIsDefEq(left, other, localCtxLeft, localCtxRight)?.let { return finish(it) }
     if (
-        (this.asNatLiteralValue() != null || other.asNatLiteralValue() != null) &&
-        this.tryNatLiteralDefEq(other, localCtxLeft, localCtxRight)
+        (left.asNatLiteralValue() != null || other.asNatLiteralValue() != null) &&
+        left.tryNatLiteralDefEq(other, localCtxLeft, localCtxRight)
     ) {
         return finish(true)
     }
 //    if (traceDefEq) println("debug defeq phase: bool")
-    this.tryClosedBoolTrueDefEq(other, localCtxLeft)?.let { return finish(it) }
-    other.tryClosedBoolTrueDefEq(this, localCtxRight)?.let { return finish(it) }
+    left.tryClosedBoolTrueDefEq(other, localCtxLeft)?.let { return finish(it) }
+    other.tryClosedBoolTrueDefEq(left, localCtxRight)?.let { return finish(it) }
 //    if (traceDefEq) println("debug defeq phase: structural")
-    this.tryStructuralDefEq(other)?.let { return finish(it) }
-    if (this.tryKnownDefEqCongruence(other, localCtxLeft, localCtxRight)) return finish(true)
-    if (this.tryProofIrrelevanceDefEqNoLog(other, localCtxLeft, localCtxRight)) return finish(true)
+    left.tryStructuralDefEq(other)?.let { return finish(it) }
+    if (left.tryKnownDefEqCongruence(other, localCtxLeft, localCtxRight)) return finish(true)
+    if (tryProofIrrelevanceDefEqNoLog(left, other, localCtxLeft, localCtxRight)) return finish(true)
 
 //    if (traceDefEq) println("debug defeq phase: cheap whnf")
-    val leftCore = this.whnfCore(localCtxLeft, cheapProjection = true)
+    val leftCore = left.whnfCore(localCtxLeft, cheapProjection = true)
     val rightCore = other.whnfCore(localCtxRight, cheapProjection = true)
 //    if (traceDefEq) println("debug defeq phase: core quick")
-    leftCore.quickIsDefEq(rightCore, localCtxLeft, localCtxRight)?.let { return finish(it) }
+    quickIsDefEq(leftCore, rightCore, localCtxLeft, localCtxRight)?.let { return finish(it) }
     leftCore.tryStructuralDefEq(rightCore)?.let { return finish(it) }
     if (leftCore.tryKnownDefEqCongruence(rightCore, localCtxLeft, localCtxRight)) return finish(true)
 
 //    if (traceDefEq) println("debug defeq phase: lazy delta")
-    val lazyResult = leftCore.lazyDeltaDefEq(rightCore, localCtxLeft, localCtxRight)
+    val lazyResult = lazyDeltaDefEq(leftCore, rightCore, localCtxLeft, localCtxRight)
 //    if (traceDefEq) {
 //        println("debug defeq phase: after lazy delta")
 //        println("debug lazy left=${lazyResult.left.debugShallow()}")
@@ -370,7 +388,7 @@ private fun Expression.isDefEqCore(
     if (
         leftProjection != null && rightProjection != null &&
         leftProjection.projIndex == rightProjection.projIndex &&
-        leftProjection.lazyProjectionDefEq(rightProjection, localCtxLeft, localCtxRight)
+        lazyProjectionDefEq(leftProjection, rightProjection, localCtxLeft, localCtxRight)
     ) {
         return finish(true)
     }
@@ -384,12 +402,12 @@ private fun Expression.isDefEqCore(
 //    }
     if (leftWhnf !== lazyResult.left || rightWhnf !== lazyResult.right) {
         return finish(
-            leftWhnf.isDefEq(rightWhnf, localCtxLeft, localCtxRight)
+            compare(leftWhnf, rightWhnf, localCtxLeft, localCtxRight)
         )
     }
 
 //    if (traceDefEq) println("debug defeq phase: congruence")
-    val result = leftWhnf.isDefEqWhnf(rightWhnf, localCtxLeft, localCtxRight)
+    val result = isDefEqWhnf(leftWhnf, rightWhnf, localCtxLeft, localCtxRight)
 //    if (traceDefEq) println("debug defeq phase: done=$result")
     return finish(result)
 }
@@ -1144,17 +1162,8 @@ private fun ClosedClosure.closedDefEq(
 context(env: Environment)
 private fun Expression.closedDefEq(other: Expression): Boolean {
     if (this.maxLooseBVarIndex() >= 0 || other.maxLooseBVarIndex() >= 0) return false
-    return this.closedDefEq(other, emptyList(), emptyList())
-}
-
-context(env: Environment)
-private fun Expression.closedDefEq(
-    other: Expression,
-    localCtxLeft: List<Expression>,
-    localCtxRight: List<Expression>,
-): Boolean {
-    return ClosedClosure(this, localCtxLeft.closedEvalEnv()).closedDefEq(
-        ClosedClosure(other, localCtxRight.closedEvalEnv())
+    return ClosedClosure(this, ClosedEvalEnv.Empty).closedDefEq(
+        ClosedClosure(other, ClosedEvalEnv.Empty)
     )
 }
 
@@ -1635,30 +1644,31 @@ private inline fun NatPrimitive.reduce(
 }
 
 context(env: Environment)
-private fun Expression.Proj.lazyProjectionDefEq(
+private suspend fun DefEqScope.lazyProjectionDefEq(
+    projection: Expression.Proj,
     other: Expression.Proj,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    var left = this.structExpr.whnfCore(localCtxLeft, cheapProjection = true)
+    var left = projection.structExpr.whnfCore(localCtxLeft, cheapProjection = true)
     var right = other.structExpr.whnfCore(localCtxRight, cheapProjection = true)
     val leftHead = left.asAppSpine().first as? Expression.Const
     val rightHead = right.asAppSpine().first as? Expression.Const
     if (leftHead != null && rightHead != null && leftHead.hasSameNameAndLevels(rightHead)) return false
     while (true) {
-        val quick = left.quickIsDefEq(right, localCtxLeft, localCtxRight)
+        val quick = quickIsDefEq(left, right, localCtxLeft, localCtxRight)
         if (quick == true) return true
-        left.tryRegularDefinitionCongruence(right, localCtxLeft, localCtxRight)?.let { return it }
+        tryRegularDefinitionCongruence(left, right, localCtxLeft, localCtxRight)?.let { return it }
 
         val leftStep = left.tryLazyDeltaStep()
         val rightStep = right.tryLazyDeltaStep()
         if (leftStep == null && rightStep == null || quick == false) {
-            val leftField = this.reduceProjectionCore(left)
+            val leftField = projection.reduceProjectionCore(left)
             val rightField = other.reduceProjectionCore(right)
             if (leftField != null && rightField != null) {
-                return leftField.isDefEq(rightField, localCtxLeft, localCtxRight)
+                return compare(leftField, rightField, localCtxLeft, localCtxRight)
             }
-            return left.isDefEq(right, localCtxLeft, localCtxRight)
+            return compare(left, right, localCtxLeft, localCtxRight)
         }
         if (leftStep != null && rightStep == null) {
             right.tryReduceProjectionForDelta(localCtxRight)?.let {
@@ -1769,29 +1779,30 @@ private fun Expression.isEagerReduceApp(): Boolean {
 }
 
 context(env: Environment)
-private fun Expression.quickIsDefEq(
+private suspend fun DefEqScope.quickIsDefEq(
+    left: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    if (this === other) return true
-    this.tryNatOffsetDefEq(other, localCtxLeft, localCtxRight)?.let { return it }
+    if (left === other) return true
+    tryNatOffsetDefEq(left, other, localCtxLeft, localCtxRight)?.let { return it }
     return when {
-        this is Expression.Bvar && other is Expression.Bvar ->
-            if (this.bvar == other.bvar) true else null
+        left is Expression.Bvar && other is Expression.Bvar ->
+            if (left.bvar == other.bvar) true else null
 
-        this is Expression.ForallE && other is Expression.ForallE ->
-            this.isDefEqBinding(other, localCtxLeft, localCtxRight, lambda = false)
+        left is Expression.ForallE && other is Expression.ForallE ->
+            isDefEqBinding(left, other, localCtxLeft, localCtxRight, lambda = false)
 
-        this is Expression.Lam && other is Expression.Lam ->
-            this.isDefEqBinding(other, localCtxLeft, localCtxRight, lambda = true)
+        left is Expression.Lam && other is Expression.Lam ->
+            isDefEqBinding(left, other, localCtxLeft, localCtxRight, lambda = true)
 
-        this is Expression.Mdata && other is Expression.Mdata ->
-            this.expr.isDefEq(other.expr, localCtxLeft, localCtxRight)
+        left is Expression.Mdata && other is Expression.Mdata ->
+            compare(left.expr, other.expr, localCtxLeft, localCtxRight)
 
-        this is Expression.NatVal && other is Expression.NatVal -> this.natVal == other.natVal
-        this is Expression.Sort && other is Expression.Sort -> this.level.isEqual(other.level)
-        this is Expression.StrVal && other is Expression.StrVal -> this.strVal == other.strVal
+        left is Expression.NatVal && other is Expression.NatVal -> left.natVal == other.natVal
+        left is Expression.Sort && other is Expression.Sort -> left.level.isEqual(other.level)
+        left is Expression.StrVal && other is Expression.StrVal -> left.strVal == other.strVal
         else -> null
     }
 }
@@ -1816,12 +1827,13 @@ private fun Expression.Const.instantiatedValue(): Expression? {
 }
 
 context(env: Environment)
-private fun Expression.tryNatOffsetDefEq(
+private suspend fun DefEqScope.tryNatOffsetDefEq(
+    expression: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    var left = this
+    var left = expression
     var right = other
     var removedOffset = false
     while (true) {
@@ -1843,7 +1855,7 @@ private fun Expression.tryNatOffsetDefEq(
                     right = rightWhnf
                     continue
                 }
-                left.isDefEq(right, localCtxLeft, localCtxRight)
+                compare(left, right, localCtxLeft, localCtxRight)
             } else {
                 null
             }
@@ -1939,12 +1951,13 @@ private fun tryReduceNatValueRecursorMajor(
 }
 
 context(env: Environment)
-private fun Expression.lazyDeltaDefEq(
+private suspend fun DefEqScope.lazyDeltaDefEq(
+    expression: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): LazyDeltaResult {
-    var left = this
+    var left = expression
     var right = other
     var iterations = 0
     while (true) {
@@ -1955,10 +1968,10 @@ private fun Expression.lazyDeltaDefEq(
 //                        "right=${right.debugHead()}"
 //            )
 //        }
-        left.quickIsDefEq(right, localCtxLeft, localCtxRight)?.let {
+        quickIsDefEq(left, right, localCtxLeft, localCtxRight)?.let {
             return LazyDeltaResult(left, right, it)
         }
-        left.tryRegularDefinitionCongruence(right, localCtxLeft, localCtxRight)?.let {
+        tryRegularDefinitionCongruence(left, right, localCtxLeft, localCtxRight)?.let {
             return LazyDeltaResult(left, right, it)
         }
         if (
@@ -2023,22 +2036,23 @@ private fun Expression.tryReduceProjectionForDelta(localCtx: List<Expression>): 
 }
 
 context(env: Environment)
-private fun Expression.App.isDefEqWhnfSpine(
+private suspend fun DefEqScope.isDefEqWhnfSpine(
+    app: Expression.App,
     other: Expression.App,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
 //    val traceSpine = debugTargetDeclaration &&
 //            (this.ie == -3489 && other.ie == 2395 || this.ie == 2395 && other.ie == -3489)
-    val leftSpine = this.unfoldApp()
+    val leftSpine = app.unfoldApp()
     val rightSpine = other.unfoldApp()
     val leftArgs = leftSpine.second
     val rightArgs = rightSpine.second
     if (leftArgs.size != rightArgs.size) {
-        return this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
-                this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
+        return compare(app.fnExpr, other.fnExpr, localCtxLeft, localCtxRight) &&
+                compare(app.argExpr, other.argExpr, localCtxLeft, localCtxRight)
     }
-    if (!leftSpine.first.isDefEq(rightSpine.first, localCtxLeft, localCtxRight)) {
+    if (!compare(leftSpine.first, rightSpine.first, localCtxLeft, localCtxRight)) {
         return false
     }
     var functionType: Expression.ForallE? = null
@@ -2088,11 +2102,7 @@ private fun Expression.App.isDefEqWhnfSpine(
                         .isLessOrEqual(Level.Zero)
             if (domainIsProp) {
                 env.typedCongruenceProofSkips += 1
-            } else if (
-                !(env.defEqDepth >= MAX_DEF_EQ_DEPTH &&
-                        leftArgument.closedDefEq(rightArgument, localCtxLeft, localCtxRight)) &&
-                !leftArgument.isDefEq(rightArgument, localCtxLeft, localCtxRight)
-            ) {
+            } else if (!compare(leftArgument, rightArgument, localCtxLeft, localCtxRight)) {
 //                if (debugTargetDeclaration) {
 //                    println(
 //                        "debug congruence failure: index=$index " +
@@ -2167,28 +2177,30 @@ private fun Expression.tryStructuralDefEq(other: Expression): Boolean? {
 }
 
 context(env: Environment)
-private fun Expression.tryConstantApplicationCongruence(
+private suspend fun DefEqScope.tryConstantApplicationCongruence(
+    left: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    val leftApp = this as? Expression.App ?: return null
+    val leftApp = left as? Expression.App ?: return null
     val rightApp = other as? Expression.App ?: return null
     val leftSpine = leftApp.unfoldApp()
     val rightSpine = rightApp.unfoldApp()
     val leftHead = leftSpine.first as? Expression.Const ?: return null
     val rightHead = rightSpine.first as? Expression.Const ?: return null
     if (!leftHead.hasSameNameAndLevels(rightHead) || leftSpine.second.size != rightSpine.second.size) return null
-    return leftApp.isDefEqWhnfSpine(rightApp, localCtxLeft, localCtxRight)
+    return isDefEqWhnfSpine(leftApp, rightApp, localCtxLeft, localCtxRight)
 }
 
 context(env: Environment)
-private fun Expression.tryRegularDefinitionCongruence(
+private suspend fun DefEqScope.tryRegularDefinitionCongruence(
+    left: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    val leftApp = this as? Expression.App ?: return null
+    val leftApp = left as? Expression.App ?: return null
     val rightApp = other as? Expression.App ?: return null
     val leftSpine = leftApp.unfoldApp()
     val rightSpine = rightApp.unfoldApp()
@@ -2201,11 +2213,11 @@ private fun Expression.tryRegularDefinitionCongruence(
         leftHints.value != rightHints.value
     ) return null
 
-    val leftCtxId = if (this.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
+    val leftCtxId = if (left.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxLeft)
     val rightCtxId = if (other.maxLooseBVarIndex() < 0) 0 else env.localCtxId(localCtxRight)
-    val failureKey = this.defEqCacheKey(other, leftCtxId, rightCtxId)
+    val failureKey = left.defEqCacheKey(other, leftCtxId, rightCtxId)
     if (failureKey in env.defEqAppFailures) return null
-    if (leftApp.tryConstantApplicationCongruence(rightApp, localCtxLeft, localCtxRight) == true) {
+    if (tryConstantApplicationCongruence(leftApp, rightApp, localCtxLeft, localCtxRight) == true) {
         return true
     }
     env.defEqAppFailures += failureKey
@@ -2425,67 +2437,74 @@ private fun Expression.isWhnfByShape(): Boolean = when (this) {
 }
 
 context(env: Environment)
-private fun Expression.isDefEqWhnf(
+private suspend fun DefEqScope.isDefEqWhnf(
+    left: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    val result = when (this) {
+    val result = when (left) {
         is Expression.App if other is Expression.App ->
-            this.isDefEqWhnfSpine(other, localCtxLeft, localCtxRight)
+            isDefEqWhnfSpine(left, other, localCtxLeft, localCtxRight)
 
         is Expression.Bvar if other is Expression.Bvar -> {
-            this.bvar == other.bvar
+            left.bvar == other.bvar
         }
 
-        is Expression.Const if other is Expression.Const -> this.hasSameNameAndLevels(other)
+        is Expression.Const if other is Expression.Const -> left.hasSameNameAndLevels(other)
 
         is Expression.ForallE if other is Expression.ForallE -> {
-            this.isDefEqBinding(other, localCtxLeft, localCtxRight, lambda = false)
+            isDefEqBinding(left, other, localCtxLeft, localCtxRight, lambda = false)
         }
 
         is Expression.Lam if other is Expression.Lam -> {
-            this.isDefEqBinding(other, localCtxLeft, localCtxRight, lambda = true)
+            isDefEqBinding(left, other, localCtxLeft, localCtxRight, lambda = true)
         }
 
         is Expression.Lam ->
-            this.tryCompareWithFunction(other, localCtxLeft, localCtxRight) ?: false
+            tryCompareWithFunction(left, other, localCtxLeft, localCtxRight) ?: false
 
         is Expression.LetE if other is Expression.LetE -> TODO()
         is Expression.Mdata if other is Expression.Mdata -> TODO()
-        is Expression.NatVal if other is Expression.NatVal -> this.natVal == other.natVal
-        is Expression.NatVal if other.isNatZeroCtorConst() -> this.natVal.isZero()
+        is Expression.NatVal if other is Expression.NatVal -> left.natVal == other.natVal
+        is Expression.NatVal if other.isNatZeroCtorConst() -> left.natVal.isZero()
 
-        is Expression.Const if this.isNatZeroCtorConst() && other is Expression.NatVal -> other.natVal.isZero()
+        is Expression.Const if left.isNatZeroCtorConst() && other is Expression.NatVal -> other.natVal.isZero()
         is Expression.Proj if other is Expression.Proj ->
-            this.typeNameExpr == other.typeNameExpr &&
-                    this.projIndex == other.projIndex &&
-                    this.structExpr.isDefEq(other.structExpr, localCtxLeft, localCtxRight)
+            left.typeNameExpr == other.typeNameExpr &&
+                    left.projIndex == other.projIndex &&
+                    compare(left.structExpr, other.structExpr, localCtxLeft, localCtxRight)
 
-        is Expression.Sort if other is Expression.Sort -> this.level.isEqual(other.level)
+        is Expression.Sort if other is Expression.Sort -> left.level.isEqual(other.level)
 
-        is Expression.StrVal if other is Expression.StrVal -> this.strVal == other.strVal
-        else -> other is Expression.Lam && this.tryCompareWithFunction(other, localCtxLeft, localCtxRight) ?: false
+        is Expression.StrVal if other is Expression.StrVal -> left.strVal == other.strVal
+        else -> other is Expression.Lam && tryCompareWithFunction(
+            left,
+            other,
+            localCtxLeft,
+            localCtxRight,
+        ) ?: false
     }
     if (result) return true
-    val leftIsConstructor = (this.asAppSpine().first as? Expression.Const)?.decl is Inductive.ConstructorVal
+    val leftIsConstructor = (left.asAppSpine().first as? Expression.Const)?.decl is Inductive.ConstructorVal
     val rightIsConstructor = (other.asAppSpine().first as? Expression.Const)?.decl is Inductive.ConstructorVal
     // Constructor applications are already canonical: typed congruence above decides them.
     // Eta is needed only to compare a constructor with a neutral structure value.
     if (leftIsConstructor && rightIsConstructor) return false
-    return this.canBeStructureLikeValue() &&
+    return left.canBeStructureLikeValue() &&
             other.canBeStructureLikeValue() &&
-            this.tryStructureEtaDefEq(other, localCtxLeft, localCtxRight)
+            tryStructureEtaDefEq(left, other, localCtxLeft, localCtxRight)
 }
 
 context(env: Environment)
-private fun Expression.isDefEqBinding(
+private suspend fun DefEqScope.isDefEqBinding(
+    expression: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
     lambda: Boolean,
 ): Boolean {
-    var left = this
+    var left = expression
     var right = other
     var leftCtx = localCtxLeft
     var rightCtx = localCtxRight
@@ -2500,30 +2519,34 @@ private fun Expression.isDefEqBinding(
         } else {
             (right as? Expression.ForallE)?.typeExpr
         } ?: break
-        if (leftDomain !== rightDomain && !leftDomain.isDefEq(rightDomain, leftCtx, rightCtx)) return false
+        if (
+            leftDomain !== rightDomain &&
+            !compare(leftDomain, rightDomain, leftCtx, rightCtx)
+        ) return false
 
         left = if (lambda) (left as Expression.Lam).bodyExpr else (left as Expression.ForallE).bodyExpr
         right = if (lambda) (right as Expression.Lam).bodyExpr else (right as Expression.ForallE).bodyExpr
         leftCtx = env.consLocalCtx(leftDomain, leftCtx)
         rightCtx = env.consLocalCtx(rightDomain, rightCtx)
     }
-    return left.isDefEq(right, leftCtx, rightCtx)
+    return compare(left, right, leftCtx, rightCtx)
 }
 
 context(env: Environment)
-private fun Expression.tryCompareWithFunction(
+private suspend fun DefEqScope.tryCompareWithFunction(
+    expression: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean? {
-    val leftLam = this as? Expression.Lam
+    val leftLam = expression as? Expression.Lam
     val rightLam = other as? Expression.Lam
     if ((leftLam == null) == (rightLam == null)) return null
 
     val leftDomain = if (leftLam != null) {
         leftLam.typeExpr
     } else {
-        (this.inferType(localCtx = localCtxLeft, validate = false)
+        (expression.inferType(localCtx = localCtxLeft, validate = false)
             .whnf(localCtx = localCtxLeft) as? Expression.ForallE)?.typeExpr
             ?: return null
     }
@@ -2534,13 +2557,13 @@ private fun Expression.tryCompareWithFunction(
             .whnf(localCtx = localCtxRight) as? Expression.ForallE)?.typeExpr
             ?: return null
     }
-    if (!leftDomain.isDefEq(rightDomain, localCtxLeft, localCtxRight)) return null
+    if (!compare(leftDomain, rightDomain, localCtxLeft, localCtxRight)) return null
 
     val binderExpr = env.addCustomExpr { Expression.Bvar(0, it) }
     val leftUnderBinder = if (leftLam != null) {
         leftLam.bodyExpr
     } else {
-        val liftedLeft = this.lift(1)
+        val liftedLeft = expression.lift(1)
         env.addCustomExpr { Expression.App(liftedLeft.ie, binderExpr.ie, it) }
     }
     val rightUnderBinder = if (rightLam != null) {
@@ -2549,7 +2572,8 @@ private fun Expression.tryCompareWithFunction(
         val liftedRight = other.lift(1)
         env.addCustomExpr { Expression.App(liftedRight.ie, binderExpr.ie, it) }
     }
-    return leftUnderBinder.isDefEq(
+    return compare(
+        leftUnderBinder,
         rightUnderBinder,
         env.consLocalCtx(leftDomain, localCtxLeft),
         env.consLocalCtx(rightDomain, localCtxRight),
@@ -3683,55 +3707,59 @@ private fun Expression.forallBinderCount(): Int {
 }
 
 context(env: Environment)
-private fun Expression.tryStructureEtaDefEq(
+private suspend fun DefEqScope.tryStructureEtaDirection(
+    value: Expression,
+    constructorValue: Expression,
+    valueCtx: List<Expression>,
+    constructorCtx: List<Expression>,
+): Boolean {
+    val constructorSpine = constructorValue.unfoldApp()
+    val constructorConst = constructorSpine.first as? Expression.Const ?: return false
+    val constructor = constructorConst.decl as? Inductive.ConstructorVal ?: return false
+    if (constructorSpine.second.size != constructor.numParams + constructor.numFields) return false
+    val inductiveIndex = env.nameIndices[constructor.inductName] ?: return false
+    val inductive = env.declarations[inductiveIndex] as? Inductive.InductiveVal ?: return false
+    if (inductive.isRec || inductive.numIndices != 0 || inductive.ctors.size != 1) return false
+    val valueType = value.inferType(localCtx = valueCtx, validate = false)
+    val constructorType = constructorValue.inferType(localCtx = constructorCtx, validate = false)
+    if (!compare(valueType, constructorType, valueCtx, constructorCtx)) return false
+    if (constructorType.inferSort(localCtx = constructorCtx, validate = false).isLessOrEqual(Level.Zero)) {
+        return false
+    }
+    for (fieldIndex in 0 until constructor.numFields) {
+        val projection = env.addCustomExpr {
+            Expression.Proj(typeName = inductiveIndex, idx = fieldIndex, struct = value.ie, ie = it)
+        }
+        val field = constructorSpine.second[constructor.numParams + fieldIndex]
+        if (!compare(projection, field, valueCtx, constructorCtx)) return false
+    }
+    return true
+}
+
+context(env: Environment)
+private suspend fun DefEqScope.tryStructureEtaDefEq(
+    expression: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    if (!this.isScopedBy(localCtxLeft) || !other.isScopedBy(localCtxRight)) return false
-    fun tryDirection(
-        value: Expression,
-        constructorValue: Expression,
-        valueCtx: List<Expression>,
-        constructorCtx: List<Expression>,
-    ): Boolean {
-        val constructorSpine = constructorValue.unfoldApp()
-        val constructorConst = constructorSpine.first as? Expression.Const ?: return false
-        val constructor = constructorConst.decl as? Inductive.ConstructorVal ?: return false
-        if (constructorSpine.second.size != constructor.numParams + constructor.numFields) return false
-        val inductiveIndex = env.nameIndices[constructor.inductName] ?: return false
-        val inductive = env.declarations[inductiveIndex] as? Inductive.InductiveVal ?: return false
-        if (inductive.isRec || inductive.numIndices != 0 || inductive.ctors.size != 1) return false
-        val valueType = value.inferType(localCtx = valueCtx, validate = false)
-        val constructorType = constructorValue.inferType(localCtx = constructorCtx, validate = false)
-        if (!valueType.isDefEq(constructorType, valueCtx, constructorCtx)) return false
-        if (constructorType.inferSort(localCtx = constructorCtx, validate = false).isLessOrEqual(Level.Zero)) {
-            return false
-        }
-        repeat(constructor.numFields) { fieldIndex ->
-            val projection = env.addCustomExpr {
-                Expression.Proj(typeName = inductiveIndex, idx = fieldIndex, struct = value.ie, ie = it)
-            }
-            val field = constructorSpine.second[constructor.numParams + fieldIndex]
-            if (!projection.isDefEq(field, valueCtx, constructorCtx)) return false
-        }
-        return true
-    }
+    if (!expression.isScopedBy(localCtxLeft) || !other.isScopedBy(localCtxRight)) return false
     if (
-        tryDirection(this, other, localCtxLeft, localCtxRight) ||
-        tryDirection(other, this, localCtxRight, localCtxLeft)
+        tryStructureEtaDirection(expression, other, localCtxLeft, localCtxRight) ||
+        tryStructureEtaDirection(other, expression, localCtxRight, localCtxLeft)
     ) {
         return true
     }
 
-    val leftType = this.inferType(localCtx = localCtxLeft, validate = false).whnf(localCtx = localCtxLeft)
+    val leftType = expression.inferType(localCtx = localCtxLeft, validate = false).whnf(localCtx = localCtxLeft)
     val typeHead = leftType.asAppSpine().first as? Expression.Const ?: return false
     val typeIndex = env.nameIndices[typeHead.name] ?: return false
     val inductive = env.declarations[typeIndex] as? Inductive.InductiveVal ?: return false
     if (inductive.isRec || inductive.numIndices != 0 || inductive.ctors.size != 1) return false
     if (leftType.inferSort(localCtx = localCtxLeft, validate = false).isLessOrEqual(Level.Zero)) return false
     val constructor = env.declarations[inductive.ctors.single()] as? Inductive.ConstructorVal ?: return false
-    return constructor.numFields == 0 && leftType.isDefEq(
+    return constructor.numFields == 0 && compare(
+        leftType,
         other.inferType(localCtx = localCtxRight, validate = false),
         localCtxLeft,
         localCtxRight,
@@ -3739,18 +3767,19 @@ private fun Expression.tryStructureEtaDefEq(
 }
 
 context(env: Environment)
-private fun Expression.tryProofIrrelevanceDefEqNoLog(
+private suspend fun DefEqScope.tryProofIrrelevanceDefEqNoLog(
+    expression: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
     env.proofIrrelevanceAttempts += 1
-    if (!this.canBeProofByShape() || !other.canBeProofByShape()) return false
-    if (this.rigidProofStatus() == false || other.rigidProofStatus() == false) return false
+    if (!expression.canBeProofByShape() || !other.canBeProofByShape()) return false
+    if (expression.rigidProofStatus() == false || other.rigidProofStatus() == false) return false
     val tempLog = env.shouldLog
     env.shouldLog = false
     return try {
-        this.tryProofIrrelevanceDefEq(other, localCtxLeft, localCtxRight).also { result ->
+        tryProofIrrelevanceDefEq(expression, other, localCtxLeft, localCtxRight).also { result ->
             if (result) env.proofIrrelevanceSuccesses += 1
         }
     } finally {
@@ -3766,15 +3795,17 @@ private fun Expression.canBeProofByShape(): Boolean {
 }
 
 context(env: Environment)
-private fun Expression.tryProofIrrelevanceDefEq(
+private suspend fun DefEqScope.tryProofIrrelevanceDefEq(
+    expression: Expression,
     other: Expression,
     localCtxLeft: List<Expression>,
     localCtxRight: List<Expression>,
 ): Boolean {
-    if (!this.isScopedBy(localCtxLeft) || !other.isScopedBy(localCtxRight)) return false
-    val thisTy = this.inferType(localCtx = localCtxLeft, validate = false)
+    if (!expression.isScopedBy(localCtxLeft) || !other.isScopedBy(localCtxRight)) return false
+    val thisTy = expression.inferType(localCtx = localCtxLeft, validate = false)
     if (!thisTy.inferSort(localCtx = localCtxLeft, validate = false).isLessOrEqual(Level.Zero)) return false
-    return thisTy.isDefEq(
+    return compare(
+        thisTy,
         other.inferType(localCtx = localCtxRight, validate = false),
         localCtxLeft,
         localCtxRight,
