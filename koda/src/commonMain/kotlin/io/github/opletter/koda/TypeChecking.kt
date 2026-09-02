@@ -363,6 +363,15 @@ private suspend fun Expression.isDefEqCore(
     this.tryStructuralDefEq(other)?.let { return finish(it) }
     if (this.tryKnownDefEqCongruence(other, localCtxLeft, localCtxRight)) return finish(true)
     if (this.tryProofIrrelevanceDefEqNoLog(other, localCtxLeft, localCtxRight)) return finish(true)
+    fun Expression.isHeadRedex(): Boolean {
+        var head = this
+        while (head is Expression.App) head = head.fnExpr
+        return head is Expression.Lam || head is Expression.LetE
+    }
+    if (
+        (this.isHeadRedex() || other.isHeadRedex()) &&
+        this.closedDefEq(other, allowRegularDelta = false)
+    ) return finish(true)
 
 //    if (traceDefEq) println("debug defeq phase: cheap whnf")
     val leftCore = this.whnfCore(localCtxLeft, cheapProjection = true)
@@ -608,6 +617,7 @@ private fun ClosedClosure.closedDefEq(
     nextNeutral: Int = -1,
     trace: Boolean = false,
     expectedType: ClosedExpectedType? = null,
+    allowRegularDelta: Boolean = true,
 ): Boolean {
     val pending = ArrayDeque<ClosedDefEqTask>()
     val visited = mutableSetOf<ClosedDefEqState>()
@@ -818,6 +828,7 @@ private fun ClosedClosure.closedDefEq(
     fun deltaStep(value: ClosedValue): Pair<LazyDeltaStep, ClosedClosure>? {
         val head = value.head.expression as? Expression.Const ?: return null
         val step = head.lazyDeltaStepInfo() ?: return null
+        if (!allowRegularDelta && step.kind != LazyDeltaStepKind.Abbrev && head.natPrimitive() == null) return null
         val unfolded = head.instantiatedValue() ?: return null
         val closure = ClosedClosure(
             unfolded,
@@ -1158,10 +1169,10 @@ private fun ClosedClosure.closedDefEq(
 }
 
 context(env: Environment)
-private fun Expression.closedDefEq(other: Expression): Boolean {
+private fun Expression.closedDefEq(other: Expression, allowRegularDelta: Boolean = true): Boolean {
     if (this.maxLooseBVarIndex() >= 0 || other.maxLooseBVarIndex() >= 0) return false
     return ClosedClosure(this, ClosedEvalEnv.Empty).closedDefEq(
-        ClosedClosure(other, ClosedEvalEnv.Empty)
+        ClosedClosure(other, ClosedEvalEnv.Empty), allowRegularDelta = allowRegularDelta
     )
 }
 
