@@ -2336,19 +2336,6 @@ private fun Expression.LetE.instantiateLeadingLets(): Expression {
 }
 
 context(env: Environment)
-private fun Expression.App.instantiateLeadingBetaRedexes(): Expression? {
-    if (this.fnExpr !is Expression.Lam) return null
-    var tail: Expression = this
-    val subst = ArrayDeque<Expression>()
-    while (tail is Expression.App) {
-        val lambda = tail.fnExpr as? Expression.Lam ?: break
-        subst.addFirst(tail.argExpr.applySubst(subst))
-        tail = lambda.bodyExpr
-    }
-    return if (subst.isEmpty()) null else tail.applySubst(subst)
-}
-
-context(env: Environment)
 private fun Expression.reduceBetaLetHead(): Expression {
     var current = this
     while (true) {
@@ -3046,11 +3033,6 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                     }
 
                     is Expression.App -> {
-                        val betaReduced = current.instantiateLeadingBetaRedexes()
-                        if (betaReduced != null) {
-                            current = betaReduced
-                            continue
-                        }
                         val [headExpr, args] = current.unfoldApp()
                         frames.addLast(WhnfFrame.ApplyHead(current, headExpr, args, mode))
                         current = headExpr
