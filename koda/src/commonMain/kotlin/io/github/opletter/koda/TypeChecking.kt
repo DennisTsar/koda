@@ -4,12 +4,12 @@ private var debugClosedEvaluation = false
 private var debugTargetDeclaration = false
 private const val debugTargetIndex = -1//21_000_000///51_500_000
 
-fun NamedDecl.hasDistinctLevelParams(): Boolean =
-    levelParamIndices.toSet().size == levelParamIndices.size
-
 context(env: Environment)
 internal fun NamedDecl.checkLevelParams(expressions: List<Expression>) {
     val allowedParams = levelParamIndices.toSet()
+    check(allowedParams.size == levelParamIndices.size) {
+        "Duplicate universe parameters in ${name.toStringDetailed()}"
+    }
     val seenExpressions = mutableSetOf<Int>()
     val seenLevels = mutableSetOf<Int>()
 
@@ -141,9 +141,6 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
             is Declaration -> {
                 // (1): "the declaration is not already declared in the environment"
                 data.registerInto(env)
-                // (2): "has no duplicate universe parameters"
-                // not the most efficient check but probably doesn't matter?
-                check(data.hasDistinctLevelParams()) { "Duplicate universe parameters in $data" }
                 val value = when (data) {
                     is Declaration.Def -> data.valueExpr
                     is Declaration.Opaque -> data.valueExpr // TODO: treat opqaue differently
@@ -151,7 +148,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                     is Declaration.Axiom, is Declaration.Quot -> null
                 }
                 data.checkLevelParams(listOfNotNull(data.typeExpr, value))
-                // (3): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
+                // (2): "the declaration's type is actually a type and not a value (that infer declar.ty returns an expression Sort <n>)"
 //                println("found type: ${data.typeExpr.toStringDetailed()}")
 //                val debugStart = env.clock.elapsedNow()
                 try {
@@ -181,7 +178,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                 env.declTypeByName[data.name] = data.typeExpr
                 env.counter++
 
-                // (4): "the declaration's type has no free variables"
+                // (3): "the declaration's type has no free variables"
                 // TODO
             }
 

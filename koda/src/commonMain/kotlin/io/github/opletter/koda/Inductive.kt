@@ -26,10 +26,6 @@ fun checkInductive(data: Inductive) {
     }
 
     inductives.forEach { inductive ->
-        // (1): no duplicate universe parameters
-        check(inductive.hasDistinctLevelParams()) {
-            "Duplicate universe parameters in $inductive"
-        }
         inductive.checkLevelParams(listOf(inductive.typeExpr))
         check(inductive.numParams == blockNumParams) {
             "Mutual inductive ${inductive.name.toStringDetailed()} has wrong numParams: expected $blockNumParams, got ${inductive.numParams}"
@@ -112,9 +108,6 @@ fun checkInductive(data: Inductive) {
         }
         check(recursor.numMotives == motiveCount) {
             "Recursor ${recursor.name.toStringDetailed()} has wrong numMotives: expected $motiveCount, got ${recursor.numMotives}"
-        }
-        check(recursor.hasDistinctLevelParams()) {
-            "Duplicate universe parameters in recursor $recursor"
         }
         recursor.checkLevelParams(
             buildList {
@@ -200,9 +193,6 @@ private fun checkConstructor(
     }
     check(constructor.numParams == inductive.numParams) {
         "Constructor ${constructor.name.toStringDetailed()} has wrong numParams: expected ${inductive.numParams}, got ${constructor.numParams}"
-    }
-    check(constructor.hasDistinctLevelParams()) {
-        "Duplicate universe parameters in constructor $constructor"
     }
     check(constructor.levelParams.isEqual(inductive.levelParams)) {
         "Constructor ${constructor.name.toStringDetailed()} has mismatched universe parameters"
