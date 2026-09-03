@@ -5,6 +5,12 @@ private data class InductiveTypeInfo(
     val sortLevel: Level,
 )
 
+internal inline val Inductive.RecursorVal.ruleArgsPrefixSize: Int
+    get() = numParams + numMotives + numMinors
+
+internal inline val Inductive.RecursorVal.majorArgIndex: Int
+    get() = ruleArgsPrefixSize + numIndices
+
 context(env: Environment)
 fun checkInductive(data: Inductive) {
     check(data.types.isNotEmpty()) {
@@ -298,8 +304,7 @@ private fun walkForalls(
 
 context(env: Environment)
 fun Inductive.RecursorVal.getMajorBinder(): Expression.ForallE {
-    val prefixBinderCount = this.numParams + this.numMotives + this.numMinors + this.numIndices
-    val tailExpr = walkForalls(this.typeExpr, prefixBinderCount, "Recursor ${this.name}", reduceExpr = false).first
+    val tailExpr = walkForalls(this.typeExpr, majorArgIndex, "Recursor ${this.name}", reduceExpr = false).first
     return tailExpr as? Expression.ForallE
         ?: error("Recursor ${this.name} is missing a major premise binder")
 }
@@ -413,7 +418,7 @@ private fun checkRecursorRuleType(
     majorTypeArgs: List<Expression>,
     recursorsByName: Map<Name, Inductive.RecursorVal>,
 ) {
-    val prefixBinderCount = recursor.numParams + recursor.numMotives + recursor.numMinors
+    val prefixBinderCount = recursor.ruleArgsPrefixSize
     val expectedRuleBinderCount = prefixBinderCount + constructor.numFields
     checkStructuralRecursorCalls(
         rule.rhsExpr,
@@ -547,8 +552,7 @@ private fun checkStructuralRecursorCalls(
         if (!seen.add(key)) return@walkSyntax SyntaxVisit.Skip
         val calledRecursor = (head as? Expression.Const)?.let { recursorsByName[it.name] }
         if (calledRecursor != null) {
-            val majorIndex = calledRecursor.numParams + calledRecursor.numMotives +
-                    calledRecursor.numMinors + calledRecursor.numIndices
+            val majorIndex = calledRecursor.majorArgIndex
             check(args.size > majorIndex) {
                 "$owner contains an under-applied recursive call to ${calledRecursor.name}"
             }

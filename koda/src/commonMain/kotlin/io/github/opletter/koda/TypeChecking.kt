@@ -1241,8 +1241,7 @@ private fun ClosedClosure.closedWhnf(
         if (!recursor.k) return null
         val rule = recursor.rules.singleOrNull() ?: return fail("rule count")
         if (rule.nfields != 0) return fail("rule fields")
-        val prefixSize = recursor.numParams + recursor.numMotives + recursor.numMinors
-        val majorIndex = prefixSize + recursor.numIndices
+        val majorIndex = recursor.majorArgIndex
         if (majorIndex >= recursorArgs.size) return fail("major index")
         val major = recursorArgs[majorIndex].reifyClosed() ?: return fail("open major")
         if (recursor.kRuleForMajor(major, emptyList()) == null) return fail("major type")
@@ -1257,8 +1256,6 @@ private fun ClosedClosure.closedWhnf(
         rule: Inductive.RecursorVal.RecursorRule,
         fieldArgs: List<ClosedClosure>,
     ) {
-        val prefixSize = recursor.numParams + recursor.numMotives + recursor.numMinors
-        val majorIndex = prefixSize + recursor.numIndices
         val cacheKey = ClosedRecursorRuleKey(
             recursorConst.name,
             recursorConst.levels.map { it.il },
@@ -1283,7 +1280,10 @@ private fun ClosedClosure.closedWhnf(
             }
         }
 
-        (recursorArgs.take(prefixSize) + fieldArgs + recursorArgs.drop(majorIndex + 1)).forEach {
+
+        val argClosures = recursorArgs.take(recursor.ruleArgsPrefixSize) + fieldArgs +
+                recursorArgs.drop(recursor.majorArgIndex + 1)
+        argClosures.forEach {
             applyArgument(it)
         }
     }
@@ -1393,8 +1393,7 @@ private fun ClosedClosure.closedWhnf(
 
                 val recursor = expression.decl as? Inductive.RecursorVal
                 if (recursor != null) {
-                    val majorIndex = recursor.numParams + recursor.numMotives +
-                            recursor.numMinors + recursor.numIndices
+                    val majorIndex = recursor.majorArgIndex
                     if (majorIndex < argumentStack.size) {
                         val arguments = argumentStack.toList()
                         val kRule = tryKRule(expression, recursor, arguments)
@@ -3147,8 +3146,7 @@ private fun Expression.normalizeWhnf(localCtx: List<Expression>, initialMode: Wh
                 } else {
                     val headDecl = (frame.originalHead as? Expression.Const)?.decl
                     val recursorMajor = (headDecl as? Inductive.RecursorVal)?.let { recursor ->
-                        val majorIndex = recursor.numParams + recursor.numMotives + recursor.numMinors + recursor.numIndices
-                        frame.args.getOrNull(majorIndex)
+                        frame.args.getOrNull(recursor.majorArgIndex)
                     }
                     val quotMajor = if (
                         recursorMajor == null && headDecl is Declaration.Quot &&
@@ -3546,12 +3544,10 @@ private fun Expression.App.tryReduceRecursorHead(
     val recursorDecl = recConst.decl as? Inductive.RecursorVal ?: return null
     val recursorLevelSubst = recConst.composeLevelSubst(levelSubst)
 
-    val majorArgIndex =
-        recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors + recursorDecl.numIndices
+    val majorArgIndex = recursorDecl.majorArgIndex
     if (args.size <= majorArgIndex) return null
 
-    val recursorArgsPrefixSize = recursorDecl.numParams + recursorDecl.numMotives + recursorDecl.numMinors
-    val prefixArgs = args.take(recursorArgsPrefixSize)
+    val prefixArgs = args.take(recursorDecl.ruleArgsPrefixSize)
 
     fun applyRule(
         rule: Inductive.RecursorVal.RecursorRule,
