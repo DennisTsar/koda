@@ -585,6 +585,7 @@ fun Expression.applyArgs(args: List<Expression>): Expression {
 
 context(env: Environment)
 fun Expression.unfoldApp(): Pair<Expression, List<Expression>> {
+    if (this !is Expression.App) return this to emptyList()
     val args = mutableListOf<Expression>()
     var head = this
     while (head is Expression.App) {
