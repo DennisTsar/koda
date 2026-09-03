@@ -3786,17 +3786,12 @@ private fun Expression.isScopedBy(localCtx: List<Expression>): Boolean =
     this.maxLooseBVarIndex() < localCtx.size
 
 context(env: Environment)
+@IgnorableReturnValue
 fun Expression.inferSort(
     levelSubst: Map<Int, Level> = emptyMap(),
     localCtx: List<Expression> = emptyList(),
     validate: Boolean = true,
-): Level {
-    val tyWhnf = this.inferType(levelSubst, localCtx, validate)
-    val whnfTyExpr = tyWhnf.whnf(localCtx = localCtx)
-    val sort = whnfTyExpr as? Expression.Sort
-        ?: error("Expected Sort type for ${this.toStringDetailed()}, got ${whnfTyExpr.toStringDetailed()}")
-    return sort.level
-}
+): Level = requireSort(this.inferType(levelSubst, localCtx, validate), this, localCtx)
 
 private data class PostorderFrame(val expression: Expression, val expanded: Boolean)
 
