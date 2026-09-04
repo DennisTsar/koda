@@ -2403,7 +2403,10 @@ private fun Expression.lazyDeltaStepInfo(expression: Expression = this): LazyDel
 }
 
 context(env: Environment)
-fun Expression.asAppSpine(): Pair<Expression, List<Expression>> = this.unfoldApp()
+fun Expression.asAppSpine(): Pair<Expression, List<Expression>> = when (this) {
+    is Expression.App -> this.unfoldApp()
+    else -> this to emptyList()
+}
 
 context(env: Environment)
 private fun Expression.isWhnfByShape(): Boolean = when (this) {
