@@ -574,13 +574,8 @@ private fun checkStructuralRecursorCalls(
 }
 
 context(env: Environment)
-fun Expression.applyArgs(args: List<Expression>): Expression {
-    if (args.isEmpty()) return this
-    var result = this
-    args.forEach { argExpr ->
-        result = env.addCustomExpr { Expression.App(fn = result.ie, arg = argExpr.ie, ie = it) }
-    }
-    return result
+fun Expression.applyArgs(args: List<Expression>): Expression = args.fold(this) { result, argExpr ->
+    env.addCustomExpr { Expression.App(fn = result.ie, arg = argExpr.ie, ie = it) }
 }
 
 context(env: Environment)
