@@ -2216,9 +2216,7 @@ private suspend fun Expression.tryRegularDefinitionCongruence(
 context(env: Environment)
 private fun Expression.Const.projectionReductionInfo(): ProjectionReductionInfo? {
     val nameIndex = env.nameIndices[this.name] ?: return null
-    if (env.projectionReductionInfoByNameIndex.containsKey(nameIndex)) {
-        return env.projectionReductionInfoByNameIndex[nameIndex]
-    }
+    env.projectionReductionInfoByNameIndex[nameIndex]?.let { return it }
 
     val result = run {
         val defDecl = this.decl as? Declaration.Def ?: return@run null
