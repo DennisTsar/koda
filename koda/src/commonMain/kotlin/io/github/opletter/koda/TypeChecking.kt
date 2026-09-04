@@ -94,6 +94,7 @@ fun _typeCheck(rawData: Sequence<ExportType>) {
                     data.registerInto(env)
                     env.recordExpressionReferences(data)
                 }
+
                 is Declaration -> {
                     data.registerInto(env)
                     env.declTypeByName[data.name] = data.typeExpr
@@ -485,6 +486,7 @@ private fun ClosedClosure.reifyClosed(): Expression? {
                     if (transient.bvar < 0) return null
                     env.addCustomExpr { transient.copy(ie = it) }
                 }
+
                 else -> return null
             }
         }
@@ -3278,42 +3280,36 @@ private fun Expression.tryRecognizeNatLiteral(
 
 context(env: Environment)
 private fun Expression.tryRecognizeNatLiteralCore(localCtx: List<Expression>): NatValue? {
-    var current = this
-    var succOffset = NatValue.ZERO
-    while (true) {
-        when (current) {
-            is Expression.Mdata -> current = current.expr
-            is Expression.LetE -> current = current.instantiateLeadingLets()
-            else -> {
-                val baseValue = current.asNatLiteralValue()
-                if (baseValue != null) return baseValue + succOffset
+    tailrec fun Expression.tryRecognizeNatLiteralCore(offset: NatValue): NatValue? = when (this) {
+        is Expression.Mdata -> expr.tryRecognizeNatLiteralCore(offset)
+        is Expression.LetE -> instantiateLeadingLets().tryRecognizeNatLiteralCore(offset)
+        else -> {
+            val baseValue = asNatLiteralValue()
+            if (baseValue != null) return baseValue + offset
 
-                val appExpr = current as? Expression.App ?: return null
-                val [headExpr, args] = appExpr.unfoldApp()
-                val headConst = headExpr as? Expression.Const ?: return null
-                val primitive = headConst.natPrimitive() ?: return null
+            val appExpr = this as? Expression.App ?: return null
+            val [headExpr, args] = appExpr.unfoldApp()
+            val headConst = headExpr as? Expression.Const ?: return null
+            val primitive = headConst.natPrimitive() ?: return null
 
-                fun natArg(index: Int): NatValue? = args.getOrNull(index)?.tryRecognizeNatLiteral(emptyMap(), localCtx)
+            fun natArg(index: Int): NatValue? = args.getOrNull(index)?.tryRecognizeNatLiteral(emptyMap(), localCtx)
 
-                when (primitive) {
-                    NatPrimitive.Succ -> {
-                        current = args.getOrNull(0) ?: return null
-                        succOffset += NatValue.ONE
-                        continue
-                    }
+            when (primitive) {
+                NatPrimitive.Succ -> (args.getOrNull(0) ?: return null)
+                    .tryRecognizeNatLiteralCore(offset + NatValue.ONE)
 
-                    NatPrimitive.Beq, NatPrimitive.Ble -> return null
-                    else -> {
-                        val first = natArg(0) ?: return null
-                        val second = natArg(1) ?: return null
-                        val reduced = primitive.reduce(first, second) { Expression.NatVal(it, Int.MIN_VALUE) }
-                                as? Expression.NatVal ?: return null
-                        return reduced.natVal + succOffset
-                    }
+                NatPrimitive.Beq, NatPrimitive.Ble -> null
+                else -> {
+                    val first = natArg(0) ?: return null
+                    val second = natArg(1) ?: return null
+                    val reduced = primitive.reduce(first, second) { Expression.NatVal(it, Int.MIN_VALUE) }
+                            as? Expression.NatVal ?: return null
+                    reduced.natVal + offset
                 }
             }
         }
     }
+    return this.tryRecognizeNatLiteralCore(NatValue.ZERO)
 }
 
 context(env: Environment)
