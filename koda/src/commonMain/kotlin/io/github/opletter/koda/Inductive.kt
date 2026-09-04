@@ -178,7 +178,7 @@ private fun checkSharedParams(
     repeat(referenceInductive.numParams) { paramIndex ->
         val expectedParamType = referenceInfo.paramTypes[paramIndex]
         val actualParamType = inductiveInfo.paramTypes[paramIndex]
-        check(actualParamType.isDefEq(expectedParamType, inductiveLocalCtx, referenceLocalCtx)) {
+        check(actualParamType.isDefEq2(expectedParamType, inductiveLocalCtx, referenceLocalCtx)) {
             "Mutual inductive ${inductive.name.toStringDetailed()} parameter #$paramIndex type mismatch with ${referenceInductive.name.toStringDetailed()}: expected ${expectedParamType.toStringDetailed()}, got ${actualParamType.toStringDetailed()}"
         }
         referenceLocalCtx = env.consLocalCtx(expectedParamType, referenceLocalCtx)
@@ -216,7 +216,7 @@ private fun checkConstructor(
         if (binderIndex < constructor.numParams) {
             val expectedParamType = inductiveInfo.paramTypes.getOrNull(binderIndex)
                 ?: error("Missing expected parameter type #$binderIndex for constructor ${constructor.name}")
-            check(binderType.isDefEq(expectedParamType, localCtx, localCtx)) {
+            check(binderType.isDefEq2(expectedParamType, localCtx, localCtx)) {
                 "Constructor ${constructor.name} parameter #$binderIndex type mismatch: expected ${expectedParamType.toStringDetailed()}, got ${binderType.toStringDetailed()}"
             }
         } else {
@@ -480,7 +480,7 @@ private fun checkRecursorRuleType(
         .inferType(localCtx = ruleLocalCtx)
         .whnf(localCtx = ruleLocalCtx)
 
-    check(ruleResultType.isDefEq(expectedResultType, ruleLocalCtx, ruleLocalCtx)) {
+    check(ruleResultType.isDefEq2(expectedResultType, ruleLocalCtx, ruleLocalCtx)) {
         "Recursor rule for ${constructor.name} has wrong result type: expected ${expectedResultType.toStringDetailed()}, got ${ruleResultType.toStringDetailed()}"
     }
 }
