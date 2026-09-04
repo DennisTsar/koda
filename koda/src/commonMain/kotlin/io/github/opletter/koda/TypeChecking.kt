@@ -2327,51 +2327,42 @@ private fun Expression.LetE.instantiateLeadingLets(): Expression {
 }
 
 context(env: Environment)
-private fun Expression.reduceBetaLetHead(): Expression {
-    var current = this
-    while (true) {
-        current = when (current) {
-            is Expression.Mdata -> current.expr
-            is Expression.LetE -> current.instantiateLeadingLets()
-            is Expression.App -> {
-                val spine = current.unfoldApp()
-                when (val head = spine.first) {
-                    is Expression.Mdata -> head.expr.applyArgs(spine.second)
-                    is Expression.LetE -> head.instantiateLeadingLets().applyArgs(spine.second)
-
-                    is Expression.Lam -> head.applyBetaArgs(spine.second)
-                    else -> return current
-                }
-            }
-
-            else -> return current
+private tailrec fun Expression.reduceBetaLetHead(): Expression = when (this) {
+    is Expression.Mdata -> expr.reduceBetaLetHead()
+    is Expression.LetE -> instantiateLeadingLets().reduceBetaLetHead()
+    is Expression.App -> {
+        val [head, args] = unfoldApp()
+        when (head) {
+            is Expression.Mdata -> head.expr.applyArgs(args).reduceBetaLetHead()
+            is Expression.LetE -> head.instantiateLeadingLets().applyArgs(args).reduceBetaLetHead()
+            is Expression.Lam -> head.applyBetaArgs(args).reduceBetaLetHead()
+            else -> this
         }
     }
+
+    else -> this
 }
 
 context(env: Environment)
 private fun Expression.applyBetaArgs(args: List<Expression>): Expression {
-    var head = this
-    var nextArg = 0
-    while (true) {
-        when (head) {
-            is Expression.Mdata -> head = head.expr
-            is Expression.LetE -> head = head.instantiateLeadingLets()
-            is Expression.Lam -> {
-                if (nextArg == args.size) return head
-                var body: Expression = head
-                var consumedArgs = 0
-                while (body is Expression.Lam && nextArg + consumedArgs < args.size) {
-                    body = body.bodyExpr
-                    consumedArgs += 1
-                }
-                head = body.applySubst(args.subList(nextArg, nextArg + consumedArgs).asReversed())
-                nextArg += consumedArgs
+    tailrec fun Expression.applyBetaArgs(nextArg: Int): Expression = when (this) {
+        is Expression.Mdata -> expr.applyBetaArgs(nextArg)
+        is Expression.LetE -> instantiateLeadingLets().applyBetaArgs(nextArg)
+        is Expression.Lam if (nextArg == args.size) -> this
+        is Expression.Lam -> {
+            var body: Expression = this
+            var consumedArgs = 0
+            while (body is Expression.Lam && nextArg + consumedArgs < args.size) {
+                body = body.bodyExpr
+                consumedArgs += 1
             }
-
-            else -> return head.applyArgs(args.drop(nextArg))
+            body.applySubst(args.subList(nextArg, nextArg + consumedArgs).asReversed())
+                .applyBetaArgs(nextArg + consumedArgs)
         }
+
+        else -> applyArgs(args.drop(nextArg))
     }
+    return applyBetaArgs(0)
 }
 
 context(env: Environment)
