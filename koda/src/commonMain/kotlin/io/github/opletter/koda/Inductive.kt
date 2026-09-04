@@ -392,21 +392,16 @@ private fun checkRecursorRules(
 }
 
 context(env: Environment)
-private fun Expression.resultSortLevel(initialLocalCtx: List<Expression>, owner: String): Level {
-    var current = this
-    var localCtx = initialLocalCtx
-    while (true) {
-        when (val normalized = current.whnf(localCtx = localCtx)) {
-            is Expression.ForallE -> {
-                localCtx = env.consLocalCtx(normalized.typeExpr, localCtx)
-                current = normalized.bodyExpr
-            }
+private tailrec fun Expression.resultSortLevel(localCtx: List<Expression>, owner: String): Level =
+    when (val normalized = whnf(localCtx = localCtx)) {
+        is Expression.ForallE -> normalized.bodyExpr.resultSortLevel(
+            env.consLocalCtx(normalized.typeExpr, localCtx),
+            owner,
+        )
 
-            is Expression.Sort -> return normalized.level
-            else -> error("$owner must end in a sort, got ${normalized.toStringDetailed()}")
-        }
+        is Expression.Sort -> normalized.level
+        else -> error("$owner must end in a sort, got ${normalized.toStringDetailed()}")
     }
-}
 
 context(env: Environment)
 private fun checkRecursorRuleType(

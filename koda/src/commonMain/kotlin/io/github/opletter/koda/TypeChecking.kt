@@ -3671,13 +3671,9 @@ private fun Expression.App.tryReduceQuotHead(
 
 context(env: Environment)
 private fun Expression.forallBinderCount(): Int {
-    var count = 0
-    var tail: Expression = this
-    while (tail is Expression.ForallE) {
-        count += 1
-        tail = tail.bodyExpr
-    }
-    return count
+    tailrec fun Expression.forallBinderCount(count: Int = 0): Int =
+        if (this is Expression.ForallE) bodyExpr.forallBinderCount(count + 1) else count
+    return forallBinderCount(0)
 }
 
 context(env: Environment, scope: DefEqScope)
