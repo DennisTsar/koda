@@ -2024,15 +2024,13 @@ private suspend fun Expression.App.isDefEqWhnfSpine(
 ): Boolean {
 //    val traceSpine = debugTargetDeclaration &&
 //            (this.ie == -3489 && other.ie == 2395 || this.ie == 2395 && other.ie == -3489)
-    val leftSpine = this.unfoldApp()
-    val rightSpine = other.unfoldApp()
-    val leftArgs = leftSpine.second
-    val rightArgs = rightSpine.second
+    val [leftHead, leftArgs] = this.unfoldApp()
+    val [rightHead, rightArgs] = other.unfoldApp()
     if (leftArgs.size != rightArgs.size) {
         return this.fnExpr.isDefEq(other.fnExpr, localCtxLeft, localCtxRight) &&
                 this.argExpr.isDefEq(other.argExpr, localCtxLeft, localCtxRight)
     }
-    if (!leftSpine.first.isDefEq(rightSpine.first, localCtxLeft, localCtxRight)) {
+    if (!leftHead.isDefEq(rightHead, localCtxLeft, localCtxRight)) {
         return false
     }
     var functionType: Expression.ForallE? = null
@@ -2068,7 +2066,7 @@ private suspend fun Expression.App.isDefEqWhnfSpine(
 //                )
 //            }
             if (functionType == null) {
-                functionType = leftSpine.first.inferType(localCtx = localCtxLeft, validate = false)
+                functionType = leftHead.inferType(localCtx = localCtxLeft, validate = false)
                     .whnf(localCtx = localCtxLeft) as? Expression.ForallE
                     ?: error("Application head does not have a function type")
                 for (priorIndex in 0 until index) {
@@ -2466,29 +2464,27 @@ private suspend fun Expression.isDefEqBinding(
     localCtxRight: List<Expression>,
     lambda: Boolean,
 ): Boolean {
-    var left = this
-    var right = other
-    var leftCtx = localCtxLeft
-    var rightCtx = localCtxRight
-    while (true) {
-        val leftDomain = if (lambda) {
-            (left as? Expression.Lam)?.typeExpr
-        } else {
-            (left as? Expression.ForallE)?.typeExpr
-        } ?: break
-        val rightDomain = if (lambda) {
-            (right as? Expression.Lam)?.typeExpr
-        } else {
-            (right as? Expression.ForallE)?.typeExpr
-        } ?: break
-        if (leftDomain !== rightDomain && !leftDomain.isDefEq(rightDomain, leftCtx, rightCtx)) return false
-
-        left = if (lambda) (left as Expression.Lam).bodyExpr else (left as Expression.ForallE).bodyExpr
-        right = if (lambda) (right as Expression.Lam).bodyExpr else (right as Expression.ForallE).bodyExpr
-        leftCtx = env.consLocalCtx(leftDomain, leftCtx)
-        rightCtx = env.consLocalCtx(rightDomain, rightCtx)
+    context(scope: DefEqScope)
+    tailrec suspend fun isDefEqBinding(
+        left: Expression,
+        right: Expression,
+        leftCtx: List<Expression>,
+        rightCtx: List<Expression>,
+    ): Boolean {
+        val leftDomain = if (lambda) (left as? Expression.Lam)?.typeExpr else (left as? Expression.ForallE)?.typeExpr
+        val rightDomain = if (lambda) (right as? Expression.Lam)?.typeExpr else (right as? Expression.ForallE)?.typeExpr
+        if (leftDomain == null || rightDomain == null)
+            return left.isDefEq(right, leftCtx, rightCtx)
+        if (leftDomain !== rightDomain && !leftDomain.isDefEq(rightDomain, leftCtx, rightCtx))
+            return false
+        return isDefEqBinding(
+            if (lambda) (left as Expression.Lam).bodyExpr else (left as Expression.ForallE).bodyExpr,
+            if (lambda) (right as Expression.Lam).bodyExpr else (right as Expression.ForallE).bodyExpr,
+            env.consLocalCtx(leftDomain, leftCtx),
+            env.consLocalCtx(rightDomain, rightCtx),
+        )
     }
-    return left.isDefEq(right, leftCtx, rightCtx)
+    return isDefEqBinding(this, other, localCtxLeft, localCtxRight)
 }
 
 context(env: Environment, scope: DefEqScope)
@@ -2501,32 +2497,22 @@ private suspend fun Expression.tryCompareWithFunction(
     val rightLam = other as? Expression.Lam
     if ((leftLam == null) == (rightLam == null)) return null
 
-    val leftDomain = if (leftLam != null) {
-        leftLam.typeExpr
-    } else {
-        (this.inferType(localCtx = localCtxLeft, validate = false)
+    val leftDomain = leftLam?.typeExpr
+        ?: (this.inferType(localCtx = localCtxLeft, validate = false)
             .whnf(localCtx = localCtxLeft) as? Expression.ForallE)?.typeExpr
-            ?: return null
-    }
-    val rightDomain = if (rightLam != null) {
-        rightLam.typeExpr
-    } else {
-        (other.inferType(localCtx = localCtxRight, validate = false)
+        ?: return null
+    val rightDomain = rightLam?.typeExpr
+        ?: (other.inferType(localCtx = localCtxRight, validate = false)
             .whnf(localCtx = localCtxRight) as? Expression.ForallE)?.typeExpr
-            ?: return null
-    }
+        ?: return null
     if (!leftDomain.isDefEq(rightDomain, localCtxLeft, localCtxRight)) return null
 
     val binderExpr = env.addCustomExpr { Expression.Bvar(0, it) }
-    val leftUnderBinder = if (leftLam != null) {
-        leftLam.bodyExpr
-    } else {
+    val leftUnderBinder = leftLam?.bodyExpr ?: run {
         val liftedLeft = this.lift(1)
         env.addCustomExpr { Expression.App(liftedLeft.ie, binderExpr.ie, it) }
     }
-    val rightUnderBinder = if (rightLam != null) {
-        rightLam.bodyExpr
-    } else {
+    val rightUnderBinder = rightLam?.bodyExpr ?: run {
         val liftedRight = other.lift(1)
         env.addCustomExpr { Expression.App(liftedRight.ie, binderExpr.ie, it) }
     }
