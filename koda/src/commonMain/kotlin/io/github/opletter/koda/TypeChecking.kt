@@ -1679,7 +1679,6 @@ private suspend fun Expression.Proj.lazyProjectionDefEq(
     }
 }
 
-context(env: Environment)
 private fun Expression.defEqCacheKey(
     other: Expression,
     leftCtxId: Int,
@@ -2616,24 +2615,24 @@ private fun Expression.StrVal.toListCharExpr(): Expression {
 }
 
 // Kotlin strings are UTF-16; Lean Char.ofNat expects Unicode scalar values.
-private fun String.toUnicodeScalarValues(): List<Int> {
-    val result = mutableListOf<Int>()
+private fun String.toUnicodeScalarValues(): List<Int> = buildList {
+    val str = this@toUnicodeScalarValues
     var index = 0
-    while (index < this.length) {
-        val current = this[index]
-        if (current in Char.MIN_HIGH_SURROGATE..Char.MAX_HIGH_SURROGATE && index + 1 < this.length) {
-            val next = this[index + 1]
+    while (index < length) {
+        val current = str[index]
+        if (current in Char.MIN_HIGH_SURROGATE..Char.MAX_HIGH_SURROGATE && index + 1 < length) {
+            val next = str[index + 1]
             if (next in Char.MIN_LOW_SURROGATE..Char.MAX_LOW_SURROGATE) {
-                result += (Char.MAX_VALUE.code + 1) +
+                val code = (Char.MAX_VALUE.code + 1) +
                         ((current - Char.MIN_HIGH_SURROGATE) shl 10) + (next - Char.MIN_LOW_SURROGATE)
+                add(code)
                 index += 2
                 continue
             }
         }
-        result += current.code
+        add(current.code)
         index++
     }
-    return result
 }
 
 context(env: Environment)
@@ -3751,7 +3750,6 @@ private suspend fun Expression.tryProofIrrelevanceDefEq(
     )
 }
 
-context(env: Environment)
 private fun Expression.isScopedBy(localCtx: List<Expression>): Boolean =
     this.maxLooseBVarIndex() < localCtx.size
 
