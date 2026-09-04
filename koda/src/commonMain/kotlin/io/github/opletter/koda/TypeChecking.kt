@@ -2670,14 +2670,6 @@ private class InferRequest(
     val validate: Boolean,
 )
 
-private typealias InferScope = DeepRecursiveScope<InferRequest, Expression>
-
-context(env: Environment, scope: InferScope)
-private suspend fun Expression.recurseInfer(
-    localCtx: List<Expression>,
-    validate: Boolean,
-): Expression = scope.callRecursive(InferRequest(env, this, localCtx, validate))
-
 @IgnorableReturnValue
 context(env: Environment)
 private fun requireSort(type: Expression, subject: Expression, localCtx: List<Expression>): Level {
@@ -2819,15 +2811,16 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
             val inferredType = when (expr) {
                 is Expression.App -> {
                     val [head, arguments] = expr.unfoldApp()
-                    var functionType = head.recurseInfer(request.localCtx, request.validate)
-                        .requireFunctionType(expr, request.localCtx)
+                    var functionType = callRecursive(
+                        InferRequest(env, head, request.localCtx, request.validate)
+                    ).requireFunctionType(expr, request.localCtx)
                     val pendingSubst = ArrayDeque<Expression>()
 
                     arguments.forEachIndexed { index, argument ->
                         if (request.validate) {
                             val expectedType = if (pendingSubst.isEmpty()) functionType.typeExpr
                             else functionType.typeExpr.applySubst(pendingSubst)
-                            val argumentType = argument.recurseInfer(request.localCtx, true)
+                            val argumentType = callRecursive(InferRequest(env, argument, request.localCtx, true))
                             expr.checkArgumentType(argument, expectedType, argumentType, request.localCtx)
                         }
 
@@ -2870,10 +2863,10 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
 
                     val domainSorts = mutableListOf<Level>()
                     binders.forEach { [binder, binderCtx] ->
-                        val type = binder.typeExpr.recurseInfer(binderCtx, request.validate)
+                        val type = callRecursive(InferRequest(env, binder.typeExpr, binderCtx, request.validate))
                         domainSorts += requireSort(type, binder.typeExpr, binderCtx)
                     }
-                    val bodyType = tail.recurseInfer(tailCtx, request.validate)
+                    val bodyType = callRecursive(InferRequest(env, tail, tailCtx, request.validate))
                     var level = requireSort(bodyType, tail, tailCtx)
                     domainSorts.asReversed().forEach {
                         level = makeLevelImax(it, level)
@@ -2893,11 +2886,11 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
 
                     if (request.validate) {
                         binders.forEach { [binder, binderCtx] ->
-                            val type = binder.typeExpr.recurseInfer(binderCtx, true)
+                            val type = callRecursive(InferRequest(env, binder.typeExpr, binderCtx, true))
                             requireSort(type, binder.typeExpr, binderCtx)
                         }
                     }
-                    var bodyType = tail.recurseInfer(tailCtx, request.validate)
+                    var bodyType = callRecursive(InferRequest(env, tail, tailCtx, request.validate))
                     binders.asReversed().forEach { [binder] ->
                         bodyType = env.addCustomExpr {
                             binder.copyAsForAllE().copy(body = bodyType.ie, ie = it)
@@ -2917,9 +2910,9 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
                     val subst = ArrayDeque<Expression>()
                     while (tail is Expression.LetE) {
                         if (request.validate) {
-                            val declaredType = tail.typeExpr.recurseInfer(tailCtx, true)
+                            val declaredType = callRecursive(InferRequest(env, tail.typeExpr, tailCtx, true))
                             requireSort(declaredType, tail.typeExpr, tailCtx)
-                            val valueType = tail.valueExpr.recurseInfer(tailCtx, true)
+                            val valueType = callRecursive(InferRequest(env, tail.valueExpr, tailCtx, true))
                             check(tail.typeExpr.isDefEq2(valueType, tailCtx, tailCtx)) {
                                 "Let value type mismatch in ${tail.toStringDetailed()}: " +
                                         "expected ${tail.typeExpr.toStringDetailed()}, got ${valueType.toStringDetailed()}"
@@ -2929,10 +2922,10 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
                         tailCtx = env.consLocalCtx(tail.typeExpr, tailCtx, tail.valueExpr)
                         tail = tail.bodyExpr
                     }
-                    tail.recurseInfer(tailCtx, request.validate).applySubst(subst)
+                    callRecursive(InferRequest(env, tail, tailCtx, request.validate)).applySubst(subst)
                 }
 
-                is Expression.Mdata -> expr.expr.recurseInfer(request.localCtx, request.validate)
+                is Expression.Mdata -> callRecursive(InferRequest(env, expr.expr, request.localCtx, request.validate))
 
                 is Expression.NatVal -> {
                     val natTypeIndex = env.findRootInductive("Nat")?.first
@@ -2941,7 +2934,9 @@ private val inferTypeDeep = DeepRecursiveFunction<InferRequest, Expression> { re
                 }
 
                 is Expression.Proj -> {
-                    val structType = expr.structExpr.recurseInfer(request.localCtx, request.validate)
+                    val structType = callRecursive(
+                        InferRequest(env, expr.structExpr, request.localCtx, request.validate)
+                    )
                     expr.inferProjectionType(structType, request.localCtx)
                 }
 
