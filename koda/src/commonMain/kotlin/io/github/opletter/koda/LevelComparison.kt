@@ -174,15 +174,8 @@ private inline fun ArrayDeque<Level>.drainMaxArguments(action: (Level) -> Unit) 
 }
 
 context(env: Environment)
-private fun Level.toOffset(): LevelOffset {
-    var base = this
-    var offset = 0
-    while (base is Level.Succ) {
-        base = base.level
-        offset += 1
-    }
-    return LevelOffset(base, offset)
-}
+private tailrec fun Level.toOffset(offset: Int = 0): LevelOffset =
+    if (this is Level.Succ) this.level.toOffset(offset + 1) else LevelOffset(this, offset)
 
 context(env: Environment)
 private fun Level.addOffset(amount: Int): Level {
