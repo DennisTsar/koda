@@ -3295,8 +3295,7 @@ private fun Expression.tryRecognizeNatLiteralCore(localCtx: List<Expression>): N
             fun natArg(index: Int): NatValue? = args.getOrNull(index)?.tryRecognizeNatLiteral(emptyMap(), localCtx)
 
             when (primitive) {
-                NatPrimitive.Succ -> (args.getOrNull(0) ?: return null)
-                    .tryRecognizeNatLiteralCore(offset + NatValue.ONE)
+                NatPrimitive.Succ -> args.getOrNull(0)?.tryRecognizeNatLiteralCore(offset + NatValue.ONE)
 
                 NatPrimitive.Beq, NatPrimitive.Ble -> null
                 else -> {
