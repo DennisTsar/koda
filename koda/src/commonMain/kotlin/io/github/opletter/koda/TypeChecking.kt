@@ -524,6 +524,16 @@ private data class ClosedLocalLookup(
     val neutralIndex: Int,
 )
 
+private tailrec fun ClosedEvalEnv.bindingAt(index: Int): ClosedClosure? = when (this) {
+    ClosedEvalEnv.Empty -> null
+    is ClosedEvalEnv.Bind -> if (index == 0) value else tail.bindingAt(index - 1)
+}
+
+private tailrec fun ClosedEvalEnv.lookup(index: Int): ClosedLocalLookup = when (this) {
+    ClosedEvalEnv.Empty -> ClosedLocalLookup(null, index)
+    is ClosedEvalEnv.Bind -> if (index == 0) ClosedLocalLookup(value, 0) else tail.lookup(index - 1)
+}
+
 private data class ClosedDefEqTask(
     val left: ClosedClosure,
     val right: ClosedClosure,
@@ -614,17 +624,6 @@ private fun ClosedClosure.closedDefEq(
     val looseBvarIndices = mutableMapOf<Int, List<Int>>()
     val proofArgumentMasks = mutableMapOf<Long, BooleanArray?>()
 
-    fun bindingAt(locals: ClosedEvalEnv, index: Int): ClosedClosure? {
-        var current = locals
-        var remaining = index
-        while (current is ClosedEvalEnv.Bind) {
-            if (remaining == 0) return current.value
-            remaining -= 1
-            current = current.tail
-        }
-        return null
-    }
-
     fun closuresObviouslyEqual(left: ClosedClosure, right: ClosedClosure): Boolean {
         if (left.isProof && right.isProof) return true
         if (left === right) return true
@@ -688,8 +687,8 @@ private fun ClosedClosure.closedDefEq(
         nextNeutral: Int,
     ): Boolean {
         for (index in referencedLooseBvars(expression)) {
-            val leftBinding = bindingAt(left, index) ?: return false
-            val rightBinding = bindingAt(right, index) ?: return false
+            val leftBinding = left.bindingAt(index) ?: return false
+            val rightBinding = right.bindingAt(index) ?: return false
             if (!closuresObviouslyEqual(leftBinding, rightBinding)) {
                 pending.addLast(ClosedDefEqTask(leftBinding, rightBinding, nextNeutral, true))
             }
@@ -1207,17 +1206,6 @@ private fun ClosedClosure.closedWhnf(
     fun argumentsOf(closure: ClosedClosure): List<ClosedClosure> =
         closure.cachedArguments ?: closure.pendingArguments
 
-    fun lookupLocal(locals: ClosedEvalEnv, index: Int): ClosedLocalLookup {
-        var currentLocals = locals
-        var remaining = index
-        while (currentLocals is ClosedEvalEnv.Bind) {
-            if (remaining == 0) return ClosedLocalLookup(currentLocals.value, 0)
-            remaining -= 1
-            currentLocals = currentLocals.tail
-        }
-        return ClosedLocalLookup(null, remaining)
-    }
-
     fun terminalNatValue(): NatValue? {
         if (argumentStack.isNotEmpty()) return null
         return when (val expression = currentExpression) {
@@ -1310,7 +1298,7 @@ private fun ClosedClosure.closedWhnf(
             }
 
             is Expression.Bvar -> {
-                val lookup = lookupLocal(currentLocals, expression.bvar)
+                val lookup = currentLocals.lookup(expression.bvar)
                 val binding = lookup.closure
                 if (binding == null) {
                     currentExpression = Expression.Bvar(lookup.neutralIndex, Int.MIN_VALUE)
