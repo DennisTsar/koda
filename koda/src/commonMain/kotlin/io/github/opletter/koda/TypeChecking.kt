@@ -3748,25 +3748,11 @@ private suspend fun Expression.tryProofIrrelevanceDefEqNoLog(
 ): Boolean {
     env.proofIrrelevanceAttempts += 1
     if (!this.canBeProofByShape() || !other.canBeProofByShape()) return false
-    val rigidProofStatus = this.rigidProofStatus()
-    if (rigidProofStatus == false || other.rigidProofStatus() == false) return false
+    if (this.rigidProofStatus() == false || other.rigidProofStatus() == false) return false
     val tempLog = env.shouldLog
     env.shouldLog = false
     return try {
-        val result = if (!this.isScopedBy(localCtxLeft) || !other.isScopedBy(localCtxRight)) {
-            false
-        } else {
-            val thisType = this.inferType(localCtx = localCtxLeft, validate = false)
-            (rigidProofStatus == true ||
-                    thisType.inferSort(localCtx = localCtxLeft, validate = false)
-                        .isLessOrEqual(Level.Zero)) &&
-                    thisType.recurseDefEq(
-                        other.inferType(localCtx = localCtxRight, validate = false),
-                        localCtxLeft,
-                        localCtxRight,
-                    )
-        }
-        result.also {
+        this.tryProofIrrelevanceDefEq(other, localCtxLeft, localCtxRight).also { result ->
             if (result) env.proofIrrelevanceSuccesses += 1
         }
     } finally {
@@ -3779,6 +3765,22 @@ private fun Expression.canBeProofByShape(): Boolean {
             this !is Expression.NatVal &&
             this !is Expression.Sort &&
             this !is Expression.StrVal
+}
+
+context(env: Environment, scope: DefEqScope)
+private suspend fun Expression.tryProofIrrelevanceDefEq(
+    other: Expression,
+    localCtxLeft: List<Expression>,
+    localCtxRight: List<Expression>,
+): Boolean {
+    if (!this.isScopedBy(localCtxLeft) || !other.isScopedBy(localCtxRight)) return false
+    val thisTy = this.inferType(localCtx = localCtxLeft, validate = false)
+    if (!thisTy.inferSort(localCtx = localCtxLeft, validate = false).isLessOrEqual(Level.Zero)) return false
+    return thisTy.recurseDefEq(
+        other.inferType(localCtx = localCtxRight, validate = false),
+        localCtxLeft,
+        localCtxRight,
+    )
 }
 
 context(env: Environment)
