@@ -4340,12 +4340,11 @@ private fun Environment.findChildNameIndex(parentNameIndex: Int, shortName: Stri
 context(env: Environment)
 private fun Expression.Const.composeLevelSubst(outer: Map<Int, Level>): Map<Int, Level> {
     val params = this.decl.levelParams
-    val levels = this.levels
-    check(params.size == levels.size) {
-        "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${levels.size}"
+    check(params.size == this.levels.size) {
+        "Universe argument mismatch for ${this.toStringDetailed()}: expected ${params.size}, got ${this.levels.size}"
     }
     return params.indices.associate { index ->
-        val level = levels[index]
+        val level = this.levels[index]
         params[index].il to if (outer.isEmpty()) level else level.instantiateLevelParams(outer)
     }
 }
